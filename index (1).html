@@ -1,0 +1,1149 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cutline</title>
+<style>html,body{margin:0}</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+</head>
+<body>
+<div id="root"><p style="font-family:sans-serif;padding:40px">Loading Cutline…</p></div>
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useMemo, useRef } = React;
+
+/* ---------- The pipeline: each stage has one owner and a time allowance in business days ---------- */
+const STAGES = [
+  { id: "idea", name: "Topic proposal", owner: "writer", days: 2 },
+  { id: "idea_qc", name: "Proposal check", owner: "lead", days: 1 },
+  { id: "idea_ok", name: "Client picks topic", owner: "client", days: 2 },
+  { id: "script", name: "Scriptwriting", owner: "writer", days: 2 },
+  { id: "script_qc", name: "Script check", owner: "lead", days: 1 },
+  { id: "script_ok", name: "Client approves script", owner: "client", days: 2 },
+  { id: "film", name: "Ready to film", owner: "client", days: 0 },
+  { id: "edit", name: "Editing", owner: "editor", days: 3 },
+  { id: "edit_qc", name: "Edit check", owner: "lead", days: 1 },
+  { id: "edit_ok", name: "Client review", owner: "client", days: 2 },
+  { id: "publish", name: "Publishing", owner: "publisher", days: 1 },
+  { id: "live", name: "Live", owner: null, days: 0 },
+];
+const ROLES = {
+  lead: { label: "Lead", color: "#B7791F", soft: "#FBF0DC" },
+  writer: { label: "Writer", color: "#4C51BF", soft: "#E6E8FB" },
+  client: { label: "Client", color: "#B83280", soft: "#FBE4F0" },
+  editor: { label: "Editor", color: "#6B46C1", soft: "#EEE7FB" },
+  publisher: { label: "Publisher", color: "#2F855A", soft: "#E1F3E8" },
+};
+const BACK_TO = { idea_qc: "idea", script_qc: "script", script_ok: "script", edit_qc: "edit", edit_ok: "edit" };
+const NEEDS = {
+  script: ["scriptUrl", "Script doc link"],
+  film: ["footageUrl", "Footage folder link"],
+  edit: ["editUrl", "Edit review link"],
+  publish: ["publishUrl", "Published video link"],
+};
+const ADVANCE_LABEL = {
+  idea: "Send for check", idea_qc: "Pass to client", idea_ok: "Approve topic",
+  script: "Send for check", script_qc: "Pass to client", script_ok: "Approve script",
+  edit: "Send for check", edit_qc: "Pass to client", edit_ok: "Approve edit", publish: "Mark published",
+};
+const BACK_LABEL = {
+  idea_qc: "Send back with notes", script_qc: "Send back with notes", edit_qc: "Send back with notes",
+  idea_ok: "Reject topic", script_ok: "Request changes", edit_ok: "Request changes",
+};
+/* Checklists: every box must be ticked before a check step can pass */
+const CHECKS = {
+  idea_qc: ["The angle is clear in one sentence", "It fits the client's audience and offer", "Nothing in it breaks the client's rules"],
+  script_qc: ["The opening grabs attention in the first lines", "It sounds like the client talking", "There is one clear call to action", "The length suits the format"],
+  edit_qc: ["Watched the whole edit at normal speed", "Captions and on-screen text are spelled right", "Audio is even with no clipping", "No black frames, glitches, or bad cuts"],
+};
+const WEEKDAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+const stageOf = id => STAGES.find(s => s.id === id);
+const idxOf = id => STAGES.findIndex(s => s.id === id);
+
+/* ---------- Dates ---------- */
+const DAY = 864e5;
+const startOfDay = d => { const x = new Date(d); x.setHours(0, 0, 0, 0); return x; };
+const isoDay = d => { const x = new Date(d); return `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, "0")}-${String(x.getDate()).padStart(2, "0")}`; };
+const fromIso = s => new Date(s + "T00:00:00");
+const shortDate = d => new Date(d).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+const weekStart = (callDay, date) => { const d = startOfDay(date); while (d.getDay() !== callDay) d.setDate(d.getDate() - 1); return d; };
+const addBiz = (from, n) => {
+  const d = new Date(from); let left = n;
+  while (left > 0) { d.setDate(d.getDate() + 1); if (d.getDay() % 6 !== 0) left--; }
+  return d;
+};
+const dueOf = v => {
+  const s = stageOf(v.stage);
+  if (v.archived || !s || !s.days) return null;
+  return addBiz(v.enteredAt, s.days);
+};
+const dueText = d => {
+  if (!d) return { text: "", tone: "" };
+  const n = Math.round((startOfDay(d) - startOfDay(new Date())) / DAY);
+  if (n < 0) return { text: `${-n}d late`, tone: "late" };
+  if (n === 0) return { text: "Due today", tone: "soon" };
+  if (n === 1) return { text: "Due tomorrow", tone: "soon" };
+  return { text: `Due ${shortDate(d)}`, tone: "" };
+};
+const uid = p => p + Math.random().toString(36).slice(2, 9);
+const ago = n => new Date(Date.now() - n * DAY).toISOString();
+
+/* ---------- Membership: payments cover weeks; each paid week starts one video on the call day ---------- */
+const isMember = (db, cid) => db.weeks.some(w => w.clientId === cid && w.paid);
+const bankOf = (db, cid) => {
+  const f = db.videos.filter(v => v.clientId === cid && v.stage === "film" && !v.archived);
+  return {
+    ready: f.filter(v => !v.footageAt),
+    footage: f.filter(v => v.footageAt).sort((a, b) => a.footageAt.localeCompare(b.footageAt)),
+  };
+};
+function recordPayment(n, cid, by) {
+  const c = n.clients.find(x => x.id === cid);
+  if (!c || c.callDay == null) return null;
+  let d = weekStart(c.callDay, new Date());
+  const paid = n.weeks.filter(w => w.clientId === cid && w.paid).map(w => w.start).sort();
+  const last = paid[paid.length - 1];
+  if (last && last >= isoDay(d)) { d = fromIso(last); d.setDate(d.getDate() + 7); }
+  const pid = uid("pay");
+  const covered = [];
+  for (let i = 0; i < 4; i++) {
+    const k = isoDay(d);
+    let w = n.weeks.find(x => x.clientId === cid && x.start === k);
+    if (!w) { w = { id: uid("w"), clientId: cid, start: k, paid: false, outcome: "pending", videoId: null }; n.weeks.push(w); }
+    w.paid = true; w.paymentId = pid;
+    covered.push(k);
+    d.setDate(d.getDate() + 7);
+  }
+  n.payments.push({ id: pid, clientId: cid, at: new Date().toISOString(), weeks: covered, by });
+  return covered;
+}
+function startVideo(n, v, week, by) {
+  const now = new Date().toISOString();
+  if (!v.editorId) {
+    const prev = n.videos
+      .filter(x => x.clientId === v.clientId && x.editorId && x.id !== v.id)
+      .sort((a, b) => (b.enteredAt || "").localeCompare(a.enteredAt || ""))[0];
+    if (prev) v.editorId = prev.editorId; // keep the same editor on a client
+  }
+  v.stage = "edit";
+  v.enteredAt = now;
+  v.weekId = week ? week.id : null;
+  v.history.push({ at: now, by, text: week ? `Editing started in the week of ${shortDate(fromIso(week.start))}` : "Footage in, editing starts now" });
+  if (week) { week.outcome = "used"; week.videoId = v.id; }
+}
+/* Runs whenever data changes: any paid week that has begun either starts the oldest filmed video or is forfeited */
+function settleWeeks(n) {
+  const today = startOfDay(new Date());
+  let changed = false;
+  n.clients.forEach(c => {
+    n.weeks
+      .filter(w => w.clientId === c.id && w.paid && w.outcome === "pending" && fromIso(w.start) <= today)
+      .sort((a, b) => a.start.localeCompare(b.start))
+      .forEach(w => {
+        const pick = bankOf(n, c.id).footage[0];
+        if (pick) startVideo(n, pick, w, "system");
+        else w.outcome = "forfeited";
+        changed = true;
+      });
+  });
+  return changed;
+}
+
+/* ---------- Demo data ---------- */
+function seed() {
+  const clients = [
+    { id: "c1", name: "Northwind Coffee", callDay: 3, bankFloor: 2 },
+    { id: "c2", name: "Maya Ortiz Fitness", callDay: 1, bankFloor: 2 },
+  ];
+  const people = [
+    { id: "p_lead", name: "You", role: "lead" },
+    { id: "p_writer", name: "Sam", role: "writer" },
+    { id: "p_lina", name: "Lina", role: "editor" },
+    { id: "p_marco", name: "Marco", role: "editor" },
+    { id: "p_jo", name: "Jo", role: "publisher" },
+    { id: "p_nw", name: "Northwind team", role: "client", clientId: "c1" },
+    { id: "p_maya", name: "Maya", role: "client", clientId: "c2" },
+  ];
+  const mk = (clientId, title, stage, daysAgo, extra = {}) => ({
+    id: uid("v"), clientId, title, stage, enteredAt: ago(daysAgo), createdAt: ago(daysAgo + 10),
+    editorId: null, scriptUrl: "", footageUrl: "", editUrl: "", publishUrl: "", notes: "",
+    rounds: 0, archived: false, footageAt: null, weekId: null,
+    history: [{ at: ago(daysAgo + 10), by: "p_lead", text: "Created" }], ...extra,
+  });
+  const weeks = [], payments = [], videos = [];
+  const week = (c, k, outcome) => {
+    const d = weekStart(c.callDay, new Date()); d.setDate(d.getDate() + k * 7);
+    const w = { id: `w_${c.id}_${k}`, clientId: c.id, start: isoDay(d), paid: true, outcome, videoId: null, paymentId: `pay_${c.id}` };
+    weeks.push(w);
+    return w;
+  };
+  const link = (v, w) => { v.weekId = w.id; w.videoId = v.id; videos.push(v); };
+
+  const [nw, maya] = clients;
+  const nwW = [week(nw, -2, "used"), week(nw, -1, "forfeited"), week(nw, 0, "used"), week(nw, 1, "pending")];
+  link(mk("c1", "Why cold brew costs more", "edit", 1, { editorId: "p_lina", scriptUrl: "https://docs.example/1", footageUrl: "https://drive.example/1" }), nwW[2]);
+  link(mk("c1", "Three beans, one tasting", "edit_qc", 0, { editorId: "p_lina", editUrl: "https://review.example/2" }), nwW[0]);
+  videos.push(mk("c1", "The café that almost closed", "script_ok", 3, { scriptUrl: "https://docs.example/3" }));
+  videos.push(mk("c1", "A morning with our roaster", "film", 2, { scriptUrl: "https://docs.example/4" }));
+  videos.push(mk("c1", "Oat milk myths", "idea", 0));
+
+  const mayaW = [week(maya, -2, "used"), week(maya, -1, "used"), week(maya, 0, "used"), week(maya, 1, "pending")];
+  link(mk("c2", "Rest days matter", "live", 6, { editorId: "p_marco", publishUrl: "https://youtu.be/example" }), mayaW[0]);
+  link(mk("c2", "My first marathon, honestly", "publish", 0, { editorId: "p_marco", editUrl: "https://review.example/8" }), mayaW[1]);
+  link(mk("c2", "Five-minute mobility routine", "edit_ok", 1, { editorId: "p_marco", editUrl: "https://review.example/5" }), mayaW[2]);
+  videos.push(mk("c2", "What I eat before a race", "film", 2, { scriptUrl: "https://docs.example/6", footageUrl: "https://drive.example/6", footageAt: ago(1) }));
+  videos.push(mk("c2", "Hill sprints for beginners", "film", 4, { scriptUrl: "https://docs.example/9" }));
+  videos.push(mk("c2", "Stop stretching like this", "idea_qc", 0));
+
+  clients.forEach(c => payments.push({ id: `pay_${c.id}`, clientId: c.id, at: ago(15), weeks: weeks.filter(w => w.clientId === c.id).map(w => w.start), by: "p_lead" }));
+  const tasks = [
+    { id: uid("t"), personId: "p_lead", text: "Send Northwind their next invoice", due: isoDay(addBiz(new Date(), 2)), done: false },
+    { id: uid("t"), personId: "p_lina", text: "Build a lower-thirds template for Northwind", due: null, done: false },
+  ];
+  return { clients, people, videos, weeks, payments, tasks };
+}
+const STORE_KEY = "cutline-state-v2";
+const normalize = d => ({ weeks: [], payments: [], tasks: [], ...d });
+
+/* ---------- Permissions ---------- */
+const isMine = (v, me) => {
+  const s = stageOf(v.stage);
+  if (!me || v.archived || !s || !s.owner) return false;
+  if (v.stage === "film" && v.footageAt) return false;
+  if (me.role !== s.owner) return false;
+  if (me.role === "editor") return v.editorId === me.id;
+  if (me.role === "client") return v.clientId === me.clientId;
+  return true;
+};
+const canAct = (v, me) => me && (me.role === "lead" ? !v.archived && v.stage !== "live" && !(v.stage === "film" && v.footageAt) : isMine(v, me));
+const visibleTo = (v, me) =>
+  me.role === "client" ? v.clientId === me.clientId : me.role === "editor" ? v.editorId === me.id : true;
+
+/* ---------- Profile pictures ---------- */
+const resizeImage = file => new Promise((resolve, reject) => {
+  if (!file || !file.type.startsWith("image/")) return reject(new Error("not-image"));
+  const reader = new FileReader();
+  reader.onerror = () => reject(new Error("read"));
+  reader.onload = () => {
+    const img = new Image();
+    img.onerror = () => reject(new Error("decode"));
+    img.onload = () => {
+      const S = 256;
+      const c = document.createElement("canvas");
+      c.width = S; c.height = S;
+      const side = Math.min(img.width, img.height);
+      c.getContext("2d").drawImage(img, (img.width - side) / 2, (img.height - side) / 2, side, side, 0, 0, S, S);
+      resolve(c.toDataURL("image/jpeg", 0.85));
+    };
+    img.src = reader.result;
+  };
+  reader.readAsDataURL(file);
+});
+function Avatar({ person, size = 28 }) {
+  if (!person) return null;
+  const role = ROLES[person.role];
+  const initials = person.name.split(/\s+/).map(w => w[0]).filter(Boolean).slice(0, 2).join("").toUpperCase();
+  return person.avatar ? (
+    <img className="cl-av" src={person.avatar} alt="" style={{ width: size, height: size }} />
+  ) : (
+    <span className="cl-av" aria-hidden="true"
+      style={{ width: size, height: size, fontSize: Math.round(size * 0.4), background: role ? role.soft : undefined, color: role ? role.color : undefined }}>
+      {initials}
+    </span>
+  );
+}
+function AvatarPicker({ person, canEdit, onChange, onError, size = 44 }) {
+  if (!canEdit) return <Avatar person={person} size={size} />;
+  const pick = async e => {
+    const file = e.target.files && e.target.files[0];
+    e.target.value = "";
+    if (!file) return;
+    try { onChange(await resizeImage(file)); }
+    catch (err) { onError(err.message === "not-image" ? "That file isn't a picture. Choose a JPEG, PNG, or WebP." : "That picture couldn't be read. Try a JPEG or PNG."); }
+  };
+  return (
+    <span className="cl-avpick">
+      <label title={`Change ${person.name}'s picture`}>
+        <input type="file" accept="image/*" onChange={pick} hidden />
+        <Avatar person={person} size={size} />
+        <span className="cl-avpen" aria-hidden="true">✎</span>
+        <span className="cl-sr">Change {person.name}'s picture</span>
+      </label>
+      {person.avatar && (
+        <button className="cl-avx" onClick={() => onChange("")} aria-label={`Remove ${person.name}'s picture`}>×</button>
+      )}
+    </span>
+  );
+}
+
+/* ---------- Small pieces ---------- */
+function OwnerChip({ v }) {
+  if (v.archived) return <span className="cl-chip">Rejected</span>;
+  const s = stageOf(v.stage);
+  if (v.stage === "film" && v.footageAt) return <span className="cl-chip filmed">Filmed · waiting for its week</span>;
+  const r = s && s.owner ? ROLES[s.owner] : null;
+  return <span className="cl-chip" style={r ? { background: r.soft, color: r.color } : undefined}>{s ? s.name : v.stage}</span>;
+}
+function Due({ date }) {
+  const d = dueText(date);
+  return <span className={`cl-due ${d.tone}`}>{d.text}</span>;
+}
+
+function FilmStrip({ videos, filter, setFilter }) {
+  return (
+    <div className="cl-strip" role="list">
+      {STAGES.filter(s => s.id !== "live").map((s, i) => {
+        const n = videos.filter(v => v.stage === s.id && !v.archived).length;
+        const r = ROLES[s.owner];
+        const on = filter === s.id;
+        return (
+          <button key={s.id} role="listitem" className={`cl-frame ${on ? "on" : ""} ${n ? "" : "empty"}`}
+            onClick={() => setFilter(on ? null : s.id)} title={`${s.name} · ${r.label}`}>
+            <span className="cl-frame-bar" style={{ background: r.color }} />
+            <span className="cl-frame-n">{n}</span>
+            <span className="cl-frame-name"><span className="cl-frame-step">{i + 1}</span> {s.name}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function VideoTable({ rows, db, me, open, showClient = true }) {
+  if (!rows.length) return <p className="cl-empty">Nothing here right now.</p>;
+  const sorted = rows.slice().sort((a, b) => (dueOf(a) || 8e15) - (dueOf(b) || 8e15));
+  return (
+    <div className="cl-table">
+      {sorted.map(v => {
+        const client = db.clients.find(c => c.id === v.clientId);
+        const editor = db.people.find(p => p.id === v.editorId);
+        return (
+          <button key={v.id} className="cl-row" onClick={() => open(v.id)}>
+            {showClient && <span className="cl-row-client">{client ? client.name : "—"}</span>}
+            <span className="cl-row-title">{v.title || "Untitled"}</span>
+            <OwnerChip v={v} />
+            <span className="cl-row-ed">{editor && <><Avatar person={editor} size={22} />{editor.name}</>}</span>
+            <Due date={dueOf(v)} />
+            <span className={`cl-row-go ${canAct(v, me) ? "mine" : ""}`}>{canAct(v, me) ? "Open" : "View"}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+/* ---------- Membership calendar: one cell per client week ---------- */
+function WeekStrip({ db, client, open }) {
+  if (client.callDay == null) return <p className="cl-muted">Set a call day in Settings to start a membership.</p>;
+  const today = startOfDay(new Date());
+  const cur = weekStart(client.callDay, today);
+  const firstPaid = db.weeks.filter(w => w.clientId === client.id && w.paid).map(w => w.start).sort()[0];
+  const cells = Array.from({ length: 10 }, (_, i) => { const d = new Date(cur); d.setDate(d.getDate() + (i - 3) * 7); return d; });
+  return (
+    <div className="cl-weeks" role="list">
+      {cells.map(d => {
+        const k = isoDay(d);
+        const w = db.weeks.find(x => x.clientId === client.id && x.start === k);
+        const v = w && w.videoId ? db.videos.find(x => x.id === w.videoId) : null;
+        let state = "open", label = "Not paid yet";
+        if (w && w.outcome === "used") { state = v && v.stage === "live" ? "live" : "used"; label = v ? v.title : "Video started"; }
+        else if (w && w.outcome === "forfeited") { state = "lost"; label = "Forfeited · no footage"; }
+        else if (w && w.paid) { state = "paid"; label = "Paid · open"; }
+        else if (firstPaid && k >= firstPaid && d <= today) { state = "unpaid"; label = "Unpaid"; }
+        const isNow = d.getTime() === cur.getTime();
+        return (
+          <button key={k} role="listitem" className={`cl-week ${state} ${isNow ? "now" : ""}`}
+            onClick={() => v && open(v.id)} disabled={!v} title={label}>
+            <span className="cl-week-date">{isNow ? "This week" : shortDate(d)}</span>
+            <span className="cl-week-label">{label}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function BankChips({ db, client }) {
+  const b = bankOf(db, client.id);
+  const low = b.ready.length <= (client.bankFloor ?? 2);
+  return (
+    <div className="cl-meta">
+      <span className={`cl-chip ${low ? "warn" : "ok"}`}>{b.ready.length} script{b.ready.length === 1 ? "" : "s"} ready to film</span>
+      <span className="cl-chip">{b.footage.length} filmed, waiting</span>
+      {low && <span className="cl-muted">At or below the floor of {client.bankFloor ?? 2}: time for new topics.</span>}
+    </div>
+  );
+}
+
+/* ---------- To-dos ---------- */
+function TodoList({ person, tasks, canAdd, canToggle, mutate }) {
+  const [text, setText] = useState("");
+  const [due, setDue] = useState("");
+  const [removed, setRemoved] = useState(null);
+  const setDone = (id, done) => mutate(n => { const x = n.tasks.find(y => y.id === id); if (x) x.done = done; });
+  const remove = t => { mutate(n => { n.tasks = n.tasks.filter(y => y.id !== t.id); }); setRemoved(t); };
+  const restore = () => { if (!removed) return; const t = removed; mutate(n => { if (!n.tasks.some(y => y.id === t.id)) n.tasks.push(t); }); setRemoved(null); };
+  const list = tasks.filter(t => t.personId === person.id).sort((a, b) => {
+    if (a.done !== b.done) return a.done ? 1 : -1;
+    const x = a.due || "9999", y = b.due || "9999";
+    return x < y ? -1 : x > y ? 1 : 0;
+  });
+  const add = () => {
+    if (!text.trim()) return;
+    mutate(n => n.tasks.push({ id: uid("t"), personId: person.id, text: text.trim(), due: due || null, done: false }));
+    setText(""); setDue("");
+  };
+  return (
+    <div className="cl-todos">
+      {list.length === 0 && <p className="cl-empty">No to-dos.</p>}
+      {list.map(t => (
+        <div key={t.id} className={`cl-todo ${t.done ? "done" : ""}`}>
+          <label>
+            <input type="checkbox" checked={t.done} disabled={!canToggle}
+              onChange={() => setDone(t.id, !t.done)} />
+            <span>{t.text}</span>
+          </label>
+          {t.due && !t.done && <Due date={fromIso(t.due)} />}
+          {t.done && canToggle && (
+            <button className="cl-undo" onClick={() => setDone(t.id, false)}>Undo</button>
+          )}
+          {canAdd && (
+            <button className="cl-x-small" aria-label="Delete to-do" onClick={() => remove(t)}>×</button>
+          )}
+        </div>
+      ))}
+      {removed && (
+        <div className="cl-todo removed" role="status">
+          <span>Deleted “{removed.text}”</span>
+          <button className="cl-undo" onClick={restore}>Undo</button>
+          <button className="cl-x-small" aria-label="Dismiss" onClick={() => setRemoved(null)}>×</button>
+        </div>
+      )}
+      {canAdd && (
+        <div className="cl-form">
+          <input placeholder="New to-do" value={text} onChange={e => setText(e.target.value)}
+            onKeyDown={e => e.key === "Enter" && add()} />
+          <input type="date" value={due} onChange={e => setDue(e.target.value)} aria-label="Due date" />
+          <button className="cl-btn ghost" onClick={add}>Add to-do</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ---------- Video detail ---------- */
+function VideoModal({ v, db, me, update, mutate, close }) {
+  const [note, setNote] = useState("");
+  const [ticks, setTicks] = useState({});
+  const s = stageOf(v.stage);
+  const act = canAct(v, me);
+  const need = NEEDS[v.stage];
+  const missing = need && !(v[need[0]] || "").trim();
+  const noEditor = v.stage === "edit" && !v.editorId;
+  const checks = CHECKS[v.stage] || [];
+  const allTicked = checks.every((_, i) => ticks[i]);
+  const who = id => (id === "system" ? "Cutline" : (db.people.find(p => p.id === id) || {}).name || "Someone");
+  const client = db.clients.find(c => c.id === v.clientId);
+  const editorP = db.people.find(p => p.id === v.editorId);
+  const week = v.weekId ? db.weeks.find(w => w.id === v.weekId) : null;
+  const log = text => ({ history: [...v.history, { at: new Date().toISOString(), by: me.id, text }] });
+
+  const advance = () => {
+    const next = STAGES[idxOf(v.stage) + 1];
+    if (!next || missing || noEditor || !allTicked) return;
+    update(v.id, { stage: next.id, enteredAt: new Date().toISOString(), ...log(`${s.name} → ${next.name}`) });
+  };
+  const sendBack = () => {
+    if (!note.trim()) return;
+    if (v.stage === "idea_ok") {
+      update(v.id, { archived: true, ...log(`Topic rejected: ${note}`) });
+    } else {
+      const to = stageOf(BACK_TO[v.stage]);
+      update(v.id, {
+        stage: to.id, enteredAt: new Date().toISOString(), notes: note,
+        rounds: v.rounds + (s.owner === "client" ? 1 : 0), ...log(`Sent back to ${to.name}: ${note}`),
+      });
+    }
+    setNote("");
+  };
+  const footageIn = () => {
+    if (missing) return;
+    mutate(n => {
+      const x = n.videos.find(y => y.id === v.id);
+      if (isMember(n, x.clientId)) {
+        x.footageAt = new Date().toISOString();
+        x.history.push({ at: x.footageAt, by: me.id, text: "Footage uploaded, waiting for the next paid week" });
+      } else startVideo(n, x, null, me.id);
+    });
+  };
+  const field = (key, label) => (
+    <label className="cl-field" key={key}>
+      <span>{label}</span>
+      <input type="url" value={v[key] || ""} placeholder="https://…" disabled={!act}
+        onChange={e => update(v.id, { [key]: e.target.value })} />
+    </label>
+  );
+
+  return (
+    <div className="cl-overlay" onClick={e => e.target === e.currentTarget && close()}>
+      <div className="cl-modal" role="dialog" aria-modal="true">
+        <button className="cl-x" onClick={close} aria-label="Close">×</button>
+        <p className="cl-muted">{client ? client.name : ""}{week ? ` · week of ${shortDate(fromIso(week.start))}` : ""}</p>
+        {me.role === "lead" ? (
+          <input className="cl-title-in" value={v.title} onChange={e => update(v.id, { title: e.target.value })} />
+        ) : (
+          <h2 className="cl-h2">{v.title}</h2>
+        )}
+        <div className="cl-meta">
+          <OwnerChip v={v} />
+          {editorP && <span className="cl-who"><Avatar person={editorP} size={24} />{editorP.name}</span>}
+          <Due date={dueOf(v)} />
+          {v.rounds > 0 && <span className="cl-muted">{v.rounds} client revision round{v.rounds > 1 ? "s" : ""}</span>}
+        </div>
+
+        {v.notes && !v.archived && v.stage !== "live" && (
+          <div className="cl-notebox"><b>Latest notes</b><p>{v.notes}</p></div>
+        )}
+
+        <div className="cl-fields">
+          {field("scriptUrl", "Script doc")}
+          {field("footageUrl", "Footage folder")}
+          {field("editUrl", "Edit review link")}
+          {field("publishUrl", "Published video")}
+          <label className="cl-field">
+            <span>Editor</span>
+            <select value={v.editorId || ""} disabled={me.role !== "lead"}
+              onChange={e => update(v.id, { editorId: e.target.value || null, ...log(`Editor set to ${e.target.value ? who(e.target.value) : "nobody"}`) })}>
+              <option value="">Unassigned</option>
+              {db.people.filter(p => p.role === "editor").map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+            </select>
+          </label>
+        </div>
+
+        {v.stage === "film" && v.footageAt && (
+          <div className="cl-notebox"><b>Filmed</b><p>Editing starts on {client ? `${WEEKDAYS[client.callDay]}` : "the next call day"} in the next paid week.</p></div>
+        )}
+
+        {act && (
+          <div className="cl-actions">
+            {checks.length > 0 && (
+              <fieldset className="cl-checks">
+                <legend>Tick every item before passing</legend>
+                {checks.map((c, i) => (
+                  <label key={c}>
+                    <input type="checkbox" checked={!!ticks[i]} onChange={() => setTicks(t => ({ ...t, [i]: !t[i] }))} />
+                    <span>{c}</span>
+                  </label>
+                ))}
+              </fieldset>
+            )}
+            {(missing || noEditor) && (
+              <p className="cl-warn">{noEditor ? "Assign an editor before this can move on." : `Add the ${need[1].toLowerCase()} to continue.`}</p>
+            )}
+            {v.stage === "film" ? (
+              <div className="cl-btnrow end">
+                <button className="cl-btn" disabled={missing} onClick={footageIn}>Footage uploaded</button>
+              </div>
+            ) : BACK_TO[v.stage] || v.stage === "idea_ok" ? (
+              <>
+                <textarea value={note} onChange={e => setNote(e.target.value)}
+                  placeholder="Notes for the next person (required to send back)" />
+                <div className="cl-btnrow">
+                  <button className="cl-btn ghost" disabled={!note.trim()} onClick={sendBack}>{BACK_LABEL[v.stage]}</button>
+                  <button className="cl-btn" disabled={missing || noEditor || !allTicked} onClick={advance}>{ADVANCE_LABEL[v.stage]}</button>
+                </div>
+              </>
+            ) : (
+              <div className="cl-btnrow end">
+                <button className="cl-btn" disabled={missing || noEditor || !allTicked} onClick={advance}>{ADVANCE_LABEL[v.stage]}</button>
+              </div>
+            )}
+          </div>
+        )}
+
+        <details className="cl-history">
+          <summary>History ({v.history.length})</summary>
+          <ul>
+            {v.history.slice().reverse().map((h, i) => (
+              <li key={i}><span className="cl-muted">{new Date(h.at).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}</span> {who(h.by)}: {h.text}</li>
+            ))}
+          </ul>
+        </details>
+      </div>
+    </div>
+  );
+}
+
+/* ---------- App ---------- */
+function Cutline() {
+  const [db, setDb] = useState(null);
+  const [meId, setMeId] = useState("p_lead");
+  const [page, setPage] = useState({ tab: "queue" });
+  const [openId, setOpenId] = useState(null);
+  const [filter, setFilter] = useState(null);
+  const [dark, setDark] = useState(false);
+  const [toast, setToast] = useState("");
+  const [draft, setDraft] = useState({ client: "", title: "", person: "", role: "editor", clientName: "" });
+  const lastSaved = useRef("");
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const r = await window.storage.get(STORE_KEY, false);
+        if (r && r.value) { lastSaved.current = r.value; setDb(normalize(JSON.parse(r.value))); }
+        else setDb(seed());
+      } catch (e) {
+        console.error("Load failed", e);
+        setToast("Couldn't load the shared data. Showing demo data; check your internet and refresh.");
+        setDb(seed());
+      }
+    })();
+  }, []);
+  useEffect(() => {
+    if (!db) return;
+    const n = structuredClone(db);
+    if (settleWeeks(n)) { setDb(n); return; }
+    const json = JSON.stringify(db);
+    if (json === lastSaved.current) return;
+    const t = setTimeout(async () => {
+      try { await window.storage.set(STORE_KEY, json, false); lastSaved.current = json; }
+      catch (e) { console.error("Save failed", e); setToast("Your last change didn't save. Check your internet, then try again."); }
+    }, 300);
+    return () => clearTimeout(t);
+  }, [db]);
+  /* When a teammate saves, load their version */
+  useEffect(() => {
+    if (!window.storage || !window.storage.subscribe) return;
+    return window.storage.subscribe(STORE_KEY, value => {
+      if (!value || value === lastSaved.current) return;
+      try { const next = normalize(JSON.parse(value)); lastSaved.current = value; setDb(next); } catch (e) { console.error(e); }
+    });
+  }, []);
+  useEffect(() => {
+    if (!toast) return;
+    const t = setTimeout(() => setToast(""), 2600);
+    return () => clearTimeout(t);
+  }, [toast]);
+
+  const me = db ? db.people.find(p => p.id === meId) || db.people[0] : null;
+  const mutate = fn => setDb(d => { const n = structuredClone(d); fn(n); return n; });
+  const update = (id, patch) => setDb(d => ({ ...d, videos: d.videos.map(v => (v.id === id ? { ...v, ...patch } : v)) }));
+  const visible = useMemo(() => (db && me ? db.videos.filter(v => visibleTo(v, me)) : []), [db, me]);
+
+  if (!db || !me) return <div className="cl-root"><style>{CSS}</style><p className="cl-loading">Loading your pipeline…</p></div>;
+
+  const lead = me.role === "lead";
+  const active = visible.filter(v => !v.archived && v.stage !== "live");
+  const mine = active.filter(v => isMine(v, me));
+  const unassigned = db.videos.filter(v => v.stage === "edit" && !v.editorId);
+  const late = active.filter(v => dueOf(v) && dueOf(v) < startOfDay(new Date()));
+  const openVideo = openId ? db.videos.find(v => v.id === openId) : null;
+  const canEditPerson = p => lead || (p.id === me.id && p.role !== "client");
+
+  const setAvatar = (personId, url) => {
+    mutate(n => { n.people.find(p => p.id === personId).avatar = url; });
+    setToast(url ? "Picture saved." : "Picture removed.");
+  };
+  const picker = (p, size) => (
+    <AvatarPicker person={p} size={size} canEdit={lead || p.id === me.id} onChange={url => setAvatar(p.id, url)} onError={setToast} />
+  );
+  const updateClient = (id, patch) => mutate(n => Object.assign(n.clients.find(c => c.id === id), patch));
+  const pay = cid => {
+    let covered = null;
+    setDb(d => { const n = structuredClone(d); covered = recordPayment(n, cid, me.id); return covered ? n : d; });
+    setTimeout(() => setToast(covered ? `Payment recorded for the weeks of ${covered.map(k => shortDate(fromIso(k))).join(", ")}.` : "Set a call day first."), 0);
+  };
+  const addVideo = () => {
+    if (!draft.client || !draft.title.trim()) return setToast("Pick a client and type a title.");
+    const now = new Date().toISOString();
+    mutate(n => n.videos.push({
+      id: uid("v"), clientId: draft.client, title: draft.title.trim(), stage: "idea", enteredAt: now, createdAt: now,
+      editorId: null, scriptUrl: "", footageUrl: "", editUrl: "", publishUrl: "", notes: "", rounds: 0,
+      archived: false, footageAt: null, weekId: null, history: [{ at: now, by: me.id, text: "Created" }],
+    }));
+    setDraft(x => ({ ...x, title: "" }));
+    setToast("Video added at Topic proposal.");
+  };
+  const addClient = () => {
+    const name = draft.clientName.trim();
+    if (!name) return setToast("Type a client name.");
+    const id = uid("c");
+    mutate(n => {
+      n.clients.push({ id, name, callDay: null, bankFloor: 2 });
+      n.people.push({ id: uid("p"), name: `${name} team`, role: "client", clientId: id });
+    });
+    setDraft(x => ({ ...x, clientName: "" }));
+    setToast("Client added. Set their call day below.");
+  };
+  const addPerson = () => {
+    if (!draft.person.trim()) return setToast("Type a name.");
+    mutate(n => n.people.push({ id: uid("p"), name: draft.person.trim(), role: draft.role }));
+    setDraft(x => ({ ...x, person: "" }));
+    setToast("Teammate added.");
+  };
+  const reset = () => {
+    if (!window.confirm("Replace everything with the demo data? This changes it for everyone on the team.")) return;
+    setDb(seed()); setMeId("p_lead"); setPage({ tab: "queue" }); setToast("Demo data restored.");
+  };
+
+  const nav = [
+    ["queue", me.role === "client" ? "Your videos" : "My queue", mine.length],
+    ...(lead ? [["pipeline", "Pipeline", active.length], ["team", "Team", unassigned.length || ""], ["settings", "Settings", ""]] : []),
+  ];
+  const clientsShown = me.role === "client" ? db.clients.filter(c => c.id === me.clientId) : lead ? db.clients : [];
+
+  let body;
+  if (page.tab === "pipeline") {
+    const rows = filter ? active.filter(v => v.stage === filter) : active;
+    body = (
+      <>
+        <h1 className="cl-h1">Pipeline</h1>
+        <p className="cl-lede">{active.length} videos in motion{late.length ? `, ${late.length} past due` : ""}. Select a frame to see only that stage.</p>
+        <FilmStrip videos={active} filter={filter} setFilter={setFilter} />
+        <h3 className="cl-h3">{filter ? stageOf(filter).name : "Everything in motion"}</h3>
+        <VideoTable rows={rows} db={db} me={me} open={setOpenId} />
+      </>
+    );
+  } else if (page.tab === "client") {
+    const c = db.clients.find(x => x.id === page.id);
+    const rows = visible.filter(v => v.clientId === page.id);
+    const live = rows.filter(v => v.stage === "live");
+    const pays = db.payments.filter(p => p.clientId === page.id).sort((a, b) => b.at.localeCompare(a.at));
+    body = c ? (
+      <>
+        <h1 className="cl-h1">{c.name}</h1>
+        <p className="cl-lede">
+          {c.callDay != null ? `One video a week. Footage filmed before the ${WEEKDAYS[c.callDay]} call starts that week's edit; a paid week with no footage is forfeited.` : "No membership yet."}
+        </p>
+        <h3 className="cl-h3">Membership</h3>
+        <WeekStrip db={db} client={c} open={setOpenId} />
+        {lead && (
+          <div className="cl-form" style={{ marginTop: 12 }}>
+            <button className="cl-btn" onClick={() => pay(c.id)}>Record a payment (4 weeks)</button>
+            {pays[0] && <span className="cl-muted">Last payment {shortDate(pays[0].at)}</span>}
+          </div>
+        )}
+        <h3 className="cl-h3">Script bank</h3>
+        <BankChips db={db} client={c} />
+        <FilmStrip videos={rows} filter={filter} setFilter={setFilter} />
+        <h3 className="cl-h3">In production</h3>
+        <VideoTable rows={rows.filter(v => !v.archived && v.stage !== "live" && (!filter || v.stage === filter))} db={db} me={me} open={setOpenId} showClient={false} />
+        {live.length > 0 && (<><h3 className="cl-h3">Live</h3><VideoTable rows={live} db={db} me={me} open={setOpenId} showClient={false} /></>)}
+      </>
+    ) : <p className="cl-empty">That client no longer exists.</p>;
+  } else if (page.tab === "team") {
+    const team = db.people.filter(p => p.role !== "client" && p.role !== "lead");
+    body = (
+      <>
+        <h1 className="cl-h1">Team</h1>
+        <p className="cl-lede">What is sitting with each person right now.</p>
+        {unassigned.length > 0 && (<><h3 className="cl-h3">Needs an editor</h3><VideoTable rows={unassigned} db={db} me={me} open={setOpenId} /></>)}
+        {team.map(p => {
+          const rows = db.videos.filter(v => isMine(v, p));
+          return (
+            <section key={p.id} className="cl-person">
+              <h3 className="cl-h3">{picker(p, 40)}{p.name} <span className="cl-muted">{ROLES[p.role].label} · {rows.length} video{rows.length === 1 ? "" : "s"}</span></h3>
+              <TodoList person={p} tasks={db.tasks} canAdd canToggle mutate={mutate} />
+              <VideoTable rows={rows} db={db} me={me} open={setOpenId} />
+            </section>
+          );
+        })}
+      </>
+    );
+  } else if (page.tab === "settings") {
+    body = (
+      <>
+        <h1 className="cl-h1">Settings</h1>
+        <h3 className="cl-h3">New video</h3>
+        <div className="cl-form">
+          <select value={draft.client} onChange={e => setDraft({ ...draft, client: e.target.value })}>
+            <option value="">Choose a client</option>
+            {db.clients.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+          </select>
+          <input placeholder="Working title" value={draft.title} onChange={e => setDraft({ ...draft, title: e.target.value })} />
+          <button className="cl-btn" onClick={addVideo}>Add video</button>
+        </div>
+        <h3 className="cl-h3">Clients</h3>
+        <div className="cl-clients">
+          {db.clients.map(c => (
+            <div key={c.id} className="cl-client-row">
+              <b>{c.name}</b>
+              <label className="cl-field"><span>Call day</span>
+                <select value={c.callDay ?? ""} onChange={e => updateClient(c.id, { callDay: e.target.value === "" ? null : +e.target.value })}>
+                  <option value="">Not set</option>
+                  {[1, 2, 3, 4, 5].map(d => <option key={d} value={d}>{WEEKDAYS[d]}</option>)}
+                </select>
+              </label>
+              <label className="cl-field"><span>Script floor</span>
+                <input type="number" min="0" value={c.bankFloor ?? 2} onChange={e => updateClient(c.id, { bankFloor: Math.max(0, parseInt(e.target.value) || 0) })} />
+              </label>
+            </div>
+          ))}
+        </div>
+        <div className="cl-form" style={{ marginTop: 10 }}>
+          <input placeholder="New client name" value={draft.clientName} onChange={e => setDraft({ ...draft, clientName: e.target.value })} />
+          <button className="cl-btn ghost" onClick={addClient}>Add client</button>
+        </div>
+        <h3 className="cl-h3">New teammate</h3>
+        <div className="cl-form">
+          <input placeholder="Name" value={draft.person} onChange={e => setDraft({ ...draft, person: e.target.value })} />
+          <select value={draft.role} onChange={e => setDraft({ ...draft, role: e.target.value })}>
+            {["writer", "editor", "publisher"].map(r => <option key={r} value={r}>{ROLES[r].label}</option>)}
+          </select>
+          <button className="cl-btn ghost" onClick={addPerson}>Add teammate</button>
+        </div>
+        <h3 className="cl-h3">Editor pictures</h3>
+        <div className="cl-editors">
+          {db.people.filter(p => p.role === "editor").map(p => (
+            <div key={p.id} className="cl-editor">{picker(p, 64)}<span>{p.name}</span></div>
+          ))}
+        </div>
+        <h3 className="cl-h3">Stage allowances</h3>
+        <div className="cl-stages">
+          {STAGES.filter(s => s.owner).map((s, i) => (
+            <div key={s.id} className="cl-stage-row">
+              <span className="cl-frame-step">{i + 1}</span>
+              <span>{s.name}{CHECKS[s.id] ? " · checklist" : ""}</span>
+              <span className="cl-chip" style={{ background: ROLES[s.owner].soft, color: ROLES[s.owner].color }}>{ROLES[s.owner].label}</span>
+              <span className="cl-muted">{s.days ? `${s.days} business day${s.days > 1 ? "s" : ""}` : "No clock"}</span>
+            </div>
+          ))}
+        </div>
+        <h3 className="cl-h3">Data</h3>
+        <p className="cl-muted" style={{ marginBottom: 8 }}>Everything is saved in your browser for this app.</p>
+        <button className="cl-btn ghost" onClick={reset}>Restore demo data</button>
+      </>
+    );
+  } else {
+    const waiting = active.filter(v => !isMine(v, me));
+    const client = me.role === "client" ? db.clients.find(c => c.id === me.clientId) : null;
+    body = (
+      <>
+        {me.role !== "client" ? (
+          <div className="cl-profile">{picker(me, 72)}<div><h1 className="cl-h1">My queue</h1><p className="cl-muted">{me.name} · {ROLES[me.role].label}</p></div></div>
+        ) : (
+          <h1 className="cl-h1">Hi, {me.name}</h1>
+        )}
+        <p className="cl-lede">
+          {mine.length ? `${mine.length} video${mine.length > 1 ? "s" : ""} waiting on you.` : "Nothing waiting on you."}
+          {lead && late.length ? ` ${late.length} past due across the studio.` : ""}
+        </p>
+        {client && (<><h3 className="cl-h3">Your weeks</h3><WeekStrip db={db} client={client} open={setOpenId} /></>)}
+        <VideoTable rows={mine} db={db} me={me} open={setOpenId} showClient={me.role !== "client"} />
+        {me.role !== "client" && (<><h3 className="cl-h3">To-dos</h3><TodoList person={me} tasks={db.tasks} canAdd={lead} canToggle={canEditPerson(me)} mutate={mutate} /></>)}
+        {waiting.length > 0 && (
+          <details className="cl-fold">
+            <summary>{waiting.length} with someone else</summary>
+            <VideoTable rows={waiting} db={db} me={me} open={setOpenId} showClient={me.role !== "client"} />
+          </details>
+        )}
+      </>
+    );
+  }
+
+  return (
+    <div className={`cl-root ${dark ? "dark" : ""}`}>
+      <style>{CSS}</style>
+      <header className="cl-top">
+        <span className="cl-logo">Cutline</span>
+        <span className="cl-spacer" />
+        <label className="cl-viewas">
+          <span>Viewing as</span>
+          <select value={meId} onChange={e => { setMeId(e.target.value); setPage({ tab: "queue" }); setFilter(null); setOpenId(null); }}>
+            {Object.keys(ROLES).map(r => (
+              <optgroup key={r} label={ROLES[r].label}>
+                {db.people.filter(p => p.role === r).map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+              </optgroup>
+            ))}
+          </select>
+        </label>
+        <button className="cl-mode" onClick={() => setDark(!dark)} aria-label="Toggle dark mode">{dark ? "Light" : "Dark"}</button>
+        {typeof window !== "undefined" && window.cutlineAuth && (
+          <button className="cl-mode" onClick={window.cutlineAuth.signOut} title={window.cutlineAuth.email}>Sign out</button>
+        )}
+      </header>
+      <div className="cl-shell">
+        <nav className="cl-side">
+          {nav.map(([k, label, n]) => (
+            <button key={k} className={`cl-nav ${page.tab === k ? "on" : ""}`} onClick={() => { setPage({ tab: k }); setFilter(null); }}>
+              {label}{n ? <span className="cl-count">{n}</span> : null}
+            </button>
+          ))}
+          {clientsShown.length > 0 && <p className="cl-group">Clients</p>}
+          {clientsShown.map(c => (
+            <button key={c.id} className={`cl-nav ${page.tab === "client" && page.id === c.id ? "on" : ""}`}
+              onClick={() => { setPage({ tab: "client", id: c.id }); setFilter(null); }}>
+              {c.name}
+            </button>
+          ))}
+        </nav>
+        <main className="cl-main">{body}</main>
+      </div>
+      {openVideo && (
+        <VideoModal key={openVideo.id + openVideo.stage} v={openVideo} db={db} me={me}
+          update={update} mutate={mutate} close={() => setOpenId(null)} />
+      )}
+      {toast && <div className="cl-toast" role="status">{toast}</div>}
+    </div>
+  );
+}
+
+const CSS = `
+@import url('https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,600;12..96,800&display=swap');
+.cl-root{--paper:#EDF0F3;--card:#FFFFFF;--ink:#1A2230;--muted:#5B6676;--line:#D5DBE3;--accent:#0F766E;--late:#B42318;--film:#1A2230;--okbg:#DDF3EF;--warnbg:#FCEBD7;--warn:#9A4B06;
+  font-family:'Bricolage Grotesque',ui-sans-serif,system-ui,sans-serif;background:var(--paper);color:var(--ink);min-height:100vh;font-size:15px;line-height:1.5}
+.cl-root.dark{--paper:#10151D;--card:#18202B;--ink:#E6EBF2;--muted:#94A0B2;--line:#2A3444;--accent:#2DD4BF;--late:#F97066;--film:#05080C;--okbg:#113A36;--warnbg:#3D2A12;--warn:#F5B971}
+.cl-root *{box-sizing:border-box}
+.cl-root button,.cl-root input,.cl-root select,.cl-root textarea{font:inherit;color:inherit}
+.cl-root :focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.cl-loading{padding:60px;text-align:center;color:var(--muted)}
+.cl-top{display:flex;align-items:center;gap:14px;padding:12px 22px;border-bottom:1px solid var(--line);background:var(--card);position:sticky;top:0;z-index:10}
+.cl-logo{font-weight:800;font-size:22px;letter-spacing:-.03em}
+.cl-spacer{flex:1}
+.cl-viewas{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:13px}
+.cl-root select,.cl-root input,.cl-root textarea{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:7px 10px}
+.cl-mode{background:none;border:1px solid var(--line);border-radius:8px;padding:6px 12px;cursor:pointer}
+.cl-shell{display:grid;grid-template-columns:210px minmax(0,1fr)}
+.cl-side{padding:18px 12px;border-right:1px solid var(--line);display:flex;flex-direction:column;gap:2px;min-height:calc(100vh - 58px)}
+.cl-nav{display:flex;align-items:center;text-align:left;background:none;border:0;border-radius:8px;padding:8px 12px;cursor:pointer}
+.cl-nav:hover{background:var(--line)}
+.cl-nav.on{background:var(--ink);color:var(--paper)}
+.cl-count{margin-left:auto;font-size:12px;font-weight:600;opacity:.75}
+.cl-group{margin:18px 12px 4px;font-size:13px;color:var(--muted)}
+.cl-main{padding:34px 40px 80px;max-width:1120px}
+.cl-h1{font-size:40px;font-weight:800;letter-spacing:-.035em;line-height:1.05;margin:0 0 8px}
+.cl-h2{font-size:28px;font-weight:800;letter-spacing:-.02em;margin:0 0 10px}
+.cl-h3{font-size:18px;font-weight:600;margin:30px 0 10px;display:flex;align-items:center;gap:10px}
+.cl-lede{color:var(--muted);margin:0 0 22px;max-width:62ch}
+.cl-muted{color:var(--muted);font-size:13px;font-weight:400;margin:0}
+.cl-empty{color:var(--muted);padding:6px 0;margin:0}
+.cl-strip{display:flex;gap:6px;overflow-x:auto;background:var(--film);padding:18px 12px;border-radius:6px;margin-top:12px;
+  background-image:radial-gradient(circle,var(--paper) 3px,transparent 3.5px),radial-gradient(circle,var(--paper) 3px,transparent 3.5px);
+  background-size:18px 18px,18px 18px;background-position:0 -2px,0 calc(100% + 2px);background-repeat:repeat-x}
+.cl-frame{flex:1 0 92px;min-height:104px;background:var(--card);border:2px solid transparent;border-radius:3px;cursor:pointer;
+  display:flex;flex-direction:column;align-items:flex-start;padding:0 10px 8px;text-align:left;transition:transform .15s}
+.cl-frame:hover{transform:translateY(-2px)}
+.cl-frame.on{border-color:var(--accent)}
+.cl-frame.empty .cl-frame-n{color:var(--line)}
+.cl-frame-bar{align-self:stretch;height:4px;margin:0 -10px 6px}
+.cl-frame-n{font-size:32px;font-weight:800;line-height:1;letter-spacing:-.03em}
+.cl-frame-name{font-size:12px;line-height:1.25;margin-top:auto;color:var(--muted)}
+.cl-frame-step{display:inline-grid;place-content:center;min-width:17px;height:17px;border-radius:50%;background:var(--paper);font-size:10px;font-weight:600;color:var(--muted)}
+.cl-weeks{display:grid;grid-template-columns:repeat(10,minmax(0,1fr));gap:6px}
+.cl-week{display:flex;flex-direction:column;align-items:flex-start;gap:2px;min-height:64px;padding:8px;border-radius:6px;border:1px solid var(--line);background:var(--card);text-align:left;cursor:default;overflow:hidden}
+.cl-week:not(:disabled){cursor:pointer}
+.cl-week.now{box-shadow:inset 0 0 0 2px var(--ink)}
+.cl-week-date{font-size:12px;font-weight:600}
+.cl-week-label{font-size:11px;color:var(--muted);line-height:1.25;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.cl-week.used{background:var(--okbg);border-color:transparent}
+.cl-week.live{background:var(--accent);border-color:transparent}
+.cl-week.live .cl-week-date,.cl-week.live .cl-week-label{color:var(--card)}
+.cl-week.paid{border:2px solid var(--accent)}
+.cl-week.lost{background:var(--warnbg);border-color:transparent}
+.cl-week.lost .cl-week-label{color:var(--warn)}
+.cl-week.unpaid{border:1px dashed var(--late)}
+.cl-week.unpaid .cl-week-label{color:var(--late)}
+.cl-week.open{background:transparent;border-style:dashed}
+.cl-table{display:flex;flex-direction:column;border-top:1px solid var(--line)}
+.cl-row{display:grid;grid-template-columns:160px minmax(0,1fr) auto 110px 110px 64px;gap:14px;align-items:center;background:none;border:0;
+  border-bottom:1px solid var(--line);padding:11px 6px;text-align:left;cursor:pointer}
+.cl-row:hover{background:var(--card)}
+.cl-row-client{font-size:13px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cl-row-title{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cl-row-ed{display:flex;align-items:center;gap:6px;overflow:hidden;white-space:nowrap;font-size:13px;color:var(--muted)}
+.cl-row-go{font-size:13px;color:var(--muted);text-align:right}
+.cl-row-go.mine{color:var(--accent);font-weight:600}
+.cl-chip{display:inline-block;padding:3px 10px;border-radius:999px;font-size:12px;font-weight:600;background:var(--line);color:var(--muted);white-space:nowrap}
+.cl-chip.ok,.cl-chip.filmed{background:var(--okbg);color:var(--accent)}
+.cl-chip.warn{background:var(--warnbg);color:var(--warn)}
+.cl-due{font-size:13px;color:var(--muted);white-space:nowrap}
+.cl-due.soon{color:var(--ink);font-weight:600}
+.cl-due.late{color:var(--late);font-weight:600}
+.cl-fold{margin-top:26px}
+.cl-fold summary{cursor:pointer;color:var(--muted);margin-bottom:8px}
+.cl-person{margin-top:8px}
+.cl-av{display:inline-grid;place-content:center;flex:none;border-radius:50%;object-fit:cover;font-weight:600;background:var(--line);color:var(--muted)}
+.cl-who{display:inline-flex;align-items:center;gap:6px;font-size:14px}
+.cl-avpick{position:relative;display:inline-flex}
+.cl-avpick label{position:relative;display:inline-flex;cursor:pointer;border-radius:50%}
+.cl-avpick label:hover .cl-av{filter:brightness(.88)}
+.cl-avpick label:focus-within{outline:2px solid var(--accent);outline-offset:2px}
+.cl-avpen{position:absolute;right:-3px;bottom:-3px;width:20px;height:20px;border-radius:50%;background:var(--card);border:1px solid var(--line);display:grid;place-content:center;font-size:11px;color:var(--muted)}
+.cl-avx{position:absolute;top:-5px;right:-5px;width:20px;height:20px;border-radius:50%;border:1px solid var(--line);background:var(--card);color:var(--muted);font-size:13px;line-height:1;cursor:pointer;opacity:0}
+.cl-avpick:hover .cl-avx,.cl-avx:focus-visible{opacity:1}
+.cl-sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
+.cl-profile{display:flex;align-items:center;gap:18px;margin-bottom:8px}
+.cl-profile .cl-h1{margin:0}
+.cl-editors{display:flex;flex-wrap:wrap;gap:20px}
+.cl-editor{display:flex;flex-direction:column;align-items:center;gap:6px;font-size:14px}
+.cl-todos{display:flex;flex-direction:column;gap:4px;margin-bottom:14px;max-width:720px}
+.cl-todo{display:flex;align-items:center;gap:12px;padding:6px 0;border-bottom:1px solid var(--line)}
+.cl-todo label{display:flex;align-items:center;gap:10px;flex:1;cursor:pointer}
+.cl-todo.done span{text-decoration:line-through;color:var(--muted)}
+.cl-todo input[type=checkbox],.cl-checks input{width:17px;height:17px;accent-color:var(--accent)}
+.cl-undo{background:none;border:1px solid var(--line);border-radius:6px;padding:2px 10px;font-size:13px;font-weight:600;color:var(--accent);cursor:pointer}
+.cl-undo:hover{border-color:var(--accent)}
+.cl-todo.removed{color:var(--muted);font-size:14px}
+.cl-todo.removed span{flex:1}
+.cl-x-small{background:none;border:0;color:var(--muted);font-size:18px;cursor:pointer;line-height:1;padding:0 4px}
+.cl-x-small:hover{color:var(--late)}
+.cl-overlay{position:fixed;inset:0;background:rgba(10,14,20,.5);display:flex;align-items:flex-start;justify-content:center;padding:48px 16px;overflow:auto;z-index:20}
+.cl-modal{position:relative;background:var(--card);border-radius:12px;padding:28px 30px;width:100%;max-width:680px;box-shadow:0 30px 60px -20px rgba(0,0,0,.4)}
+.cl-x{position:absolute;top:14px;right:16px;background:none;border:0;font-size:26px;cursor:pointer;color:var(--muted)}
+.cl-title-in{width:100%;font-size:26px!important;font-weight:800;letter-spacing:-.02em;border:1px dashed transparent!important;padding:2px 4px!important;margin:2px 0 10px -4px}
+.cl-title-in:hover{border-color:var(--line)!important}
+.cl-meta{display:flex;flex-wrap:wrap;align-items:center;gap:12px;margin-bottom:12px}
+.cl-notebox{border-left:3px solid var(--accent);background:var(--paper);padding:10px 14px;border-radius:0 8px 8px 0;margin:14px 0}
+.cl-notebox p{margin:4px 0 0;white-space:pre-wrap}
+.cl-fields{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.cl-field{display:flex;flex-direction:column;gap:4px;font-size:13px;color:var(--muted)}
+.cl-field input,.cl-field select{color:var(--ink)}
+.cl-actions{margin-top:22px;padding-top:18px;border-top:1px solid var(--line)}
+.cl-actions textarea{width:100%;min-height:74px;resize:vertical}
+.cl-checks{border:1px solid var(--line);border-radius:8px;padding:10px 14px 12px;margin:0 0 14px;display:flex;flex-direction:column;gap:8px}
+.cl-checks legend{font-size:13px;color:var(--muted);padding:0 4px}
+.cl-checks label{display:flex;align-items:center;gap:10px;cursor:pointer}
+.cl-warn{color:var(--late);font-size:14px;margin:0 0 10px}
+.cl-btnrow{display:flex;justify-content:space-between;gap:10px;margin-top:10px}
+.cl-btnrow.end{justify-content:flex-end}
+.cl-btn{background:var(--accent);color:#fff!important;border:0;border-radius:8px;padding:9px 16px;font-weight:600;cursor:pointer}
+.cl-root.dark .cl-btn{color:#06201D!important}
+.cl-btn.ghost{background:none;color:var(--ink)!important;border:1px solid var(--line)}
+.cl-btn:disabled{opacity:.4;cursor:not-allowed}
+.cl-history{margin-top:20px;font-size:14px}
+.cl-history summary{cursor:pointer;color:var(--muted)}
+.cl-history ul{padding-left:18px;margin:8px 0 0}
+.cl-history li{margin:3px 0}
+.cl-form{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.cl-form input:not([type=date]){min-width:240px}
+.cl-clients{display:flex;flex-direction:column;gap:10px;max-width:640px}
+.cl-client-row{display:grid;grid-template-columns:1fr 160px 110px;gap:12px;align-items:end;padding-bottom:10px;border-bottom:1px solid var(--line)}
+.cl-stages{display:flex;flex-direction:column;gap:6px;max-width:600px}
+.cl-stage-row{display:grid;grid-template-columns:24px 1fr auto 130px;gap:10px;align-items:center}
+.cl-toast{position:fixed;bottom:22px;left:50%;transform:translateX(-50%);background:var(--ink);color:var(--paper);padding:9px 16px;border-radius:999px;font-size:14px;z-index:30;max-width:90vw;text-align:center}
+@media (max-width:820px){
+  .cl-shell{grid-template-columns:1fr}
+  .cl-side{flex-direction:row;flex-wrap:wrap;min-height:0;border-right:0;border-bottom:1px solid var(--line)}
+  .cl-group{display:none}
+  .cl-main{padding:24px 18px 60px}
+  .cl-row{grid-template-columns:minmax(0,1fr) auto;row-gap:4px}
+  .cl-row-client,.cl-row-ed,.cl-row-go{display:none}
+  .cl-fields{grid-template-columns:1fr}
+  .cl-weeks{grid-template-columns:repeat(5,minmax(0,1fr))}
+  .cl-client-row{grid-template-columns:1fr 1fr}
+  .cl-viewas span{display:none}
+}
+@media (prefers-reduced-motion:reduce){.cl-frame{transition:none}.cl-frame:hover{transform:none}}
+`;
+
+
+/* ================================================================
+   STEP: paste your two Supabase values between the quotes below.
+   Find them in Supabase: Project Settings → API.
+   ================================================================ */
+const SUPABASE_URL = "https://abcdefg.supabase.co";
+const SUPABASE_ANON_KEY = "sb_publishable_xxxxxxxx";
+
+const CONFIGURED = SUPABASE_URL.startsWith("https://") && !SUPABASE_ANON_KEY.startsWith("PASTE");
+const sb = CONFIGURED ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null;
+
+/* Shared saving: everyone reads and writes the same row in Supabase */
+if (sb) {
+  window.storage = {
+    get: async key => {
+      const { data, error } = await sb.from("app_state").select("value").eq("key", key).maybeSingle();
+      if (error) throw error;
+      return data ? { key, value: data.value } : null;
+    },
+    set: async (key, value) => {
+      const { error } = await sb.from("app_state").upsert({ key, value, updated_at: new Date().toISOString() });
+      if (error) throw error;
+      return { key, value };
+    },
+    subscribe: (key, cb) => {
+      const refresh = async () => {
+        try { const r = await window.storage.get(key); if (r) cb(r.value); } catch (e) { console.error(e); }
+      };
+      const ch = sb.channel("app_state_changes")
+        .on("postgres_changes", { event: "*", schema: "public", table: "app_state" }, p => {
+          if (!p.new || p.new.key === key) refresh();
+        })
+        .subscribe();
+      window.addEventListener("focus", refresh);
+      const timer = setInterval(refresh, 30000);
+      return () => { sb.removeChannel(ch); window.removeEventListener("focus", refresh); clearInterval(timer); };
+    },
+  };
+}
+
+const GATE_CSS = `
+.gt{font-family:'Bricolage Grotesque',ui-sans-serif,system-ui,sans-serif;min-height:100vh;display:grid;place-items:center;background:#EDF0F3;color:#1A2230;padding:20px}
+.gt-box{background:#fff;border:1px solid #D5DBE3;border-radius:12px;padding:32px;max-width:420px;width:100%}
+.gt h1{font-size:30px;font-weight:800;letter-spacing:-.03em;margin:0 0 6px}
+.gt p{color:#5B6676;margin:0 0 16px;line-height:1.5}
+.gt input{width:100%;box-sizing:border-box;font:inherit;padding:10px 12px;border:1px solid #D5DBE3;border-radius:8px;margin-bottom:10px}
+.gt button{width:100%;font:inherit;font-weight:600;background:#0F766E;color:#fff;border:0;border-radius:8px;padding:10px;cursor:pointer}
+.gt button.link{background:none;color:#0F766E;width:auto;padding:0;margin-top:12px}
+.gt button:disabled{opacity:.5}
+.gt .err{color:#B42318}
+.gt code{background:#EDF0F3;padding:2px 6px;border-radius:4px}
+`;
+
+function Gate() {
+  const [session, setSession] = useState(undefined);
+  const [allowed, setAllowed] = useState(null);
+  const [email, setEmail] = useState("");
+  const [sent, setSent] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+
+  useEffect(() => {
+    if (!sb) return;
+    sb.auth.getSession().then(({ data }) => setSession(data.session));
+    const { data } = sb.auth.onAuthStateChange((_event, s) => setSession(s));
+    return () => data.subscription.unsubscribe();
+  }, []);
+  useEffect(() => {
+    if (!sb || !session) { setAllowed(null); return; }
+    sb.rpc("is_team_member").then(({ data, error }) => setAllowed(!error && data === true));
+  }, [session]);
+
+  const signOut = async () => { await sb.auth.signOut(); window.cutlineAuth = null; setSent(false); };
+  const send = async () => {
+    setErr("");
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email.trim())) { setErr("Type a full email address, like name@company.com."); return; }
+    setBusy(true);
+    const { error } = await sb.auth.signInWithOtp({ email: email.trim(), options: { emailRedirectTo: window.location.origin } });
+    setBusy(false);
+    if (error) setErr(error.message.includes("rate") ? "Too many login emails were sent. Wait a few minutes and try again." : error.message);
+    else setSent(true);
+  };
+
+  const box = children => <div className="gt"><style>{GATE_CSS}</style><div className="gt-box">{children}</div></div>;
+
+  if (!sb) return box(<><h1>Almost there</h1><p>Open <code>index.html</code> and paste your Supabase Project URL and anon public key near the top of the file.</p></>);
+  if (session === undefined || (session && allowed === null)) return box(<p>Loading…</p>);
+  if (!session) return box(sent ? (
+    <><h1>Check your email</h1><p>We sent a login link to <b>{email}</b>. Open it on this device to get in.</p>
+      <button className="link" onClick={() => setSent(false)}>Use a different email</button></>
+  ) : (
+    <><h1>Cutline</h1><p>Type your work email and we'll send you a login link.</p>
+      <input type="email" placeholder="you@company.com" value={email} onChange={e => setEmail(e.target.value)}
+        onKeyDown={e => e.key === "Enter" && send()} autoFocus />
+      <button onClick={send} disabled={busy}>{busy ? "Sending…" : "Send me a login link"}</button>
+      {err && <p className="err" style={{ marginTop: 10 }}>{err}</p>}</>
+  ));
+  if (!allowed) return box(<><h1>Not on the team list</h1><p><b>{session.user.email}</b> isn't allowed in yet. Ask your team lead to add this email in Supabase.</p>
+    <button onClick={signOut}>Sign out</button></>);
+
+  window.cutlineAuth = { email: session.user.email, signOut };
+  return <Cutline />;
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<Gate />);
+</script>
+</body>
+</html>

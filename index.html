@@ -1949,7 +1949,13 @@
         /* @__PURE__ */ React.createElement("span", { className: "ps-row-go" }, "View")
       )))));
     }
-    return /* @__PURE__ */ React.createElement("div", { className: `ps-root ${dark ? "dark" : ""}` }, /* @__PURE__ */ React.createElement("style", null, CSS), /* @__PURE__ */ React.createElement("header", { className: "ps-top" }, /* @__PURE__ */ React.createElement("span", { className: "ps-logo" }, "Projeclab Studios"), /* @__PURE__ */ React.createElement("span", { className: "ps-spacer" }), authLock ? /* @__PURE__ */ React.createElement("span", { className: "ps-viewas" }, /* @__PURE__ */ React.createElement("b", null, me.name), /* @__PURE__ */ React.createElement("span", null, " \xB7 ", (ROLES[me.role] || {}).label || me.role)) : /* @__PURE__ */ React.createElement("label", { className: "ps-viewas" }, /* @__PURE__ */ React.createElement("span", null, "Viewing as"), /* @__PURE__ */ React.createElement("select", { value: meId, onChange: (e) => {
+    return /* @__PURE__ */ React.createElement("div", { className: `ps-root ${dark ? "dark" : ""}` }, /* @__PURE__ */ React.createElement("style", null, CSS), /* @__PURE__ */ React.createElement("header", { className: "ps-top" }, /* @__PURE__ */ React.createElement("button", { className: "ps-logo", title: "Back to My tasks", onClick: () => {
+      setPage({ tab: "queue" });
+      setFilter(null);
+      setOpenId(null);
+      setTaskId(null);
+      setPersonId(null);
+    } }, "Projeclab Studios"), /* @__PURE__ */ React.createElement("span", { className: "ps-spacer" }), authLock ? /* @__PURE__ */ React.createElement("span", { className: "ps-viewas" }, /* @__PURE__ */ React.createElement("b", null, me.name), /* @__PURE__ */ React.createElement("span", null, " \xB7 ", (ROLES[me.role] || {}).label || me.role)) : /* @__PURE__ */ React.createElement("label", { className: "ps-viewas" }, /* @__PURE__ */ React.createElement("span", null, "Viewing as"), /* @__PURE__ */ React.createElement("select", { value: meId, onChange: (e) => {
       setMeId(e.target.value);
       setPage({ tab: "queue" });
       setFilter(null);
@@ -2009,7 +2015,8 @@
 .ps-root :focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 .ps-loading{padding:60px;text-align:center;color:var(--muted)}
 .ps-top{display:flex;align-items:center;gap:14px;padding:12px 22px;border-bottom:1px solid var(--line);background:var(--card);position:sticky;top:0;z-index:10}
-.ps-logo{font-weight:800;font-size:22px;letter-spacing:-.03em}
+.ps-logo{font-weight:800;font-size:22px;letter-spacing:-.03em;background:none;border:0;padding:0;color:inherit;cursor:pointer;font-family:inherit}
+.ps-logo:hover{color:var(--accent)}
 .ps-spacer{flex:1}
 .ps-viewas{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:13px}
 .ps-root select,.ps-root input,.ps-root textarea{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:7px 10px}

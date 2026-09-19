@@ -32,9 +32,12 @@
     hr: { label: "HR Supervisor", color: "#2C7A7B", soft: "#DDF0F0" },
     client: { label: "Client", color: "#B83280", soft: "#FBE4F0" },
     editor: { label: "Editor", color: "#6B46C1", soft: "#EEE7FB" },
+    intern: { label: "Intern", color: "#4C51BF", soft: "#E4E7FB" },
     qa: { label: "QA", color: "#0E7490", soft: "#DCEFF5" }
   };
   var isManager = (role) => role === "lead" || role === "coordinator";
+  /* Interns sit on the edit bench: same queue, same permissions, same stages. */
+  var isEditor = (role) => role === "editor" || role === "intern";
   var BACK_TO = { qa: "editing", final: "editing", ready: "editing" };
   var NEEDS = {
     in_progress: ["footageUrl", "Footage folder link"],
@@ -222,6 +225,38 @@
       return (db.videos || []).filter((v) => v.clientId === c.id && v.stage === "ready" && !v.archived).slice().sort((a, b) => (b.enteredAt || "").localeCompare(a.enteredAt || "")).slice(0, 12).map((v) => ({ key: `v${v.id}`, label: v.title || "Untitled video", start: v.enteredAt ? startOfDay(new Date(v.enteredAt)) : null, videoId: v.id }));
     }
     return invoicePeriods(c, when).slice().reverse();
+  };
+  /* One rule for who may see a task, used by search and by the client pages so
+     the two can't drift apart. Managers see everything; everyone else sees the
+     studio's work but not management's own admin or people paperwork. */
+  var canSeeTask = (db, me, t) => {
+    if (!me) return false;
+    if (isManager(me.role) || me.role === "hr") return true;
+    if (t.personId === me.id || t.reviewFrom === me.id || t.qaAuthorId === me.id) return true;
+    if (NO_QA_KINDS.includes(t.kind)) return false;
+    if (OPEN_KINDS.includes(t.kind)) return true;
+    const owner = db.people.find((p) => p.id === (t.reviewFrom || t.qaAuthorId || t.personId));
+    return !(owner && (owner.role === "lead" || owner.role === "hr"));
+  };
+  /* Which clients belong on someone's sidebar: managers see the roster, a client
+     sees themselves, everyone else sees only the ones they have work with. */
+  var clientsFor = (db, me) => {
+    const all = db.clients || [];
+    if (!me) return [];
+    if (me.role === "client") return all.filter((c) => c.id === me.clientId);
+    if (isManager(me.role)) return all;
+    if (me.role === "hr") return [];
+    const ids = /* @__PURE__ */ new Set();
+    (db.videos || []).forEach((v) => {
+      if (v.archived || !v.clientId) return;
+      const mine = isEditor(me.role) ? v.editorId === me.id : me.role === "qa" ? v.stage === "qa" || v.editorId === me.id : false;
+      if (mine) ids.add(v.clientId);
+    });
+    (db.tasks || []).forEach((t) => {
+      if (!t.clientId || t.done) return;
+      if (t.personId === me.id || t.reviewFrom === me.id || t.qaAuthorId === me.id) ids.add(t.clientId);
+    });
+    return all.filter((c) => ids.has(c.id));
   };
   var invoiceMark = (db, cid, key) => (db.invoices || []).find((x) => x.id === `${cid}:${key}`) || null;
   var invoiceDue = (row, when) => !row.start || row.start <= startOfDay(when || /* @__PURE__ */ new Date());
@@ -529,13 +564,13 @@
     const s = stageOf(v.stage);
     if (!me || v.archived || !s || !s.owner) return false;
     if (v.stage === "in_progress" && v.footageAt) return false;
-    if (s.owner === "lead" ? !isManager(me.role) : me.role !== s.owner) return false;
-    if (me.role === "editor") return v.editorId === me.id;
+    if (s.owner === "lead" ? !isManager(me.role) : s.owner === "editor" ? !isEditor(me.role) : me.role !== s.owner) return false;
+    if (isEditor(me.role)) return v.editorId === me.id;
     if (me.role === "client") return v.clientId === me.clientId;
     return true;
   };
   var canAct = (v, me) => me && (isManager(me.role) ? !v.archived && !(v.stage === "in_progress" && v.footageAt) : isMine(v, me));
-  var visibleTo = (v, me) => me.role === "client" ? v.clientId === me.clientId : me.role === "editor" ? v.editorId === me.id : true;
+  var visibleTo = (v, me) => me.role === "client" ? v.clientId === me.clientId : isEditor(me.role) ? v.editorId === me.id : true;
   var resizeImage = (file) => new Promise((resolve, reject) => {
     if (!file || !file.type.startsWith("image/")) return reject(new Error("not-image"));
     const reader = new FileReader();
@@ -886,13 +921,13 @@
     );
   }
 
-  function SentToClient({ db, client, openTask, openVideo }) {
+  function SentToClient({ db, me, client, openTask, openVideo }) {
     const h = React.createElement;
     const vids = db.videos
-      .filter((v) => v.clientId === client.id && v.stage === "ready" && !v.archived)
+      .filter((v) => v.clientId === client.id && v.stage === "ready" && !v.archived && visibleTo(v, me))
       .map((v) => ({ kind: "video", id: v.id, title: v.title || "Untitled", at: v.enteredAt }));
     const tasks = (db.tasks || [])
-      .filter((t) => t.clientId === client.id && t.done)
+      .filter((t) => t.clientId === client.id && t.done && canSeeTask(db, me, t))
       .map((t) => ({ kind: "task", id: t.id, title: t.text, at: t.doneAt || t.at }));
     const rows = [...vids, ...tasks].sort((a, b) => String(b.at || "").localeCompare(String(a.at || "")));
     return h("details", { className: "ps-fold" },
@@ -914,9 +949,9 @@
     );
   }
 
-  function ClientTasks({ db, client, openTask }) {
+  function ClientTasks({ db, me, client, openTask }) {
     const h = React.createElement;
-    const rows = (db.tasks || []).filter((t) => t.clientId === client.id && !t.done).slice().sort(doneSort);
+    const rows = (db.tasks || []).filter((t) => t.clientId === client.id && !t.done && canSeeTask(db, me, t)).slice().sort(doneSort);
     if (!rows.length) return h("p", { className: "ps-empty" }, "No open tasks tagged to this client.");
     return h("div", { className: "ps-table" }, rows.map((t) => {
       const who = db.people.find((x) => x.id === t.personId);
@@ -1037,24 +1072,7 @@
     const hit = (s) => String(s || "").toLowerCase().includes(needle);
     let tasks = [], videos = [], clients = [];
     if (needle.length >= 2) {
-      /* Editors and QA see the team's work, but not management or people paperwork.
-         Judge by whose work it IS, not who is holding it right now - a finished
-         edit sits in the Lead's queue for final check but still belongs to the editor. */
-      const privateRoles = ["lead", "hr"];
-      tasks = (db.tasks || []).filter((t) => {
-        const mineAnyway = t.personId === me.id || t.reviewFrom === me.id || t.qaAuthorId === me.id;
-        if (!canSeeAll && !mineAnyway) {
-          if (NO_QA_KINDS.includes(t.kind)) return false;
-          /* Studio work is open to everyone whoever started it - only management's
-             own admin ("Other") stays behind the wall. */
-          if (!OPEN_KINDS.includes(t.kind)) {
-            const ownerId = t.reviewFrom || t.qaAuthorId || t.personId;
-            const owner = db.people.find((p) => p.id === ownerId);
-            if (owner && privateRoles.includes(owner.role)) return false;
-          }
-        }
-        return hit(t.text) || hit(t.details) || hit(t.notes);
-      }).slice().sort(doneSort).slice(0, 12);
+      tasks = (db.tasks || []).filter((t) => canSeeTask(db, me, t) && (hit(t.text) || hit(t.details) || hit(t.notes))).slice().sort(doneSort).slice(0, 12);
       videos = (db.videos || []).filter((v) => visibleTo(v, me) && (hit(v.title) || hit(v.notes))).slice(0, 8);
       clients = lead ? (db.clients || []).filter((c) => hit(c.name)).slice(0, 5) : [];
     }
@@ -1670,7 +1688,7 @@
         onChange: (e) => update(v.id, { [key]: e.target.value })
       }
     ));
-    return /* @__PURE__ */ React.createElement("div", { className: "ps-overlay", onClick: (e) => e.target === e.currentTarget && close() }, /* @__PURE__ */ React.createElement("div", { className: "ps-modal", role: "dialog", "aria-modal": "true" }, /* @__PURE__ */ React.createElement("button", { className: "ps-x", onClick: close, "aria-label": "Close" }, "\xD7"), /* @__PURE__ */ React.createElement("p", { className: "ps-muted" }, client ? client.name : "", week ? ` \xB7 week of ${shortDate(fromIso(week.start))}` : ""), isManager(me.role) ? /* @__PURE__ */ React.createElement("input", { className: "ps-title-in", value: v.title, onChange: (e) => update(v.id, { title: e.target.value }) }) : /* @__PURE__ */ React.createElement("h2", { className: "ps-h2" }, v.title), /* @__PURE__ */ React.createElement("div", { className: "ps-meta" }, /* @__PURE__ */ React.createElement(OwnerChip, { v }), editorP && /* @__PURE__ */ React.createElement("span", { className: "ps-who" }, /* @__PURE__ */ React.createElement(Avatar, { person: editorP, size: 24 }), editorP.name), /* @__PURE__ */ React.createElement(Due, { date: dueOf(v) }), logged > 0 && !v.startedAt && /* @__PURE__ */ React.createElement("span", { className: "ps-muted" }, hms(logged), " at the desk"), v.rounds > 0 && /* @__PURE__ */ React.createElement("span", { className: "ps-muted" }, v.rounds, " client revision round", v.rounds > 1 ? "s" : "")), v.notes && !v.archived && v.stage !== "ready" && /* @__PURE__ */ React.createElement("div", { className: "ps-notebox" }, /* @__PURE__ */ React.createElement("b", null, "Latest notes"), /* @__PURE__ */ React.createElement("p", null, v.notes)), /* @__PURE__ */ React.createElement("div", { className: "ps-fields" }, field("scriptUrl", "Script doc"), field("footageUrl", "Footage folder"), field("editUrl", "Edit review link"), field("publishUrl", "Published video"), /* @__PURE__ */ React.createElement("label", { className: "ps-field" }, /* @__PURE__ */ React.createElement("span", null, "Editor"), /* @__PURE__ */ React.createElement(
+    return /* @__PURE__ */ React.createElement("div", { className: "ps-overlay", onClick: (e) => e.target === e.currentTarget && close() }, /* @__PURE__ */ React.createElement("div", { className: "ps-modal", role: "dialog", "aria-modal": "true" }, /* @__PURE__ */ React.createElement("button", { className: "ps-x", onClick: close, "aria-label": "Close" }, "\xD7"), /* @__PURE__ */ React.createElement("p", { className: "ps-muted" }, client ? client.name : ""), isManager(me.role) ? /* @__PURE__ */ React.createElement("input", { className: "ps-title-in", value: v.title, onChange: (e) => update(v.id, { title: e.target.value }) }) : /* @__PURE__ */ React.createElement("h2", { className: "ps-h2" }, v.title), /* @__PURE__ */ React.createElement("div", { className: "ps-meta" }, /* @__PURE__ */ React.createElement(OwnerChip, { v }), editorP && /* @__PURE__ */ React.createElement("span", { className: "ps-who" }, /* @__PURE__ */ React.createElement(Avatar, { person: editorP, size: 24 }), editorP.name), /* @__PURE__ */ React.createElement(Due, { date: dueOf(v) }), logged > 0 && !v.startedAt && /* @__PURE__ */ React.createElement("span", { className: "ps-muted" }, hms(logged), " at the desk"), v.rounds > 0 && /* @__PURE__ */ React.createElement("span", { className: "ps-muted" }, v.rounds, " client revision round", v.rounds > 1 ? "s" : "")), v.notes && !v.archived && v.stage !== "ready" && /* @__PURE__ */ React.createElement("div", { className: "ps-notebox" }, /* @__PURE__ */ React.createElement("b", null, "Latest notes"), /* @__PURE__ */ React.createElement("p", null, v.notes)), /* @__PURE__ */ React.createElement("div", { className: "ps-fields" }, field("scriptUrl", "Script doc"), field("footageUrl", "Footage folder"), field("editUrl", "Edit review link"), field("publishUrl", "Published video"), /* @__PURE__ */ React.createElement("label", { className: "ps-field" }, /* @__PURE__ */ React.createElement("span", null, "Editor"), /* @__PURE__ */ React.createElement(
       "select",
       {
         value: v.editorId || "",
@@ -1678,7 +1696,7 @@
         onChange: (e) => update(v.id, { editorId: e.target.value || null, ...log(`Editor set to ${e.target.value ? who(e.target.value) : "nobody"}`) })
       },
       /* @__PURE__ */ React.createElement("option", { value: "" }, "Unassigned"),
-      db.people.filter((p) => p.role === "editor").map((p) => /* @__PURE__ */ React.createElement("option", { key: p.id, value: p.id }, p.name, isAway(p) ? " (away)" : ""))
+      db.people.filter((p) => isEditor(p.role)).map((p) => /* @__PURE__ */ React.createElement("option", { key: p.id, value: p.id }, p.name, isAway(p) ? " (away)" : ""))
     ))), act && /* @__PURE__ */ React.createElement("div", { className: "ps-actions" }, checks.length > 0 && /* @__PURE__ */ React.createElement("fieldset", { className: "ps-checks" }, /* @__PURE__ */ React.createElement("legend", null, "Tick every item before passing"), checks.map((c, i) => /* @__PURE__ */ React.createElement("label", { key: c }, /* @__PURE__ */ React.createElement("input", { type: "checkbox", checked: !!ticks[i], onChange: () => setTicks((t) => ({ ...t, [i]: !t[i] })) }), /* @__PURE__ */ React.createElement("span", null, c)))), (missing || noEditor) && /* @__PURE__ */ React.createElement("p", { className: "ps-warn" }, noEditor ? "Assign an editor before this can move on." : `Add the ${need[1].toLowerCase()} to continue.`), v.stage === "editing" && /* @__PURE__ */ React.createElement("div", { className: "ps-clockbox" }, v.startedAt ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("span", { className: "ps-clock big" }, /* @__PURE__ */ React.createElement("span", { className: "ps-dot", "aria-hidden": "true" }), /* @__PURE__ */ React.createElement(Elapsed, { from: v.startedAt, interval: 1e3, seconds: true })), /* @__PURE__ */ React.createElement("span", { className: "ps-muted" }, "In progress since ", new Date(v.startedAt).toLocaleString(void 0, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }), logged ? ` \xB7 ${hms(logged)} logged earlier` : ""), /* @__PURE__ */ React.createElement("button", { className: "ps-btn ghost small ps-clock-act", onClick: pauseEditing }, "Pause")) : /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("button", { className: "ps-btn", onClick: startEditing }, logged ? "Resume editing" : "Start editing"), /* @__PURE__ */ React.createElement("span", { className: "ps-muted" }, logged ? `Paused with ${hms(logged)} on the clock.` : "Start the clock before this can go to QA."))), v.stage === "in_progress" ? /* @__PURE__ */ React.createElement("div", { className: "ps-btnrow end" }, /* @__PURE__ */ React.createElement("button", { className: "ps-btn", disabled: missing, onClick: footageIn }, "Footage uploaded")) : /* @__PURE__ */ React.createElement(React.Fragment, null, BACK_TO[v.stage] && /* @__PURE__ */ React.createElement(
       "textarea",
       {
@@ -1773,7 +1791,7 @@
     const removeTask = (id) => mutate((n) => {
       n.tasks = n.tasks.filter((y) => y.id !== id);
     });
-    const waiting = person.role === "editor" ? db.videos.filter((v) => v.editorId === person.id && !v.archived && stageOf(v.stage) && stageOf(v.stage).owner === "client") : [];
+    const waiting = isEditor(person.role) ? db.videos.filter((v) => v.editorId === person.id && !v.archived && stageOf(v.stage) && stageOf(v.stage).owner === "client") : [];
     return /* @__PURE__ */ React.createElement("section", { className: "ps-plate" }, /* @__PURE__ */ React.createElement("header", { className: "ps-plate-top" }, /* @__PURE__ */ React.createElement(Avatar, { person, size: 28 }), /* @__PURE__ */ React.createElement("b", null, person.name), /* @__PURE__ */ React.createElement("span", { className: "ps-chip", style: { background: ROLES[person.role].soft, color: ROLES[person.role].color } }, ROLES[person.role].label), /* @__PURE__ */ React.createElement("span", { className: "ps-count-pill" }, rows.length + openTasks)), tasks.length > 0 && /* @__PURE__ */ React.createElement("div", { className: "ps-tasks" }, tasks.map((t) => /* @__PURE__ */ React.createElement("div", { key: t.id, className: `ps-task ${t.done ? "done" : ""}` }, /* @__PURE__ */ React.createElement(
       "input",
       {
@@ -1812,6 +1830,9 @@
     }, [dark]);
     const [toast, setToast] = useState("");
     const [confirming, setConfirming] = useState(null);
+    const [handover, setHandoverState] = useState("");
+    const handoverRef = useRef("");
+    const setHandover = (v) => { handoverRef.current = v; setHandoverState(v); };
     const [personId, setPersonId] = useState(null);
     const [authLock, setAuthLock] = useState(null);
     const [draft, setDraft] = useState({ client: "", title: "", person: "", role: "editor", clientName: "", ...suggestedDue() });
@@ -2064,38 +2085,55 @@
       if (p.id === me.id) return setToast("You can't remove yourself.");
       const open = db.tasks.filter((t) => t.personId === p.id && !t.done).length;
       const vids = db.videos.filter((v) => v.editorId === p.id && !v.archived).length;
-      const bits = [];
-      if (open) bits.push(`${open} open task${open > 1 ? "s" : ""} will move to you`);
-      if (vids) bits.push(`${vids} video${vids > 1 ? "s" : ""} will need a new editor`);
-      if (!open && !vids) bits.push("They have no open work right now.");
+      const others = db.people.filter((x) => x.id !== p.id && x.role !== "client");
+      /* Default to another editor, since that's who can pick the work straight up. */
+      const fallback = others.find((x) => isEditor(x.role)) || others.find((x) => x.id === me.id) || others[0];
+      setHandover(fallback ? fallback.id : "");
+      const load = [open ? `${open} open task${open > 1 ? "s" : ""}` : "", vids ? `${vids} video${vids > 1 ? "s" : ""}` : ""].filter(Boolean).join(" and ");
       setConfirming({
         title: `Remove ${p.name}?`,
-        lines: bits,
+        lines: load ? [`${load} sitting with them.`] : ["They have no open work right now."],
+        pick: load ? {
+          label: "Hand their work to",
+          options: [
+            ...others.map((x) => ({ value: x.id, label: `${x.name} \xB7 ${(ROLES[x.role] || {}).label || x.role}` })),
+            { value: "", label: "Nobody \u2014 tasks come to me, videos wait for an editor" }
+          ]
+        } : null,
         confirmLabel: "Remove",
         onYes: () => doRemovePerson(p)
       });
     };
     const doRemovePerson = (p) => {
       const at = (/* @__PURE__ */ new Date()).toISOString();
+      const pickedId = handoverRef.current;
       mutate((n) => {
+        const to = n.people.find((x) => x.id === pickedId && x.id !== p.id) || n.people.find((x) => x.id === me.id);
+        const taskTo = to || { id: me.id, name: "you", role: "lead" };
+        /* Only an editor can actually pick up an edit; anyone else and the video
+           goes back in the pool rather than sitting with someone who can't work it. */
+        const videoTo = to && isEditor(to.role) ? to : null;
         n.tasks.forEach((t) => {
           if (t.personId === p.id) {
-            t.personId = me.id;
-            t.history = [...t.history || [], { at, by: me.id, text: `${p.name} was removed \u2014 task moved to you` }];
+            t.personId = taskTo.id;
+            t.history = [...t.history || [], { at, by: me.id, text: `${p.name} was removed \u2014 task moved to ${taskTo.id === me.id ? "you" : taskTo.name}` }];
           }
-          if (t.reviewFrom === p.id) t.reviewFrom = me.id;
-          if (t.qaFrom === p.id) t.qaFrom = me.id;
+          if (t.reviewFrom === p.id) t.reviewFrom = taskTo.id;
+          if (t.qaFrom === p.id) t.qaFrom = taskTo.id;
+          if (t.qaAuthorId === p.id) t.qaAuthorId = taskTo.id;
         });
         n.videos.forEach((v) => {
           if (v.editorId === p.id) {
-            v.editorId = null;
-            v.history = [...v.history || [], { at, by: me.id, text: `${p.name} was removed \u2014 needs a new editor` }];
+            v.editorId = videoTo ? videoTo.id : null;
+            v.history = [...v.history || [], { at, by: me.id, text: videoTo ? `${p.name} was removed \u2014 reassigned to ${videoTo.name}` : `${p.name} was removed \u2014 needs a new editor` }];
           }
         });
         n.people = n.people.filter((x) => x.id !== p.id);
         if (!n.people.some((x) => x.role === "qa")) n.qaCleared = true;
       });
-      setToast(`${p.name} removed.`);
+      const chosen = db.people.find((x) => x.id === pickedId);
+      setToast(chosen && chosen.id !== p.id ? `${p.name} removed \u2014 their work is now with ${chosen.id === me.id ? "you" : chosen.name}.` : `${p.name} removed.`);
+      setHandover("");
     };
     const reset = () => {
       setConfirming({
@@ -2122,7 +2160,7 @@
       ...me.role !== "client" && !isLead ? [["timeoff", "Time off", leaveStats(db, me.id).left]] : [],
       ...isLead ? [["settings", "Settings", ""]] : []
     ];
-    const clientsShown = me.role === "client" ? db.clients.filter((c) => c.id === me.clientId) : isLead ? db.clients : [];
+    const clientsShown = clientsFor(db, me);
     let body;
     if (page.tab === "pipeline") {
       const rows = filter ? active.filter((v) => v.stage === filter) : active;
@@ -2131,7 +2169,7 @@
       const c = db.clients.find((x) => x.id === page.id);
       const rows = visible.filter((v) => v.clientId === page.id);
       const live = rows.filter((v) => v.stage === "ready");
-      body = c ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("h1", { className: "ps-h1" }, c.name), /* @__PURE__ */ React.createElement("div", { className: "ps-meta" }, /* @__PURE__ */ React.createElement("span", { className: `ps-chip ${clientKindOf(c).id === "personal" ? "warn" : "ok"}` }, clientKindOf(c).label)), /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Invoices"), /* @__PURE__ */ React.createElement("p", { className: "ps-muted" }, billingOf(c).label, " \xB7 ", billingOf(c).note, unpaidFor(db, c).length > 0 ? ` \u2014 ${unpaidFor(db, c).length} unpaid` : billingOf(c).id === "none" ? "" : " \u2014 all settled", lead && billingOf(c).id !== "none" ? ". Click a line to mark it paid or unpaid." : ""), /* @__PURE__ */ React.createElement(InvoiceList, { db, client: c, canEdit: lead, toggle: (k) => toggleInvoice(c.id, k), addJob: (label) => addJobInvoice(c.id, label), removeJob: (k) => removeJobInvoice(c.id, k), openVideo: setOpenId }), /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Pipeline"), /* @__PURE__ */ React.createElement(FilmStrip, { videos: rows, filter, setFilter }), /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "In production"), /* @__PURE__ */ React.createElement(VideoTable, { rows: rows.filter((v) => !v.archived && v.stage !== "ready" && (!filter || v.stage === filter)), db, me, open: setOpenId, showClient: false }), /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Tasks"), /* @__PURE__ */ React.createElement(ClientTasks, { db, client: c, openTask: setTaskId }), /* @__PURE__ */ React.createElement(SentToClient, { db, client: c, openTask: setTaskId, openVideo: setOpenId })) : /* @__PURE__ */ React.createElement("p", { className: "ps-empty" }, "That client no longer exists.");
+      body = c ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("h1", { className: "ps-h1" }, c.name), /* @__PURE__ */ React.createElement("div", { className: "ps-meta" }, /* @__PURE__ */ React.createElement("span", { className: `ps-chip ${clientKindOf(c).id === "personal" ? "warn" : "ok"}` }, clientKindOf(c).label)), lead && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Invoices"), /* @__PURE__ */ React.createElement("p", { className: "ps-muted" }, billingOf(c).label, " \xB7 ", billingOf(c).note, unpaidFor(db, c).length > 0 ? ` \u2014 ${unpaidFor(db, c).length} unpaid` : billingOf(c).id === "none" ? "" : " \u2014 all settled", billingOf(c).id !== "none" ? ". Click a line to mark it paid or unpaid." : ""), /* @__PURE__ */ React.createElement(InvoiceList, { db, client: c, canEdit: lead, toggle: (k) => toggleInvoice(c.id, k), addJob: (label) => addJobInvoice(c.id, label), removeJob: (k) => removeJobInvoice(c.id, k), openVideo: setOpenId })), /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Pipeline"), /* @__PURE__ */ React.createElement(FilmStrip, { videos: rows, filter, setFilter }), /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "In production"), /* @__PURE__ */ React.createElement(VideoTable, { rows: rows.filter((v) => !v.archived && v.stage !== "ready" && (!filter || v.stage === filter)), db, me, open: setOpenId, showClient: false }), /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Tasks"), /* @__PURE__ */ React.createElement(ClientTasks, { db, me, client: c, openTask: setTaskId }), /* @__PURE__ */ React.createElement(SentToClient, { db, me, client: c, openTask: setTaskId, openVideo: setOpenId })) : /* @__PURE__ */ React.createElement("p", { className: "ps-empty" }, "That client no longer exists.");
     } else if (page.tab === "timeoff") {
       body = /* @__PURE__ */ React.createElement(TimeOffPage, { db, me, mutate, setToast });
     } else if (page.tab === "calendar") {
@@ -2163,7 +2201,7 @@
     } }), /* @__PURE__ */ React.createElement("span", { className: "ps-chip" }, (ROLES[p.role] || {}).label || p.role), /* @__PURE__ */ React.createElement("input", { className: "ps-person-mail", type: "email", placeholder: "login email", value: p.email || "", onChange: (e) => {
       const v = e.target.value;
       mutate((n) => { const t = n.people.find((x) => x.id === p.id); if (t) t.email = v.trim(); });
-    } }), p.id === me.id ? /* @__PURE__ */ React.createElement("span", { className: "ps-muted ps-person-you" }, "you") : /* @__PURE__ */ React.createElement("button", { className: "ps-x-small", "aria-label": `Remove ${p.name}`, onClick: () => removePerson(p) }, "\xD7")))), /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "New teammate"), /* @__PURE__ */ React.createElement("div", { className: "ps-form" }, /* @__PURE__ */ React.createElement("input", { placeholder: "Name", value: draft.person, onChange: (e) => setDraft({ ...draft, person: e.target.value }) }), /* @__PURE__ */ React.createElement("input", { type: "email", placeholder: "Login email (optional)", value: draft.personEmail || "", onChange: (e) => setDraft({ ...draft, personEmail: e.target.value }) }), /* @__PURE__ */ React.createElement("select", { value: draft.role, onChange: (e) => setDraft({ ...draft, role: e.target.value }) }, ["coordinator", "hr", "editor", "qa"].map((r) => /* @__PURE__ */ React.createElement("option", { key: r, value: r }, ROLES[r].label))), /* @__PURE__ */ React.createElement("button", { className: "ps-btn ghost", onClick: addPerson }, "Add teammate")), /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Editor pictures"), /* @__PURE__ */ React.createElement("div", { className: "ps-editors" }, db.people.filter((p) => p.role === "editor").map((p) => /* @__PURE__ */ React.createElement("div", { key: p.id, className: "ps-editor" }, picker(p, 64), /* @__PURE__ */ React.createElement("span", null, p.name)))), /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Stage allowances"), /* @__PURE__ */ React.createElement("div", { className: "ps-stages" }, STAGES.filter((s) => s.owner).map((s, i) => /* @__PURE__ */ React.createElement("div", { key: s.id, className: "ps-stage-row" }, /* @__PURE__ */ React.createElement("span", { className: "ps-frame-step" }, i + 1), /* @__PURE__ */ React.createElement("span", null, s.name, CHECKS[s.id] ? " \xB7 checklist" : ""), /* @__PURE__ */ React.createElement("span", { className: "ps-chip", style: { background: ROLES[s.owner].soft, color: ROLES[s.owner].color } }, ROLES[s.owner].label), /* @__PURE__ */ React.createElement("span", { className: "ps-muted" }, s.days ? `${s.days} business day${s.days > 1 ? "s" : ""}` : "No clock")))), /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "SOP templates"), /* @__PURE__ */ React.createElement(TemplateEditor, { db, mutate, setToast }), /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Backups"), /* @__PURE__ */ React.createElement("p", { className: "ps-muted", style: { marginBottom: 10 } }, "Every change saves automatically for the whole team. Download a copy now and then so you have one outside the system."), /* @__PURE__ */ React.createElement("div", { className: "ps-form" }, /* @__PURE__ */ React.createElement("button", { className: "ps-btn", onClick: downloadBackup }, "Download a backup"), /* @__PURE__ */ React.createElement("label", { className: "ps-btn ghost ps-filebtn" }, "Restore from a backup", /* @__PURE__ */ React.createElement("input", { type: "file", accept: "application/json,.json", hidden: true, onChange: (e) => { const f = e.target.files && e.target.files[0]; e.target.value = ""; restoreBackup(f); } }))), /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Data"), /* @__PURE__ */ React.createElement("p", { className: "ps-muted", style: { marginBottom: 8 } }, "Replaces everything with the sample studio. Only for testing."), /* @__PURE__ */ React.createElement("button", { className: "ps-btn ghost", onClick: reset }, "Restore demo data"));
+    } }), p.id === me.id ? /* @__PURE__ */ React.createElement("span", { className: "ps-muted ps-person-you" }, "you") : /* @__PURE__ */ React.createElement("button", { className: "ps-x-small", "aria-label": `Remove ${p.name}`, onClick: () => removePerson(p) }, "\xD7")))), /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "New teammate"), /* @__PURE__ */ React.createElement("div", { className: "ps-form" }, /* @__PURE__ */ React.createElement("input", { placeholder: "Name", value: draft.person, onChange: (e) => setDraft({ ...draft, person: e.target.value }) }), /* @__PURE__ */ React.createElement("input", { type: "email", placeholder: "Login email (optional)", value: draft.personEmail || "", onChange: (e) => setDraft({ ...draft, personEmail: e.target.value }) }), /* @__PURE__ */ React.createElement("select", { value: draft.role, onChange: (e) => setDraft({ ...draft, role: e.target.value }) }, ["coordinator", "hr", "editor", "intern", "qa"].map((r) => /* @__PURE__ */ React.createElement("option", { key: r, value: r }, ROLES[r].label))), /* @__PURE__ */ React.createElement("button", { className: "ps-btn ghost", onClick: addPerson }, "Add teammate")), /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Editor pictures"), /* @__PURE__ */ React.createElement("div", { className: "ps-editors" }, db.people.filter((p) => isEditor(p.role)).map((p) => /* @__PURE__ */ React.createElement("div", { key: p.id, className: "ps-editor" }, picker(p, 64), /* @__PURE__ */ React.createElement("span", null, p.name)))), /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Stage allowances"), /* @__PURE__ */ React.createElement("div", { className: "ps-stages" }, STAGES.filter((s) => s.owner).map((s, i) => /* @__PURE__ */ React.createElement("div", { key: s.id, className: "ps-stage-row" }, /* @__PURE__ */ React.createElement("span", { className: "ps-frame-step" }, i + 1), /* @__PURE__ */ React.createElement("span", null, s.name, CHECKS[s.id] ? " \xB7 checklist" : ""), /* @__PURE__ */ React.createElement("span", { className: "ps-chip", style: { background: ROLES[s.owner].soft, color: ROLES[s.owner].color } }, ROLES[s.owner].label), /* @__PURE__ */ React.createElement("span", { className: "ps-muted" }, s.days ? `${s.days} business day${s.days > 1 ? "s" : ""}` : "No clock")))), /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "SOP templates"), /* @__PURE__ */ React.createElement(TemplateEditor, { db, mutate, setToast }), /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Backups"), /* @__PURE__ */ React.createElement("p", { className: "ps-muted", style: { marginBottom: 10 } }, "Every change saves automatically for the whole team. Download a copy now and then so you have one outside the system."), /* @__PURE__ */ React.createElement("div", { className: "ps-form" }, /* @__PURE__ */ React.createElement("button", { className: "ps-btn", onClick: downloadBackup }, "Download a backup"), /* @__PURE__ */ React.createElement("label", { className: "ps-btn ghost ps-filebtn" }, "Restore from a backup", /* @__PURE__ */ React.createElement("input", { type: "file", accept: "application/json,.json", hidden: true, onChange: (e) => { const f = e.target.files && e.target.files[0]; e.target.value = ""; restoreBackup(f); } }))), /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Data"), /* @__PURE__ */ React.createElement("p", { className: "ps-muted", style: { marginBottom: 8 } }, "Replaces everything with the sample studio. Only for testing."), /* @__PURE__ */ React.createElement("button", { className: "ps-btn ghost", onClick: reset }, "Restore demo data"));
     } else {
       const client = me.role === "client" ? db.clients.find((c) => c.id === me.clientId) : null;
       const waiting = client ? active.filter((v) => !isMine(v, me)) : [];
@@ -2181,7 +2219,7 @@
       if (approvalCount) waitingLine += `${waitingLine ? " " : ""}${plural(approvalCount, "time-off request")} to approve.`;
       if (!waitingLine) waitingLine = "Nothing waiting on you.";
       const myTasksDone = db.tasks.filter((t) => t.done && t.doneAt && (t.reviewFrom || t.personId) === me.id);
-      const myVideosLive = me.role === "editor" ? db.videos.filter((v) => v.stage === "ready" && v.editorId === me.id && v.enteredAt) : [];
+      const myVideosLive = isEditor(me.role) ? db.videos.filter((v) => v.stage === "ready" && v.editorId === me.id && v.enteredAt) : [];
       const recentlyFinished = [
         ...myTasksDone.map((t) => ({ kind: "task", id: t.id, title: t.text, at: t.doneAt })),
         ...myVideosLive.map((v) => ({ kind: "video", id: v.id, title: v.title, at: v.enteredAt }))
@@ -2251,7 +2289,7 @@
         mutate,
         close: () => setOpenId(null)
       }
-    ), openTaskRow && /* @__PURE__ */ React.createElement(TaskModal, { t: openTaskRow, db, me, lead, updateTask, mutate, setToast, close: () => setTaskId(null) }), personId && db.people.find((p) => p.id === personId) && /* @__PURE__ */ React.createElement(PersonModal, { person: db.people.find((p) => p.id === personId), db, me, mutate, close: () => setPersonId(null) }), confirming && /* @__PURE__ */ React.createElement("div", { className: "ps-overlay", onClick: (e) => e.target === e.currentTarget && setConfirming(null) }, /* @__PURE__ */ React.createElement("div", { className: "ps-modal ps-confirm", role: "dialog", "aria-modal": "true" }, /* @__PURE__ */ React.createElement("h2", { className: "ps-h2" }, confirming.title), (confirming.lines || []).map((l, i) => /* @__PURE__ */ React.createElement("p", { key: i, className: "ps-muted ps-confirm-line" }, l)), /* @__PURE__ */ React.createElement("div", { className: "ps-confirm-btns" }, /* @__PURE__ */ React.createElement("button", { className: "ps-btn ghost", onClick: () => setConfirming(null) }, "Cancel"), /* @__PURE__ */ React.createElement("button", { className: "ps-btn danger", onClick: () => {
+    ), openTaskRow && /* @__PURE__ */ React.createElement(TaskModal, { t: openTaskRow, db, me, lead, updateTask, mutate, setToast, close: () => setTaskId(null) }), personId && db.people.find((p) => p.id === personId) && /* @__PURE__ */ React.createElement(PersonModal, { person: db.people.find((p) => p.id === personId), db, me, mutate, close: () => setPersonId(null) }), confirming && /* @__PURE__ */ React.createElement("div", { className: "ps-overlay", onClick: (e) => e.target === e.currentTarget && setConfirming(null) }, /* @__PURE__ */ React.createElement("div", { className: "ps-modal ps-confirm", role: "dialog", "aria-modal": "true" }, /* @__PURE__ */ React.createElement("h2", { className: "ps-h2" }, confirming.title), (confirming.lines || []).map((l, i) => /* @__PURE__ */ React.createElement("p", { key: i, className: "ps-muted ps-confirm-line" }, l)), confirming.pick && /* @__PURE__ */ React.createElement("label", { className: "ps-field ps-confirm-pick" }, /* @__PURE__ */ React.createElement("span", null, confirming.pick.label), /* @__PURE__ */ React.createElement("select", { value: handover, onChange: (e) => setHandover(e.target.value) }, confirming.pick.options.map((o) => /* @__PURE__ */ React.createElement("option", { key: o.value || "none", value: o.value }, o.label)))), /* @__PURE__ */ React.createElement("div", { className: "ps-confirm-btns" }, /* @__PURE__ */ React.createElement("button", { className: "ps-btn ghost", onClick: () => setConfirming(null) }, "Cancel"), /* @__PURE__ */ React.createElement("button", { className: "ps-btn danger", onClick: () => {
       const f = confirming.onYes;
       setConfirming(null);
       f();
@@ -2313,6 +2351,8 @@
 .ps-frame-n{font-size:32px;font-weight:800;line-height:1;letter-spacing:-.03em}
 .ps-frame-name{font-size:12px;line-height:1.25;margin-top:auto;color:var(--muted)}
 .ps-frame-step{display:inline-grid;place-content:center;min-width:17px;height:17px;border-radius:50%;background:var(--paper);font-size:10px;font-weight:600;color:var(--muted)}
+.ps-confirm-pick{margin:4px 0 14px;max-width:340px}
+.ps-confirm-pick select{width:100%}
 .ps-invoices{display:flex;flex-direction:column;gap:6px;max-width:560px}
 .ps-invoice-row{display:flex;align-items:center;gap:6px}
 .ps-job-add{margin-top:10px;max-width:560px}

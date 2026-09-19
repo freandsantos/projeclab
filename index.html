@@ -396,6 +396,43 @@
     return { clients, people, videos, weeks, payments, tasks, meetings: [], timeoff: [], templates };
   }
   var STORE_KEY = "cutline-state-v2";
+  /* Every list in the saved file. Each row carries an id, which is how two
+     people's edits are reconciled instead of one flattening the other. */
+  var COLLECTIONS = ["clients", "people", "videos", "weeks", "payments", "tasks", "meetings", "timeoff", "templates"];
+  /* Three versions in play: `base` is what we know reached the server, `mine` is
+     what's on this screen, `theirs` is what the server holds now. Replay only the
+     rows this screen actually touched on top of theirs - everything else survives. */
+  var mergeStates = (base, mine, theirs) => {
+    const out = { ...theirs };
+    const byId = (list) => {
+      const m = /* @__PURE__ */ new Map();
+      (Array.isArray(list) ? list : []).forEach((x) => { if (x && x.id != null) m.set(x.id, x); });
+      return m;
+    };
+    COLLECTIONS.forEach((k) => {
+      const b = byId(base[k]), m = byId(mine[k]), t = byId(theirs[k]);
+      const merged = new Map(t);
+      m.forEach((row, id) => {
+        const before = b.get(id);
+        /* Added here, or changed here since our last save - our version wins. */
+        if (!before || JSON.stringify(before) !== JSON.stringify(row)) merged.set(id, row);
+      });
+      b.forEach((_, id) => { if (!m.has(id)) merged.delete(id); });
+      /* Keep this screen's ordering for rows it knows, then anything new from them. */
+      const order = [], seen = /* @__PURE__ */ new Set();
+      (Array.isArray(mine[k]) ? mine[k] : []).forEach((x) => {
+        if (x && merged.has(x.id) && !seen.has(x.id)) { order.push(merged.get(x.id)); seen.add(x.id); }
+      });
+      merged.forEach((row, id) => { if (!seen.has(id)) order.push(row); });
+      out[k] = order;
+    });
+    /* Plain settings (the pinned notice, flags): only overwrite what we changed. */
+    Object.keys(mine).forEach((k) => {
+      if (COLLECTIONS.includes(k)) return;
+      if (JSON.stringify(base[k]) !== JSON.stringify(mine[k])) out[k] = mine[k];
+    });
+    return out;
+  };
   var OLD_STAGE_MAP = {
     idea: "todo",
     idea_qc: "todo",
@@ -1806,8 +1843,22 @@
       if (json === lastSaved.current) return;
       const t = setTimeout(async () => {
         try {
-          await window.storage.set(STORE_KEY, json, false);
-          lastSaved.current = json;
+          let toSave = json, merged = null;
+          /* Look before writing. If a teammate saved since we loaded, replay our
+             edits on top of theirs rather than overwriting their work. */
+          try {
+            const now = await window.storage.get(STORE_KEY, false);
+            const theirs = now && now.value;
+            if (theirs && theirs !== lastSaved.current && lastSaved.current) {
+              merged = mergeStates(JSON.parse(lastSaved.current), db, normalize(JSON.parse(theirs)));
+              toSave = JSON.stringify(merged);
+            }
+          } catch (e) {
+            console.error("Merge check failed - saving this screen as-is", e);
+          }
+          await window.storage.set(STORE_KEY, toSave, false);
+          lastSaved.current = toSave;
+          if (merged) setDb(merged);
         } catch (e) {
           console.error("Save failed", e);
           setToast("Your last change didn't save. Check your internet, then try again.");

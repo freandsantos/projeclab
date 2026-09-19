@@ -865,6 +865,43 @@
     }));
   }
 
+  function PinnedNotice({ db, me, mutate, canEdit }) {
+    const h = React.createElement;
+    const notice = db.notice && db.notice.text ? db.notice : null;
+    const [editing, setEditing] = useState(false);
+    const [text, setText] = useState(notice ? notice.text : "");
+    const who = (id) => (db.people.find((p) => p.id === id) || {}).name || "Someone";
+    const save = () => {
+      const t = text.trim().slice(0, 240);
+      mutate((n) => { n.notice = t ? { text: t, by: me.id, at: (/* @__PURE__ */ new Date()).toISOString() } : null; });
+      setEditing(false);
+    };
+    if (editing) return h("div", { className: "ps-pin editing" },
+      h("textarea", { className: "ps-pin-in", rows: 2, maxLength: 240, autoFocus: true,
+        placeholder: "Something everyone should see — studio closed Monday, new client signed…",
+        value: text, onChange: (e) => setText(e.target.value) }),
+      h("div", { className: "ps-pin-acts" },
+        h("span", { className: "ps-muted" }, text.trim().length, " / 240"),
+        h("button", { className: "ps-btn ghost small", onClick: () => { setText(notice ? notice.text : ""); setEditing(false); } }, "Cancel"),
+        h("button", { className: "ps-btn small", onClick: save }, "Pin it")
+      )
+    );
+    if (!notice) return canEdit
+      ? h("button", { className: "ps-pin-add", onClick: () => { setText(""); setEditing(true); } }, "📌 Pin a notice for the team")
+      : null;
+    return h("div", { className: "ps-pin" },
+      h("span", { className: "ps-pin-icon", "aria-hidden": "true" }, "📌"),
+      h("span", { className: "ps-pin-body" },
+        h("span", { className: "ps-pin-text" }, notice.text),
+        h("span", { className: "ps-muted ps-pin-by" }, who(notice.by), notice.at ? ` · ${shortDate(notice.at)}` : "")
+      ),
+      canEdit && h("span", { className: "ps-pin-acts" },
+        h("button", { className: "ps-btn ghost small", onClick: () => { setText(notice.text); setEditing(true); } }, "Edit"),
+        h("button", { className: "ps-x-small", "aria-label": "Remove notice", onClick: () => mutate((n) => { n.notice = null; }) }, "\xD7")
+      )
+    );
+  }
+
   function PersonModal({ person, db, me, mutate, close }) {
     const [tab, setTab] = useState("time");
     const [from, setFrom] = useState(isoDay(/* @__PURE__ */ new Date()));
@@ -1934,7 +1971,7 @@
         ...myTasksDone.map((t) => ({ kind: "task", id: t.id, title: t.text, at: t.doneAt })),
         ...myVideosLive.map((v) => ({ kind: "video", id: v.id, title: v.title, at: v.enteredAt }))
       ].sort((a, b) => b.at.localeCompare(a.at)).slice(0, 10);
-      body = /* @__PURE__ */ React.createElement(React.Fragment, null, me.role !== "client" ? /* @__PURE__ */ React.createElement("div", { className: "ps-profile" }, picker(me, 72), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("h1", { className: "ps-h1" }, "My tasks"), /* @__PURE__ */ React.createElement("p", { className: "ps-muted" }, me.name, " \xB7 ", ROLES[me.role].label))) : /* @__PURE__ */ React.createElement("h1", { className: "ps-h1" }, "Hi, ", me.name), /* @__PURE__ */ React.createElement("p", { className: "ps-lede" }, waitingLine, lead && late.length ? ` ${late.length} past due across the studio.` : ""), client && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Your weeks"), /* @__PURE__ */ React.createElement(WeekStrip, { db, client, open: setOpenId })), me.role !== "hr" && /* @__PURE__ */ React.createElement(VideoTable, { rows: mine, db, me, open: setOpenId, showClient: me.role !== "client" }), me.role !== "client" && canApproveTimeoff(db, me) && /* @__PURE__ */ React.createElement(TimeOffPanel, { db, me, mutate, setToast, queueOnly: true }), me.role !== "client" && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Tasks"), /* @__PURE__ */ React.createElement(TodoList, { person: me, tasks: db.tasks, clients: db.clients, canAdd: false, canToggle: canEditPerson(me), mutate, openTask: setTaskId, shareFinalCheck: lead })), (lead || me.role === "hr") && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Delegate"), /* @__PURE__ */ React.createElement(Delegate, { db, draft, setDraft, addTodo: delegateTodo })), client && waiting.length > 0 && /* @__PURE__ */ React.createElement("details", { className: "ps-fold" }, /* @__PURE__ */ React.createElement("summary", null, waiting.length, " with someone else"), /* @__PURE__ */ React.createElement(VideoTable, { rows: waiting, db, me, open: setOpenId, showClient: false })), !client && recentlyFinished.length > 0 && /* @__PURE__ */ React.createElement("details", { className: "ps-fold" }, /* @__PURE__ */ React.createElement("summary", null, "Recently finished (", recentlyFinished.length, ")"), /* @__PURE__ */ React.createElement("div", { className: "ps-table" }, recentlyFinished.map((f) => /* @__PURE__ */ React.createElement(
+      body = /* @__PURE__ */ React.createElement(React.Fragment, null, me.role !== "client" ? /* @__PURE__ */ React.createElement("div", { className: "ps-profile" }, picker(me, 72), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("h1", { className: "ps-h1" }, "My tasks"), /* @__PURE__ */ React.createElement("p", { className: "ps-muted" }, me.name, " \xB7 ", ROLES[me.role].label))) : /* @__PURE__ */ React.createElement("h1", { className: "ps-h1" }, "Hi, ", me.name), me.role !== "client" && /* @__PURE__ */ React.createElement(PinnedNotice, { db, me, mutate, canEdit: lead || me.role === "hr" }), /* @__PURE__ */ React.createElement("p", { className: "ps-lede" }, waitingLine, lead && late.length ? ` ${late.length} past due across the studio.` : ""), client && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Your weeks"), /* @__PURE__ */ React.createElement(WeekStrip, { db, client, open: setOpenId })), me.role !== "hr" && /* @__PURE__ */ React.createElement(VideoTable, { rows: mine, db, me, open: setOpenId, showClient: me.role !== "client" }), me.role !== "client" && canApproveTimeoff(db, me) && /* @__PURE__ */ React.createElement(TimeOffPanel, { db, me, mutate, setToast, queueOnly: true }), me.role !== "client" && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Tasks"), /* @__PURE__ */ React.createElement(TodoList, { person: me, tasks: db.tasks, clients: db.clients, canAdd: false, canToggle: canEditPerson(me), mutate, openTask: setTaskId, shareFinalCheck: lead })), (lead || me.role === "hr") && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Delegate"), /* @__PURE__ */ React.createElement(Delegate, { db, draft, setDraft, addTodo: delegateTodo })), client && waiting.length > 0 && /* @__PURE__ */ React.createElement("details", { className: "ps-fold" }, /* @__PURE__ */ React.createElement("summary", null, waiting.length, " with someone else"), /* @__PURE__ */ React.createElement(VideoTable, { rows: waiting, db, me, open: setOpenId, showClient: false })), !client && recentlyFinished.length > 0 && /* @__PURE__ */ React.createElement("details", { className: "ps-fold" }, /* @__PURE__ */ React.createElement("summary", null, "Recently finished (", recentlyFinished.length, ")"), /* @__PURE__ */ React.createElement("div", { className: "ps-table" }, recentlyFinished.map((f) => /* @__PURE__ */ React.createElement(
         "button",
         {
           key: `${f.kind}-${f.id}`,
@@ -2252,6 +2289,18 @@
 .ps-person-you{font-size:12px}
 .ps-filebtn{cursor:pointer;display:inline-flex;align-items:center}
 .ps-person-mail{flex:0 1 200px;min-width:0;padding:4px 8px;font-size:12.5px}
+.ps-pin{display:flex;align-items:flex-start;gap:10px;margin:0 0 16px;padding:11px 14px;background:var(--warnbg);border-radius:9px;max-width:720px}
+.ps-pin.editing{flex-direction:column;gap:8px}
+.ps-pin-icon{font-size:15px;line-height:1.5}
+.ps-pin-body{display:flex;flex-direction:column;gap:2px;flex:1;min-width:0}
+.ps-pin-text{color:var(--warn);font-weight:600;white-space:pre-wrap;overflow-wrap:anywhere}
+.ps-pin-by{font-size:12px}
+.ps-pin-acts{display:flex;align-items:center;gap:6px;align-self:flex-end}
+.ps-pin.editing .ps-pin-acts{width:100%;justify-content:flex-end}
+.ps-pin.editing .ps-pin-acts .ps-muted{margin-right:auto}
+.ps-pin-in{width:100%;min-width:0;font:inherit;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--card);color:var(--ink);resize:vertical}
+.ps-pin-add{background:none;border:1px dashed var(--line);border-radius:9px;color:var(--muted);font:inherit;font-size:13px;padding:8px 12px;margin:0 0 16px;cursor:pointer}
+.ps-pin-add:hover{border-color:var(--accent);color:var(--accent)}
 .ps-authwarn{margin:0 0 18px;padding:10px 14px;border-radius:8px;background:var(--warnbg);color:var(--warn);font-size:13px;line-height:1.5}
 .ps-pickpanel{position:absolute;top:calc(100% + 4px);left:0;background:var(--card);border:1px solid var(--line);border-radius:10px;box-shadow:0 18px 40px -12px rgba(0,0,0,.35);z-index:40;padding:8px}
 .ps-cal{width:224px}

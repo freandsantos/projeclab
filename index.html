@@ -1560,6 +1560,7 @@
     ), /* @__PURE__ */ React.createElement("div", { className: "ps-btnrow" }, atReview || atFinal ? /* @__PURE__ */ React.createElement("button", { className: "ps-btn ghost", disabled: !note.trim(), onClick: sendBack }, "Send back to ", backTo ? backTo.name : "them") : /* @__PURE__ */ React.createElement("button", { className: "ps-btn ghost", disabled: !note.trim(), onClick: addNote }, "Add note"), t.done ? /* @__PURE__ */ React.createElement("button", { className: "ps-btn", onClick: reopen }, "Reopen") : status === "todo" ? /* @__PURE__ */ React.createElement("button", { className: "ps-btn", onClick: start }, "Start task") : status === "in_progress" ? canGoToReview ? /* @__PURE__ */ React.createElement("button", { className: "ps-btn", disabled: !allTicked, onClick: sendToReview }, viaQA ? "Go to QA" : "Submit for review") : /* @__PURE__ */ React.createElement("button", { className: "ps-btn", disabled: !allTicked, onClick: finish }, "Mark done") : status === "review" ? /* @__PURE__ */ React.createElement("button", { className: "ps-btn", disabled: !allTicked, onClick: canFinalCheck ? passToLead : finish }, viaQA ? "Pass QA" : "Approve") : /* @__PURE__ */ React.createElement("button", { className: "ps-btn", disabled: !allTicked, onClick: finish }, "Mark done")), lead && /* @__PURE__ */ React.createElement("button", { className: "ps-btn ghost small ps-del-task", onClick: remove }, "Delete task")) : /* @__PURE__ */ React.createElement("p", { className: "ps-muted", style: { marginTop: 16 } }, "Only ", person ? person.name : "the owner", " or the lead can work on this."), history.length > 0 && /* @__PURE__ */ React.createElement("details", { className: "ps-history" }, /* @__PURE__ */ React.createElement("summary", null, "History (", history.length, ")"), /* @__PURE__ */ React.createElement("ul", null, history.slice().reverse().map((h, i) => /* @__PURE__ */ React.createElement("li", { key: i }, /* @__PURE__ */ React.createElement("span", { className: "ps-muted" }, new Date(h.at).toLocaleString(void 0, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })), " ", who(h.by), ": ", h.text))))));
   }
   function TodoList({ person, tasks, clients, canAdd, canToggle, mutate, openTask, shareFinalCheck = false }) {
+    const [shut, setShut] = useState({ done: true });
     const [text, setText] = useState("");
     const [due, setDue] = useState("");
     const [removed, setRemoved] = useState(null);
@@ -1595,7 +1596,7 @@
       setText("");
       setDue("");
     };
-    return /* @__PURE__ */ React.createElement("div", { className: "ps-todos" }, list.length === 0 && /* @__PURE__ */ React.createElement("p", { className: "ps-empty" }, "No tasks."), list.map((t) => /* @__PURE__ */ React.createElement("div", { key: t.id, className: `ps-todo ${t.done ? "done" : ""}` }, /* @__PURE__ */ React.createElement(
+    const row = (t) => /* @__PURE__ */ React.createElement("div", { key: t.id, className: `ps-todo ${t.done ? "done" : ""}` }, /* @__PURE__ */ React.createElement(
       "input",
       {
         type: "checkbox",
@@ -1605,7 +1606,37 @@
         title: (t.steps || []).length > 0 ? "Open the task to work through its steps" : void 0,
         "aria-label": t.done ? `Reopen ${t.text}` : `Mark ${t.text} done`
       }
-    ), /* @__PURE__ */ React.createElement("button", { className: "ps-todo-open", onClick: () => openTask && openTask(t.id) }, /* @__PURE__ */ React.createElement("span", { className: "ps-todo-text" }, t.clientId && /* @__PURE__ */ React.createElement("span", { className: "ps-client-tag" }, (clients.find((c) => c.id === t.clientId) || {}).name || "\u2014"), t.kind && /* @__PURE__ */ React.createElement("span", { className: "ps-kind" }, (kindOf(t.kind) || {}).label), t.text), t.details && /* @__PURE__ */ React.createElement("span", { className: "ps-item-note" }, t.details)), !t.done && /* @__PURE__ */ React.createElement("span", { className: "ps-chip", style: taskStatusMeta(t).color ? { background: taskStatusMeta(t).soft, color: taskStatusMeta(t).color } : void 0 }, taskStatusMeta(t).label), t.startedAt && !t.done && /* @__PURE__ */ React.createElement("span", { className: "ps-clock", title: "Working time" }, /* @__PURE__ */ React.createElement("span", { className: "ps-dot", "aria-hidden": "true" }), /* @__PURE__ */ React.createElement(Elapsed, { from: t.startedAt })), t.due && !t.done && /* @__PURE__ */ React.createElement(TaskDue, { due: t.due }), t.done && canToggle && (t.steps || []).length === 0 && /* @__PURE__ */ React.createElement("button", { className: "ps-undo", onClick: () => setDone(t.id, false) }, "Undo"), canAdd && /* @__PURE__ */ React.createElement("button", { className: "ps-x-small", "aria-label": "Delete task", onClick: () => remove(t) }, "\xD7"))), removed && /* @__PURE__ */ React.createElement("div", { className: "ps-todo removed", role: "status" }, /* @__PURE__ */ React.createElement("span", null, "Deleted \u201C", removed.text, "\u201D"), /* @__PURE__ */ React.createElement("button", { className: "ps-undo", onClick: restore }, "Undo"), /* @__PURE__ */ React.createElement("button", { className: "ps-x-small", "aria-label": "Dismiss", onClick: () => setRemoved(null) }, "\xD7")), canAdd && /* @__PURE__ */ React.createElement("div", { className: "ps-form" }, /* @__PURE__ */ React.createElement(
+    ), /* @__PURE__ */ React.createElement("button", { className: "ps-todo-open", onClick: () => openTask && openTask(t.id) }, /* @__PURE__ */ React.createElement("span", { className: "ps-todo-text" }, t.clientId && /* @__PURE__ */ React.createElement("span", { className: "ps-client-tag" }, (clients.find((c) => c.id === t.clientId) || {}).name || "\u2014"), t.kind && /* @__PURE__ */ React.createElement("span", { className: "ps-kind" }, (kindOf(t.kind) || {}).label), t.text), t.details && /* @__PURE__ */ React.createElement("span", { className: "ps-item-note" }, t.details)), !t.done && /* @__PURE__ */ React.createElement("span", { className: "ps-chip", style: taskStatusMeta(t).color ? { background: taskStatusMeta(t).soft, color: taskStatusMeta(t).color } : void 0 }, taskStatusMeta(t).label), t.startedAt && !t.done && /* @__PURE__ */ React.createElement("span", { className: "ps-clock", title: "Working time" }, /* @__PURE__ */ React.createElement("span", { className: "ps-dot", "aria-hidden": "true" }), /* @__PURE__ */ React.createElement(Elapsed, { from: t.startedAt })), t.due && !t.done && /* @__PURE__ */ React.createElement(TaskDue, { due: t.due }), t.done && canToggle && (t.steps || []).length === 0 && /* @__PURE__ */ React.createElement("button", { className: "ps-undo", onClick: () => setDone(t.id, false) }, "Undo"), canAdd && /* @__PURE__ */ React.createElement("button", { className: "ps-x-small", "aria-label": "Delete task", onClick: () => remove(t) }, "\xD7"));
+    /* A long list is unreadable in one lump, so it's bucketed by when it's due
+       and each bucket folds away. Empty buckets don't appear at all. */
+    const todayKey = isoDay(/* @__PURE__ */ new Date());
+    const buckets = { today: [], overdue: [], next: [], none: [], done: [] };
+    list.forEach((t) => {
+      if (t.done) return buckets.done.push(t);
+      if (!t.due) return buckets.none.push(t);
+      const d = String(t.due).slice(0, 10);
+      buckets[d === todayKey ? "today" : d < todayKey ? "overdue" : "next"].push(t);
+    });
+    const groups = [
+      ["today", "Today"],
+      ["overdue", "Overdue"],
+      ["next", "Next"],
+      ["none", "Unscheduled"],
+      ["done", "Done"]
+    ].filter(([k]) => buckets[k].length);
+    return /* @__PURE__ */ React.createElement("div", { className: "ps-todos" },
+      list.length === 0 && /* @__PURE__ */ React.createElement("p", { className: "ps-empty" }, "No tasks."),
+      groups.map(([k, label]) => /* @__PURE__ */ React.createElement("details", {
+        key: k,
+        className: `ps-tgroup ${k}`,
+        open: !shut[k],
+        onToggle: (e) => setShut((c) => ({ ...c, [k]: !e.target.open }))
+      },
+        /* @__PURE__ */ React.createElement("summary", null,
+          /* @__PURE__ */ React.createElement("span", { className: "ps-tgroup-name" }, label),
+          /* @__PURE__ */ React.createElement("span", { className: "ps-tgroup-n" }, buckets[k].length)),
+        buckets[k].map(row))),
+      removed && /* @__PURE__ */ React.createElement("div", { className: "ps-todo removed", role: "status" }, /* @__PURE__ */ React.createElement("span", null, "Deleted \u201C", removed.text, "\u201D"), /* @__PURE__ */ React.createElement("button", { className: "ps-undo", onClick: restore }, "Undo"), /* @__PURE__ */ React.createElement("button", { className: "ps-x-small", "aria-label": "Dismiss", onClick: () => setRemoved(null) }, "\xD7")), canAdd && /* @__PURE__ */ React.createElement("div", { className: "ps-form" }, /* @__PURE__ */ React.createElement(
       "input",
       {
         placeholder: "New task",
@@ -2401,6 +2432,15 @@
 .ps-editors{display:flex;flex-wrap:wrap;gap:20px}
 .ps-editor{display:flex;flex-direction:column;align-items:center;gap:6px;font-size:14px}
 .ps-todos{display:flex;flex-direction:column;gap:4px;margin-bottom:14px;max-width:720px}
+.ps-tgroup{border-bottom:0}
+.ps-tgroup > summary{display:flex;align-items:center;gap:10px;cursor:pointer;list-style:none;padding:10px 0 6px;font-weight:600;font-size:14px;color:var(--ink)}
+.ps-tgroup > summary::-webkit-details-marker{display:none}
+.ps-tgroup > summary::before{content:"▸";color:var(--muted);font-size:11px;transition:transform .12s;display:inline-block}
+.ps-tgroup[open] > summary::before{transform:rotate(90deg)}
+.ps-tgroup > summary:hover .ps-tgroup-name{color:var(--accent)}
+.ps-tgroup-n{color:var(--muted);font-weight:500;font-size:13px}
+.ps-tgroup.overdue .ps-tgroup-n{color:var(--late);font-weight:600}
+.ps-tgroup.done > summary{color:var(--muted)}
 .ps-todo{display:flex;align-items:center;gap:12px;padding:6px 0;border-bottom:1px solid var(--line)}
 .ps-todo{align-items:flex-start}
 .ps-todo input[type=checkbox]{margin-top:2px}

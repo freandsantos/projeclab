@@ -2194,9 +2194,10 @@
 .ps-btnrow{display:flex;justify-content:space-between;gap:10px;margin-top:10px}
 .ps-btnrow.end{justify-content:flex-end}
 .ps-btn{background:var(--accent);color:#fff!important;border:0;border-radius:8px;padding:9px 16px;font-weight:600;cursor:pointer}
-.ps-root.dark .ps-btn{color:#06201D!important}
+.ps-root.dark .ps-btn:not(.ghost):not(.danger){color:#06201D!important}
 .ps-btn.ghost{background:none;color:var(--ink)!important;border:1px solid var(--line)}
 .ps-btn.danger{background:var(--late);color:#fff!important;border:1px solid var(--late)}
+.ps-root.dark .ps-btn.danger{color:#2A0A07!important}
 .ps-confirm{max-width:420px;padding:24px 26px}
 .ps-confirm-line{margin:6px 0 0}
 .ps-confirm-btns{display:flex;justify-content:flex-end;gap:8px;margin-top:18px}

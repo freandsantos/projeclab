@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Projeclab Studios</title>
-<style>html,body{margin:0}</style>
+<style>html,body{margin:0;background:#EDF0F3}html[data-theme="dark"],html[data-theme="dark"] body{background:#10151D}</style>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
@@ -1583,7 +1583,19 @@
     const [openId, setOpenId] = useState(null);
     const [taskId, setTaskId] = useState(null);
     const [filter, setFilter] = useState(null);
-    const [dark, setDark] = useState(false);
+    const [dark, setDark] = useState(() => {
+      try {
+        const saved = localStorage.getItem("ps-theme");
+        if (saved === "dark") return true;
+        if (saved === "light") return false;
+      } catch (e) {}
+      try { return !!(window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches); } catch (e) {}
+      return false;
+    });
+    useEffect(() => {
+      try { localStorage.setItem("ps-theme", dark ? "dark" : "light"); } catch (e) {}
+      try { document.documentElement.setAttribute("data-theme", dark ? "dark" : "light"); } catch (e) {}
+    }, [dark]);
     const [toast, setToast] = useState("");
     const [confirming, setConfirming] = useState(null);
     const [personId, setPersonId] = useState(null);
@@ -1687,6 +1699,39 @@
         return covered ? n : d;
       });
       setTimeout(() => setToast(covered ? `Payment recorded for the weeks of ${covered.map((k) => shortDate(fromIso(k))).join(", ")}.` : "Set a call day first."), 0);
+    };
+    const downloadBackup = () => {
+      try {
+        const json = JSON.stringify(db, null, 2);
+        const blob = new Blob([json], { type: "application/json" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `projeclab-backup-${isoDay(/* @__PURE__ */ new Date())}.json`;
+        document.body.appendChild(a); a.click(); a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 2000);
+        setToast("Backup downloaded.");
+      } catch (e) { console.error(e); setToast("Couldn't make the backup file."); }
+    };
+    const restoreBackup = (file) => {
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onerror = () => setToast("That file couldn't be read.");
+      reader.onload = () => {
+        let parsed = null;
+        try { parsed = JSON.parse(reader.result); } catch (e) { return setToast("That file isn't a backup \u2014 it isn't readable data."); }
+        if (!parsed || !Array.isArray(parsed.people) || !Array.isArray(parsed.videos)) return setToast("That doesn't look like a Projeclab backup.");
+        setConfirming({
+          title: "Restore this backup?",
+          lines: [
+            `It contains ${parsed.people.length} people, ${parsed.videos.length} videos and ${(parsed.tasks || []).length} tasks.`,
+            "This replaces everything in the app, for everyone on the team. It can't be undone."
+          ],
+          confirmLabel: "Restore backup",
+          onYes: () => { setDb(normalize(parsed)); setPage({ tab: "queue" }); setToast("Backup restored."); }
+        });
+      };
+      reader.readAsText(file);
     };
     const togglePaidWeek = (cid, k) => mutate((n) => {
       let w = n.weeks.find((x) => x.clientId === cid && x.start === k);
@@ -1866,7 +1911,7 @@
       body = /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("h1", { className: "ps-h1" }, "Settings"), /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "New video"), /* @__PURE__ */ React.createElement("div", { className: "ps-form" }, /* @__PURE__ */ React.createElement("select", { value: draft.client, onChange: (e) => setDraft({ ...draft, client: e.target.value }) }, /* @__PURE__ */ React.createElement("option", { value: "" }, "Choose a client"), db.clients.map((c) => /* @__PURE__ */ React.createElement("option", { key: c.id, value: c.id }, c.name))), /* @__PURE__ */ React.createElement("input", { placeholder: "Working title", value: draft.title, onChange: (e) => setDraft({ ...draft, title: e.target.value }) }), /* @__PURE__ */ React.createElement("button", { className: "ps-btn", onClick: addVideo }, "Add video")), /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Clients"), /* @__PURE__ */ React.createElement("div", { className: "ps-clients" }, db.clients.map((c) => /* @__PURE__ */ React.createElement("div", { key: c.id, className: "ps-client-row" }, /* @__PURE__ */ React.createElement("b", null, c.name), /* @__PURE__ */ React.createElement("label", { className: "ps-field" }, /* @__PURE__ */ React.createElement("span", null, "Client type"), /* @__PURE__ */ React.createElement("select", { value: clientKindOf(c).id, onChange: (e) => updateClient(c.id, { clientKind: e.target.value }) }, CLIENT_KINDS.map((k) => /* @__PURE__ */ React.createElement("option", { key: k.id, value: k.id }, k.label)))), /* @__PURE__ */ React.createElement("label", { className: "ps-field" }, /* @__PURE__ */ React.createElement("span", null, "Call day"), /* @__PURE__ */ React.createElement("select", { value: c.callDay ?? "", onChange: (e) => updateClient(c.id, { callDay: e.target.value === "" ? null : +e.target.value }) }, /* @__PURE__ */ React.createElement("option", { value: "" }, "Not set"), [1, 2, 3, 4, 5].map((d) => /* @__PURE__ */ React.createElement("option", { key: d, value: d }, WEEKDAYS[d])))), /* @__PURE__ */ React.createElement("label", { className: "ps-field" }, /* @__PURE__ */ React.createElement("span", null, "Script floor"), /* @__PURE__ */ React.createElement("input", { type: "number", min: "0", value: c.bankFloor ?? 2, onChange: (e) => updateClient(c.id, { bankFloor: Math.max(0, parseInt(e.target.value) || 0) }) }))))), /* @__PURE__ */ React.createElement("div", { className: "ps-form", style: { marginTop: 10 } }, /* @__PURE__ */ React.createElement("input", { placeholder: "New client name", value: draft.clientName, onChange: (e) => setDraft({ ...draft, clientName: e.target.value }) }), /* @__PURE__ */ React.createElement("button", { className: "ps-btn ghost", onClick: addClient }, "Add client")), /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Current teammates"), /* @__PURE__ */ React.createElement("div", { className: "ps-people-list" }, db.people.filter((p) => p.role !== "client").map((p) => /* @__PURE__ */ React.createElement("div", { key: p.id, className: "ps-person-row" }, /* @__PURE__ */ React.createElement(Avatar, { person: p, size: 24 }), /* @__PURE__ */ React.createElement("span", { className: "ps-person-name" }, p.name), /* @__PURE__ */ React.createElement("span", { className: "ps-chip" }, (ROLES[p.role] || {}).label || p.role), /* @__PURE__ */ React.createElement("input", { className: "ps-person-mail", type: "email", placeholder: "login email", value: p.email || "", onChange: (e) => {
       const v = e.target.value;
       mutate((n) => { const t = n.people.find((x) => x.id === p.id); if (t) t.email = v.trim(); });
-    } }), p.id === me.id ? /* @__PURE__ */ React.createElement("span", { className: "ps-muted ps-person-you" }, "you") : /* @__PURE__ */ React.createElement("button", { className: "ps-x-small", "aria-label": `Remove ${p.name}`, onClick: () => removePerson(p) }, "\xD7")))), /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "New teammate"), /* @__PURE__ */ React.createElement("div", { className: "ps-form" }, /* @__PURE__ */ React.createElement("input", { placeholder: "Name", value: draft.person, onChange: (e) => setDraft({ ...draft, person: e.target.value }) }), /* @__PURE__ */ React.createElement("input", { type: "email", placeholder: "Login email (optional)", value: draft.personEmail || "", onChange: (e) => setDraft({ ...draft, personEmail: e.target.value }) }), /* @__PURE__ */ React.createElement("select", { value: draft.role, onChange: (e) => setDraft({ ...draft, role: e.target.value }) }, ["coordinator", "hr", "editor", "qa"].map((r) => /* @__PURE__ */ React.createElement("option", { key: r, value: r }, ROLES[r].label))), /* @__PURE__ */ React.createElement("button", { className: "ps-btn ghost", onClick: addPerson }, "Add teammate")), /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Editor pictures"), /* @__PURE__ */ React.createElement("div", { className: "ps-editors" }, db.people.filter((p) => p.role === "editor").map((p) => /* @__PURE__ */ React.createElement("div", { key: p.id, className: "ps-editor" }, picker(p, 64), /* @__PURE__ */ React.createElement("span", null, p.name)))), /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Stage allowances"), /* @__PURE__ */ React.createElement("div", { className: "ps-stages" }, STAGES.filter((s) => s.owner).map((s, i) => /* @__PURE__ */ React.createElement("div", { key: s.id, className: "ps-stage-row" }, /* @__PURE__ */ React.createElement("span", { className: "ps-frame-step" }, i + 1), /* @__PURE__ */ React.createElement("span", null, s.name, CHECKS[s.id] ? " \xB7 checklist" : ""), /* @__PURE__ */ React.createElement("span", { className: "ps-chip", style: { background: ROLES[s.owner].soft, color: ROLES[s.owner].color } }, ROLES[s.owner].label), /* @__PURE__ */ React.createElement("span", { className: "ps-muted" }, s.days ? `${s.days} business day${s.days > 1 ? "s" : ""}` : "No clock")))), /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Data"), /* @__PURE__ */ React.createElement("p", { className: "ps-muted", style: { marginBottom: 8 } }, "Everything is saved in your browser for this app."), /* @__PURE__ */ React.createElement("button", { className: "ps-btn ghost", onClick: reset }, "Restore demo data"));
+    } }), p.id === me.id ? /* @__PURE__ */ React.createElement("span", { className: "ps-muted ps-person-you" }, "you") : /* @__PURE__ */ React.createElement("button", { className: "ps-x-small", "aria-label": `Remove ${p.name}`, onClick: () => removePerson(p) }, "\xD7")))), /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "New teammate"), /* @__PURE__ */ React.createElement("div", { className: "ps-form" }, /* @__PURE__ */ React.createElement("input", { placeholder: "Name", value: draft.person, onChange: (e) => setDraft({ ...draft, person: e.target.value }) }), /* @__PURE__ */ React.createElement("input", { type: "email", placeholder: "Login email (optional)", value: draft.personEmail || "", onChange: (e) => setDraft({ ...draft, personEmail: e.target.value }) }), /* @__PURE__ */ React.createElement("select", { value: draft.role, onChange: (e) => setDraft({ ...draft, role: e.target.value }) }, ["coordinator", "hr", "editor", "qa"].map((r) => /* @__PURE__ */ React.createElement("option", { key: r, value: r }, ROLES[r].label))), /* @__PURE__ */ React.createElement("button", { className: "ps-btn ghost", onClick: addPerson }, "Add teammate")), /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Editor pictures"), /* @__PURE__ */ React.createElement("div", { className: "ps-editors" }, db.people.filter((p) => p.role === "editor").map((p) => /* @__PURE__ */ React.createElement("div", { key: p.id, className: "ps-editor" }, picker(p, 64), /* @__PURE__ */ React.createElement("span", null, p.name)))), /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Stage allowances"), /* @__PURE__ */ React.createElement("div", { className: "ps-stages" }, STAGES.filter((s) => s.owner).map((s, i) => /* @__PURE__ */ React.createElement("div", { key: s.id, className: "ps-stage-row" }, /* @__PURE__ */ React.createElement("span", { className: "ps-frame-step" }, i + 1), /* @__PURE__ */ React.createElement("span", null, s.name, CHECKS[s.id] ? " \xB7 checklist" : ""), /* @__PURE__ */ React.createElement("span", { className: "ps-chip", style: { background: ROLES[s.owner].soft, color: ROLES[s.owner].color } }, ROLES[s.owner].label), /* @__PURE__ */ React.createElement("span", { className: "ps-muted" }, s.days ? `${s.days} business day${s.days > 1 ? "s" : ""}` : "No clock")))), /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Backups"), /* @__PURE__ */ React.createElement("p", { className: "ps-muted", style: { marginBottom: 10 } }, "Every change saves automatically for the whole team. Download a copy now and then so you have one outside the system."), /* @__PURE__ */ React.createElement("div", { className: "ps-form" }, /* @__PURE__ */ React.createElement("button", { className: "ps-btn", onClick: downloadBackup }, "Download a backup"), /* @__PURE__ */ React.createElement("label", { className: "ps-btn ghost ps-filebtn" }, "Restore from a backup", /* @__PURE__ */ React.createElement("input", { type: "file", accept: "application/json,.json", hidden: true, onChange: (e) => { const f = e.target.files && e.target.files[0]; e.target.value = ""; restoreBackup(f); } }))), /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Data"), /* @__PURE__ */ React.createElement("p", { className: "ps-muted", style: { marginBottom: 8 } }, "Replaces everything with the sample studio. Only for testing."), /* @__PURE__ */ React.createElement("button", { className: "ps-btn ghost", onClick: reset }, "Restore demo data"));
     } else {
       const client = me.role === "client" ? db.clients.find((c) => c.id === me.clientId) : null;
       const waiting = client ? active.filter((v) => !isMine(v, me)) : [];
@@ -2197,6 +2242,7 @@
 .ps-person-row{display:flex;align-items:center;gap:10px;padding:7px 10px;background:var(--paper);border:1px solid var(--line);border-radius:8px}
 .ps-person-name{font-weight:600;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .ps-person-you{font-size:12px}
+.ps-filebtn{cursor:pointer;display:inline-flex;align-items:center}
 .ps-person-mail{flex:0 1 200px;min-width:0;padding:4px 8px;font-size:12.5px}
 .ps-authwarn{margin:0 0 18px;padding:10px 14px;border-radius:8px;background:var(--warnbg);color:var(--warn);font-size:13px;line-height:1.5}
 .ps-pickpanel{position:absolute;top:calc(100% + 4px);left:0;background:var(--card);border:1px solid var(--line);border-radius:10px;box-shadow:0 18px 40px -12px rgba(0,0,0,.35);z-index:40;padding:8px}

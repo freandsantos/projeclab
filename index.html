@@ -164,7 +164,68 @@
     if (m) return secs ? `${m}m ${pad(s)}s` : `${m}m`;
     return `${s}s`;
   };
-  var isMember = (db, cid) => db.weeks.some((w) => w.clientId === cid && w.paid);
+  /* ---------- Invoicing: every client bills on their own rhythm ---------- */
+  var BILLING_PLANS = [
+    { id: "monthly", label: "Monthly", note: "One invoice per calendar month." },
+    { id: "biweekly", label: "Every 2 weeks", note: "One invoice every fortnight." },
+    { id: "weekly", label: "Weekly", note: "One invoice per week." },
+    { id: "pervideo", label: "Per video", note: "One invoice each time a video is sent to the client." },
+    { id: "project", label: "Per project", note: "One invoice per job — you raise each one yourself." },
+    { id: "none", label: "No invoicing", note: "This client isn't billed here." }
+  ];
+  var billingOf = (c) => BILLING_PLANS.find((p) => p.id === (c && c.billing)) || BILLING_PLANS[0];
+  var mondayOf = (date) => {
+    const d = startOfDay(date);
+    d.setDate(d.getDate() - (d.getDay() + 6) % 7);
+    return d;
+  };
+  var monthName = (d) => d.toLocaleDateString(void 0, { month: "long", year: "numeric" });
+  var DAY_MS = 864e5;
+  /* Periods are worked out from the cycle, not stored - only the paid ticks are saved.
+     Five behind, the current one, two ahead: enough to chase a late payer and see what's coming. */
+  var invoicePeriods = (c, when) => {
+    const plan = billingOf(c).id;
+    const today = startOfDay(when || /* @__PURE__ */ new Date());
+    const from = c && c.billingStart ? fromIso(c.billingStart) : null;
+    const out = [];
+    if (plan === "monthly") {
+      for (let i = -5; i <= 2; i++) {
+        const d = new Date(today.getFullYear(), today.getMonth() + i, 1);
+        out.push({ key: `m${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`, label: monthName(d), start: d });
+      }
+    } else if (plan === "weekly" || plan === "biweekly") {
+      const step = plan === "weekly" ? 7 : 14;
+      const anchor = mondayOf(from || today);
+      const here = mondayOf(today);
+      const idx = Math.round((here - anchor) / (DAY_MS * step));
+      for (let i = idx - 5; i <= idx + 2; i++) {
+        const d = new Date(anchor);
+        d.setDate(d.getDate() + i * step);
+        const end = new Date(d);
+        end.setDate(end.getDate() + step - 1);
+        out.push({ key: `${plan === "weekly" ? "w" : "b"}${isoDay(d)}`, label: step === 7 ? `Week of ${shortDate(d)}` : `${shortDate(d)} – ${shortDate(end)}`, start: d });
+      }
+    }
+    if (!from) return out;
+    /* Nothing before the day billing started - for months, that means from its month on. */
+    const floor = plan === "monthly" ? new Date(from.getFullYear(), from.getMonth(), 1) : mondayOf(from);
+    return out.filter((p) => p.start >= floor);
+  };
+  /* Per-video clients are billed off the work itself: one line per delivered video. */
+  var invoiceRows = (db, c, when) => {
+    if (billingOf(c).id === "none") return [];
+    /* Project work has no rhythm to predict, so these lines are typed in by hand. */
+    if (billingOf(c).id === "project") {
+      return (db.invoices || []).filter((x) => x.clientId === c.id && x.manual).slice().sort((a, b) => (b.at || "").localeCompare(a.at || "")).map((x) => ({ key: x.key, label: x.label || "Untitled job", start: x.at ? startOfDay(new Date(x.at)) : null, manual: true }));
+    }
+    if (billingOf(c).id === "pervideo") {
+      return (db.videos || []).filter((v) => v.clientId === c.id && v.stage === "ready" && !v.archived).slice().sort((a, b) => (b.enteredAt || "").localeCompare(a.enteredAt || "")).slice(0, 12).map((v) => ({ key: `v${v.id}`, label: v.title || "Untitled video", start: v.enteredAt ? startOfDay(new Date(v.enteredAt)) : null, videoId: v.id }));
+    }
+    return invoicePeriods(c, when).slice().reverse();
+  };
+  var invoiceMark = (db, cid, key) => (db.invoices || []).find((x) => x.id === `${cid}:${key}`) || null;
+  var invoiceDue = (row, when) => !row.start || row.start <= startOfDay(when || /* @__PURE__ */ new Date());
+  var unpaidFor = (db, c) => invoiceRows(db, c).filter((r) => invoiceDue(r) && !(invoiceMark(db, c.id, r.key) || {}).paid);
   var bankOf = (db, cid) => {
     const f = db.videos.filter((v) => v.clientId === cid && v.stage === "in_progress" && !v.archived);
     return {
@@ -172,34 +233,7 @@
       footage: f.filter((v) => v.footageAt).sort((a, b) => a.footageAt.localeCompare(b.footageAt))
     };
   };
-  function recordPayment(n, cid, by) {
-    const c = n.clients.find((x) => x.id === cid);
-    if (!c || c.callDay == null) return null;
-    let d = weekStart(c.callDay, /* @__PURE__ */ new Date());
-    const paid = n.weeks.filter((w) => w.clientId === cid && w.paid).map((w) => w.start).sort();
-    const last = paid[paid.length - 1];
-    if (last && last >= isoDay(d)) {
-      d = fromIso(last);
-      d.setDate(d.getDate() + 7);
-    }
-    const pid = uid("pay");
-    const covered = [];
-    for (let i = 0; i < 4; i++) {
-      const k = isoDay(d);
-      let w = n.weeks.find((x) => x.clientId === cid && x.start === k);
-      if (!w) {
-        w = { id: uid("w"), clientId: cid, start: k, paid: false, outcome: "pending", videoId: null };
-        n.weeks.push(w);
-      }
-      w.paid = true;
-      w.paymentId = pid;
-      covered.push(k);
-      d.setDate(d.getDate() + 7);
-    }
-    n.payments.push({ id: pid, clientId: cid, at: (/* @__PURE__ */ new Date()).toISOString(), weeks: covered, by });
-    return covered;
-  }
-  function startVideo(n, v, week, by) {
+  function startVideo(n, v, by) {
     const now = (/* @__PURE__ */ new Date()).toISOString();
     if (!v.editorId) {
       const prev = n.videos.filter((x) => x.clientId === v.clientId && x.editorId && x.id !== v.id).sort((a, b) => (b.enteredAt || "").localeCompare(a.enteredAt || ""))[0];
@@ -207,30 +241,12 @@
     }
     v.stage = "editing";
     v.enteredAt = now;
-    v.weekId = week ? week.id : null;
-    v.history.push({ at: now, by, text: week ? `Editing started in the week of ${shortDate(fromIso(week.start))}` : "Footage in, editing starts now" });
-    if (week) {
-      week.outcome = "used";
-      week.videoId = v.id;
-    }
-  }
-  function settleWeeks(n) {
-    const today = startOfDay(/* @__PURE__ */ new Date());
-    let changed = false;
-    n.clients.forEach((c) => {
-      n.weeks.filter((w) => w.clientId === c.id && w.paid && w.outcome === "pending" && fromIso(w.start) <= today).sort((a, b) => a.start.localeCompare(b.start)).forEach((w) => {
-        const pick = bankOf(n, c.id).footage[0];
-        if (pick) startVideo(n, pick, w, "system");
-        else w.outcome = "forfeited";
-        changed = true;
-      });
-    });
-    return changed;
+    v.history.push({ at: now, by, text: "Footage in, editing starts now" });
   }
   function seed() {
     const clients = [
-      { id: "c1", name: "Northwind Coffee", callDay: 3, bankFloor: 2 },
-      { id: "c2", name: "Maya Ortiz Fitness", callDay: 1, bankFloor: 2 }
+      { id: "c1", name: "Northwind Coffee", billing: "monthly", billingStart: isoDay(new Date((/* @__PURE__ */ new Date()).getFullYear(), (/* @__PURE__ */ new Date()).getMonth() - 3, 1)) },
+      { id: "c2", name: "Maya Ortiz Fitness", billing: "pervideo", billingStart: null }
     ];
     const people = [
       { id: "p_lead", name: "You", role: "lead" },
@@ -257,38 +273,25 @@
       rounds: 0,
       archived: false,
       footageAt: null,
-      weekId: null,
       history: [{ at: ago(daysAgo + 10), by: "p_lead", text: "Created" }],
       ...extra
     });
-    const weeks = [], payments = [], videos = [];
-    const week = (c, k, outcome) => {
-      const d = weekStart(c.callDay, /* @__PURE__ */ new Date());
-      d.setDate(d.getDate() + k * 7);
-      const w = { id: `w_${c.id}_${k}`, clientId: c.id, start: isoDay(d), paid: true, outcome, videoId: null, paymentId: `pay_${c.id}` };
-      weeks.push(w);
-      return w;
-    };
-    const link = (v, w) => {
-      v.weekId = w.id;
-      w.videoId = v.id;
-      videos.push(v);
-    };
+    const videos = [];
     const [nw, maya] = clients;
-    const nwW = [week(nw, -2, "used"), week(nw, -1, "forfeited"), week(nw, 0, "used"), week(nw, 1, "pending")];
-    link(mk("c1", "Why cold brew costs more", "editing", 1, { editorId: "p_lina", scriptUrl: "https://docs.example/1", footageUrl: "https://drive.example/1", startedAt: ago(0.09), editMs: 41e5 }), nwW[2]);
-    link(mk("c1", "Three beans, one tasting", "qa", 0, { editorId: "p_lina", editUrl: "https://review.example/2" }), nwW[0]);
+    videos.push(mk("c1", "Why cold brew costs more", "editing", 1, { editorId: "p_lina", scriptUrl: "https://docs.example/1", footageUrl: "https://drive.example/1", startedAt: ago(0.09), editMs: 41e5 }));
+    videos.push(mk("c1", "Three beans, one tasting", "qa", 0, { editorId: "p_lina", editUrl: "https://review.example/2" }));
     videos.push(mk("c1", "The caf\xE9 that almost closed", "in_progress", 3, { scriptUrl: "https://docs.example/3" }));
     videos.push(mk("c1", "A morning with our roaster", "in_progress", 2, { scriptUrl: "https://docs.example/4" }));
     videos.push(mk("c1", "Oat milk myths", "todo", 0));
-    const mayaW = [week(maya, -2, "used"), week(maya, -1, "used"), week(maya, 0, "used"), week(maya, 1, "pending")];
-    link(mk("c2", "Rest days matter", "ready", 6, { editorId: "p_marco", publishUrl: "https://youtu.be/example" }), mayaW[0]);
-    link(mk("c2", "My first marathon, honestly", "ready", 0, { editorId: "p_marco", editUrl: "https://review.example/8" }), mayaW[1]);
-    link(mk("c2", "Five-minute mobility routine", "ready", 1, { editorId: "p_marco", editUrl: "https://review.example/5" }), mayaW[2]);
+    videos.push(mk("c2", "Rest days matter", "ready", 6, { editorId: "p_marco", publishUrl: "https://youtu.be/example" }));
+    videos.push(mk("c2", "My first marathon, honestly", "ready", 0, { editorId: "p_marco", editUrl: "https://review.example/8" }));
+    videos.push(mk("c2", "Five-minute mobility routine", "ready", 1, { editorId: "p_marco", editUrl: "https://review.example/5" }));
     videos.push(mk("c2", "What I eat before a race", "in_progress", 2, { scriptUrl: "https://docs.example/6", footageUrl: "https://drive.example/6", footageAt: ago(1) }));
     videos.push(mk("c2", "Hill sprints for beginners", "in_progress", 4, { scriptUrl: "https://docs.example/9" }));
     videos.push(mk("c2", "Stop stretching like this", "todo", 0));
-    clients.forEach((c) => payments.push({ id: `pay_${c.id}`, clientId: c.id, at: ago(15), weeks: weeks.filter((w) => w.clientId === c.id).map((w) => w.start), by: "p_lead" }));
+    /* A couple of months already settled up, so the list isn't blank on day one. */
+    const monthBack = (k) => { const d = new Date(); d.setMonth(d.getMonth() - k); return `m${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`; };
+    const invoices = [1, 2].map((k) => ({ id: `c1:${monthBack(k)}`, clientId: "c1", key: monthBack(k), paid: true, paidAt: ago(k * 30), by: "p_lead" }));
     const tasks = [
       { id: uid("t"), personId: "p_lead", text: "Send Northwind their next invoice", kind: "other", due: isoDay(addBiz(/* @__PURE__ */ new Date(), 2)), done: false, status: "todo" },
       { id: uid("t"), personId: "p_lina", text: "Build a lower-thirds template for Northwind", kind: "design", due: null, done: false, status: "todo" },
@@ -393,12 +396,12 @@
         steps: ["Work handed over and reassigned", "Equipment returned", "Accounts and logins revoked",
                 "Final pay and paperwork confirmed", "Exit chat booked"] }
     ];
-    return { clients, people, videos, weeks, payments, tasks, meetings: [], timeoff: [], templates };
+    return { clients, people, videos, invoices, tasks, meetings: [], timeoff: [], templates };
   }
   var STORE_KEY = "cutline-state-v2";
   /* Every list in the saved file. Each row carries an id, which is how two
      people's edits are reconciled instead of one flattening the other. */
-  var COLLECTIONS = ["clients", "people", "videos", "weeks", "payments", "tasks", "meetings", "timeoff", "templates"];
+  var COLLECTIONS = ["clients", "people", "videos", "invoices", "tasks", "meetings", "timeoff", "templates"];
   /* Three versions in play: `base` is what we know reached the server, `mine` is
      what's on this screen, `theirs` is what the server holds now. Replay only the
      rows this screen actually touched on top of theirs - everything else survives. */
@@ -449,7 +452,16 @@
   };
   var OLD_ROLE_MAP = { writer: "editor", publisher: "editor" };
   var normalize = (d) => {
-    const base = { weeks: [], payments: [], tasks: [], meetings: [], timeoff: [], templates: [], ...d };
+    const base = { invoices: [], tasks: [], meetings: [], timeoff: [], templates: [], ...d };
+    if (!Array.isArray(base.invoices)) base.invoices = [];
+    /* The old weekly-membership data is retired; billing lives on the client now. */
+    delete base.weeks;
+    delete base.payments;
+    base.clients = (base.clients || []).map((c) => {
+      if (c.billing) return c;
+      const now = /* @__PURE__ */ new Date();
+      return { ...c, billing: "monthly", billingStart: isoDay(new Date(now.getFullYear(), now.getMonth(), 1)) };
+    });
     if (!Array.isArray(base.templates)) base.templates = [];
     if (!Array.isArray(base.meetings)) base.meetings = [];
     if (!Array.isArray(base.timeoff)) base.timeoff = [];
@@ -1300,54 +1312,42 @@
       return /* @__PURE__ */ React.createElement("button", { key: v.id, className: "ps-row", onClick: () => open(v.id) }, showClient && /* @__PURE__ */ React.createElement("span", { className: "ps-row-client" }, client ? client.name : "\u2014"), /* @__PURE__ */ React.createElement("span", { className: "ps-row-title" }, v.title || "Untitled"), /* @__PURE__ */ React.createElement(OwnerChip, { v }), /* @__PURE__ */ React.createElement("span", { className: "ps-row-ed" }, editor && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(Avatar, { person: editor, size: 22 }), editor.name)), /* @__PURE__ */ React.createElement(Due, { date: dueOf(v) }), /* @__PURE__ */ React.createElement("span", { className: `ps-row-go ${canAct(v, me) ? "mine" : ""}` }, canAct(v, me) ? "Open" : "View"));
     }));
   }
-  function WeekStrip({ db, client, open, toggle }) {
-    if (client.callDay == null) return /* @__PURE__ */ React.createElement("p", { className: "ps-muted" }, "Set a call day in Settings to start a membership.");
+  function InvoiceList({ db, client, canEdit, toggle, addJob, removeJob, openVideo }) {
+    const h = React.createElement;
+    const [job, setJob] = useState("");
+    const plan = billingOf(client);
+    const rows = plan.id === "none" ? [] : invoiceRows(db, client);
     const today = startOfDay(/* @__PURE__ */ new Date());
-    const cur = weekStart(client.callDay, today);
-    const firstPaid = db.weeks.filter((w) => w.clientId === client.id && w.paid).map((w) => w.start).sort()[0];
-    const cells = Array.from({ length: 10 }, (_, i) => {
-      const d = new Date(cur);
-      d.setDate(d.getDate() + (i - 3) * 7);
-      return d;
-    });
-    return /* @__PURE__ */ React.createElement("div", { className: "ps-weeks", role: "list" }, cells.map((d) => {
-      const k = isoDay(d);
-      const w = db.weeks.find((x) => x.clientId === client.id && x.start === k);
-      const v = w && w.videoId ? db.videos.find((x) => x.id === w.videoId) : null;
-      let state = "open", label = "Not paid yet";
-      if (w && w.outcome === "used") {
-        state = v && v.stage === "ready" ? "live" : "used";
-        label = v ? v.title : "Video started";
-      } else if (w && w.outcome === "forfeited") {
-        state = "lost";
-        label = "Forfeited \xB7 no footage";
-      } else if (w && w.paid) {
-        state = "paid";
-        label = "Paid \xB7 open";
-      } else if (firstPaid && k >= firstPaid && d <= today) {
-        state = "unpaid";
-        label = "Unpaid";
-      }
-      const isNow = d.getTime() === cur.getTime();
-      return /* @__PURE__ */ React.createElement(
-        "button",
-        {
-          key: k,
-          role: "listitem",
-          className: `ps-week ${state} ${isNow ? "now" : ""} ${!v && toggle ? "clickable" : ""}`,
-          onClick: () => v ? open(v.id) : toggle && toggle(k),
-          disabled: !v && !toggle,
-          title: v ? label : toggle ? `${label} \u2014 click to mark ${w && w.paid ? "unpaid" : "paid"}` : label
-        },
-        /* @__PURE__ */ React.createElement("span", { className: "ps-week-date" }, isNow ? "This week" : shortDate(d)),
-        /* @__PURE__ */ React.createElement("span", { className: "ps-week-label" }, label)
-      );
-    }));
-  }
-  function BankChips({ db, client }) {
-    const b = bankOf(db, client.id);
-    const low = b.ready.length <= (client.bankFloor ?? 2);
-    return /* @__PURE__ */ React.createElement("div", { className: "ps-meta" }, /* @__PURE__ */ React.createElement("span", { className: `ps-chip ${low ? "warn" : "ok"}` }, b.ready.length, " script", b.ready.length === 1 ? "" : "s", " ready to film"), /* @__PURE__ */ React.createElement("span", { className: "ps-chip" }, b.footage.length, " filmed, waiting"), low && /* @__PURE__ */ React.createElement("span", { className: "ps-muted" }, "At or below the floor of ", client.bankFloor ?? 2, ": time for new topics."));
+    const add = () => {
+      const label = job.trim();
+      if (!label) return;
+      addJob(label);
+      setJob("");
+    };
+    const empty = plan.id === "none" ? "This client isn't invoiced here. Pick a billing cycle in Settings to start tracking payments." : plan.id === "pervideo" ? "Nothing to invoice yet \u2014 a line appears here each time a video is sent to the client." : plan.id === "project" ? "No jobs invoiced yet. Add the first one below." : "No billing periods yet.";
+    return h(React.Fragment, null,
+      rows.length === 0
+        ? h("p", { className: "ps-muted" }, empty)
+        : h("div", { className: "ps-invoices", role: "list" }, rows.map((r) => {
+            const mark = invoiceMark(db, client.id, r.key);
+            const paid = !!(mark && mark.paid);
+            const due = invoiceDue(r, today);
+            const state = paid ? "paid" : due ? "unpaid" : "upcoming";
+            const sub = paid ? `Paid \xB7 ${shortDate(mark.paidAt)}` : due ? "Unpaid" : "Not due yet";
+            return h("div", { key: r.key, role: "listitem", className: "ps-invoice-row" },
+              h("button", {
+                className: `ps-invoice ${state} ${canEdit ? "clickable" : ""}`,
+                disabled: !canEdit,
+                onClick: () => canEdit && toggle(r.key),
+                title: canEdit ? `Click to mark ${paid ? "unpaid" : "paid"}` : sub
+              },
+                h("span", { className: "ps-invoice-when" }, r.label),
+                h("span", { className: "ps-invoice-state" }, sub)),
+              r.manual && canEdit && h("button", { className: "ps-x-small", "aria-label": `Remove ${r.label}`, title: "Remove this line", onClick: () => removeJob(r.key) }, "\xD7"));
+          })),
+      plan.id === "project" && canEdit && h("div", { className: "ps-form ps-job-add" },
+        h("input", { placeholder: "Job name, e.g. Launch film \u2014 deposit", value: job, onChange: (e) => setJob(e.target.value), onKeyDown: (e) => e.key === "Enter" && add() }),
+        h("button", { className: "ps-btn ghost", onClick: add }, "Add invoice")));
   }
   function TaskModal({ t, db, me, lead, updateTask, mutate, setToast, close }) {
     const [note, setNote] = useState("");
@@ -1610,7 +1610,6 @@
     const who = (id) => id === "system" ? "Projeclab" : (db.people.find((p) => p.id === id) || {}).name || "Someone";
     const client = db.clients.find((c) => c.id === v.clientId);
     const editorP = db.people.find((p) => p.id === v.editorId);
-    const week = v.weekId ? db.weeks.find((w) => w.id === v.weekId) : null;
     const log = (text) => ({ history: [...v.history, { at: (/* @__PURE__ */ new Date()).toISOString(), by: me.id, text }] });
     const advance = () => {
       const next = STAGES[idxOf(v.stage) + 1];
@@ -1655,10 +1654,7 @@
       if (missing) return;
       mutate((n) => {
         const x = n.videos.find((y) => y.id === v.id);
-        if (isMember(n, x.clientId)) {
-          x.footageAt = (/* @__PURE__ */ new Date()).toISOString();
-          x.history.push({ at: x.footageAt, by: me.id, text: "Footage uploaded, waiting for the next paid week" });
-        } else startVideo(n, x, null, me.id);
+        startVideo(n, x, me.id);
       });
     };
     const field = (key, label) => /* @__PURE__ */ React.createElement("label", { className: "ps-field", key }, /* @__PURE__ */ React.createElement("span", null, label), /* @__PURE__ */ React.createElement(
@@ -1680,7 +1676,7 @@
       },
       /* @__PURE__ */ React.createElement("option", { value: "" }, "Unassigned"),
       db.people.filter((p) => p.role === "editor").map((p) => /* @__PURE__ */ React.createElement("option", { key: p.id, value: p.id }, p.name, isAway(p) ? " (away)" : ""))
-    ))), v.stage === "in_progress" && v.footageAt && /* @__PURE__ */ React.createElement("div", { className: "ps-notebox" }, /* @__PURE__ */ React.createElement("b", null, "Filmed"), /* @__PURE__ */ React.createElement("p", null, "Editing starts on ", client ? `${WEEKDAYS[client.callDay]}` : "the next call day", " in the next paid week.")), act && /* @__PURE__ */ React.createElement("div", { className: "ps-actions" }, checks.length > 0 && /* @__PURE__ */ React.createElement("fieldset", { className: "ps-checks" }, /* @__PURE__ */ React.createElement("legend", null, "Tick every item before passing"), checks.map((c, i) => /* @__PURE__ */ React.createElement("label", { key: c }, /* @__PURE__ */ React.createElement("input", { type: "checkbox", checked: !!ticks[i], onChange: () => setTicks((t) => ({ ...t, [i]: !t[i] })) }), /* @__PURE__ */ React.createElement("span", null, c)))), (missing || noEditor) && /* @__PURE__ */ React.createElement("p", { className: "ps-warn" }, noEditor ? "Assign an editor before this can move on." : `Add the ${need[1].toLowerCase()} to continue.`), v.stage === "editing" && /* @__PURE__ */ React.createElement("div", { className: "ps-clockbox" }, v.startedAt ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("span", { className: "ps-clock big" }, /* @__PURE__ */ React.createElement("span", { className: "ps-dot", "aria-hidden": "true" }), /* @__PURE__ */ React.createElement(Elapsed, { from: v.startedAt, interval: 1e3, seconds: true })), /* @__PURE__ */ React.createElement("span", { className: "ps-muted" }, "In progress since ", new Date(v.startedAt).toLocaleString(void 0, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }), logged ? ` \xB7 ${hms(logged)} logged earlier` : ""), /* @__PURE__ */ React.createElement("button", { className: "ps-btn ghost small ps-clock-act", onClick: pauseEditing }, "Pause")) : /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("button", { className: "ps-btn", onClick: startEditing }, logged ? "Resume editing" : "Start editing"), /* @__PURE__ */ React.createElement("span", { className: "ps-muted" }, logged ? `Paused with ${hms(logged)} on the clock.` : "Start the clock before this can go to QA."))), v.stage === "in_progress" ? /* @__PURE__ */ React.createElement("div", { className: "ps-btnrow end" }, /* @__PURE__ */ React.createElement("button", { className: "ps-btn", disabled: missing, onClick: footageIn }, "Footage uploaded")) : /* @__PURE__ */ React.createElement(React.Fragment, null, BACK_TO[v.stage] && /* @__PURE__ */ React.createElement(
+    ))), act && /* @__PURE__ */ React.createElement("div", { className: "ps-actions" }, checks.length > 0 && /* @__PURE__ */ React.createElement("fieldset", { className: "ps-checks" }, /* @__PURE__ */ React.createElement("legend", null, "Tick every item before passing"), checks.map((c, i) => /* @__PURE__ */ React.createElement("label", { key: c }, /* @__PURE__ */ React.createElement("input", { type: "checkbox", checked: !!ticks[i], onChange: () => setTicks((t) => ({ ...t, [i]: !t[i] })) }), /* @__PURE__ */ React.createElement("span", null, c)))), (missing || noEditor) && /* @__PURE__ */ React.createElement("p", { className: "ps-warn" }, noEditor ? "Assign an editor before this can move on." : `Add the ${need[1].toLowerCase()} to continue.`), v.stage === "editing" && /* @__PURE__ */ React.createElement("div", { className: "ps-clockbox" }, v.startedAt ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("span", { className: "ps-clock big" }, /* @__PURE__ */ React.createElement("span", { className: "ps-dot", "aria-hidden": "true" }), /* @__PURE__ */ React.createElement(Elapsed, { from: v.startedAt, interval: 1e3, seconds: true })), /* @__PURE__ */ React.createElement("span", { className: "ps-muted" }, "In progress since ", new Date(v.startedAt).toLocaleString(void 0, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }), logged ? ` \xB7 ${hms(logged)} logged earlier` : ""), /* @__PURE__ */ React.createElement("button", { className: "ps-btn ghost small ps-clock-act", onClick: pauseEditing }, "Pause")) : /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("button", { className: "ps-btn", onClick: startEditing }, logged ? "Resume editing" : "Start editing"), /* @__PURE__ */ React.createElement("span", { className: "ps-muted" }, logged ? `Paused with ${hms(logged)} on the clock.` : "Start the clock before this can go to QA."))), v.stage === "in_progress" ? /* @__PURE__ */ React.createElement("div", { className: "ps-btnrow end" }, /* @__PURE__ */ React.createElement("button", { className: "ps-btn", disabled: missing, onClick: footageIn }, "Footage uploaded")) : /* @__PURE__ */ React.createElement(React.Fragment, null, BACK_TO[v.stage] && /* @__PURE__ */ React.createElement(
       "textarea",
       {
         value: note,
@@ -1834,11 +1830,6 @@
     }, []);
     useEffect(() => {
       if (!db) return;
-      const n = structuredClone(db);
-      if (settleWeeks(n)) {
-        setDb(n);
-        return;
-      }
       const json = JSON.stringify(db);
       if (json === lastSaved.current) return;
       const t = setTimeout(async () => {
@@ -1920,15 +1911,6 @@
     };
     const picker = (p, size) => /* @__PURE__ */ React.createElement(AvatarPicker, { person: p, size, canEdit: lead || p.id === me.id, onChange: (url) => setAvatar(p.id, url), onError: setToast });
     const updateClient = (id, patch) => mutate((n) => Object.assign(n.clients.find((c) => c.id === id), patch));
-    const pay = (cid) => {
-      let covered = null;
-      setDb((d) => {
-        const n = structuredClone(d);
-        covered = recordPayment(n, cid, me.id);
-        return covered ? n : d;
-      });
-      setTimeout(() => setToast(covered ? `Payment recorded for the weeks of ${covered.map((k) => shortDate(fromIso(k))).join(", ")}.` : "Set a call day first."), 0);
-    };
     const downloadBackup = () => {
       try {
         const json = JSON.stringify(db, null, 2);
@@ -1962,15 +1944,25 @@
       };
       reader.readAsText(file);
     };
-    const togglePaidWeek = (cid, k) => mutate((n) => {
-      let w = n.weeks.find((x) => x.clientId === cid && x.start === k);
-      if (!w) {
-        w = { id: uid("w"), clientId: cid, start: k, paid: false, outcome: "pending", videoId: null };
-        n.weeks.push(w);
+    const toggleInvoice = (cid, key) => mutate((n) => {
+      n.invoices = n.invoices || [];
+      const id = `${cid}:${key}`;
+      let row = n.invoices.find((x) => x.id === id);
+      if (!row) {
+        row = { id, clientId: cid, key, paid: false, paidAt: null, by: null };
+        n.invoices.push(row);
       }
-      if (w.outcome === "used") return;
-      w.paid = !w.paid;
-      if (!w.paid) w.outcome = "pending";
+      row.paid = !row.paid;
+      row.paidAt = row.paid ? (/* @__PURE__ */ new Date()).toISOString() : null;
+      row.by = row.paid ? me.id : null;
+    });
+    const addJobInvoice = (cid, label) => mutate((n) => {
+      n.invoices = n.invoices || [];
+      const key = uid("job");
+      n.invoices.push({ id: `${cid}:${key}`, clientId: cid, key, label, manual: true, at: (/* @__PURE__ */ new Date()).toISOString(), paid: false, paidAt: null, by: null, raisedBy: me.id });
+    });
+    const removeJobInvoice = (cid, key) => mutate((n) => {
+      n.invoices = (n.invoices || []).filter((x) => x.id !== `${cid}:${key}`);
     });
     const delegateTodo = () => {
       const who = draft.delPerson, text = (draft.delText || "").trim();
@@ -2019,8 +2011,7 @@
         rounds: 0,
         archived: false,
         footageAt: null,
-        weekId: null,
-        history: [{ at: now, by: me.id, text: "Created" }]
+          history: [{ at: now, by: me.id, text: "Created" }]
       }));
       setDraft((x) => ({ ...x, title: "" }));
       setToast("Video added at Topic proposal.");
@@ -2030,11 +2021,11 @@
       if (!name) return setToast("Type a client name.");
       const id = uid("c");
       mutate((n) => {
-        n.clients.push({ id, name, callDay: null, bankFloor: 2, clientKind: "projeclab" });
+        n.clients.push({ id, name, billing: "monthly", billingStart: isoDay(/* @__PURE__ */ new Date()), clientKind: "projeclab" });
         n.people.push({ id: uid("p"), name: `${name} team`, role: "client", clientId: id });
       });
       setDraft((x) => ({ ...x, clientName: "" }));
-      setToast("Client added. Set their call day below.");
+      setToast("Client added · billed monthly. Change their billing cycle below.");
     };
     const addPerson = () => {
       if (!draft.person.trim()) return setToast("Type a name.");
@@ -2114,8 +2105,7 @@
       const c = db.clients.find((x) => x.id === page.id);
       const rows = visible.filter((v) => v.clientId === page.id);
       const live = rows.filter((v) => v.stage === "ready");
-      const pays = db.payments.filter((p) => p.clientId === page.id).sort((a, b) => b.at.localeCompare(a.at));
-      body = c ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("h1", { className: "ps-h1" }, c.name), /* @__PURE__ */ React.createElement("div", { className: "ps-meta" }, /* @__PURE__ */ React.createElement("span", { className: `ps-chip ${clientKindOf(c).id === "personal" ? "warn" : "ok"}` }, clientKindOf(c).label)), /* @__PURE__ */ React.createElement("p", { className: "ps-lede" }, c.callDay != null ? `One video a week. Footage filmed before the ${WEEKDAYS[c.callDay]} call starts that week's edit; a paid week with no footage is forfeited.` : "No membership yet."), /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Invoices"), lead && /* @__PURE__ */ React.createElement("p", { className: "ps-muted" }, "Click any week to mark it paid or unpaid. Weeks that already started a video can't be changed \u2014 open the video instead."), /* @__PURE__ */ React.createElement(WeekStrip, { db, client: c, open: setOpenId, toggle: lead ? (k) => togglePaidWeek(c.id, k) : null }), lead && /* @__PURE__ */ React.createElement("div", { className: "ps-form", style: { marginTop: 12 } }, /* @__PURE__ */ React.createElement("button", { className: "ps-btn", onClick: () => pay(c.id) }, "Record a payment (4 weeks)"), pays[0] && /* @__PURE__ */ React.createElement("span", { className: "ps-muted" }, "Last payment ", shortDate(pays[0].at))), /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Pipeline"), /* @__PURE__ */ React.createElement(FilmStrip, { videos: rows, filter, setFilter }), /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "In production"), /* @__PURE__ */ React.createElement(VideoTable, { rows: rows.filter((v) => !v.archived && v.stage !== "ready" && (!filter || v.stage === filter)), db, me, open: setOpenId, showClient: false }), /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Tasks"), /* @__PURE__ */ React.createElement(ClientTasks, { db, client: c, openTask: setTaskId }), /* @__PURE__ */ React.createElement(SentToClient, { db, client: c, openTask: setTaskId, openVideo: setOpenId })) : /* @__PURE__ */ React.createElement("p", { className: "ps-empty" }, "That client no longer exists.");
+      body = c ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("h1", { className: "ps-h1" }, c.name), /* @__PURE__ */ React.createElement("div", { className: "ps-meta" }, /* @__PURE__ */ React.createElement("span", { className: `ps-chip ${clientKindOf(c).id === "personal" ? "warn" : "ok"}` }, clientKindOf(c).label)), /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Invoices"), /* @__PURE__ */ React.createElement("p", { className: "ps-muted" }, billingOf(c).label, " \xB7 ", billingOf(c).note, unpaidFor(db, c).length > 0 ? ` \u2014 ${unpaidFor(db, c).length} unpaid` : billingOf(c).id === "none" ? "" : " \u2014 all settled", lead && billingOf(c).id !== "none" ? ". Click a line to mark it paid or unpaid." : ""), /* @__PURE__ */ React.createElement(InvoiceList, { db, client: c, canEdit: lead, toggle: (k) => toggleInvoice(c.id, k), addJob: (label) => addJobInvoice(c.id, label), removeJob: (k) => removeJobInvoice(c.id, k), openVideo: setOpenId }), /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Pipeline"), /* @__PURE__ */ React.createElement(FilmStrip, { videos: rows, filter, setFilter }), /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "In production"), /* @__PURE__ */ React.createElement(VideoTable, { rows: rows.filter((v) => !v.archived && v.stage !== "ready" && (!filter || v.stage === filter)), db, me, open: setOpenId, showClient: false }), /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Tasks"), /* @__PURE__ */ React.createElement(ClientTasks, { db, client: c, openTask: setTaskId }), /* @__PURE__ */ React.createElement(SentToClient, { db, client: c, openTask: setTaskId, openVideo: setOpenId })) : /* @__PURE__ */ React.createElement("p", { className: "ps-empty" }, "That client no longer exists.");
     } else if (page.tab === "timeoff") {
       body = /* @__PURE__ */ React.createElement(TimeOffPage, { db, me, mutate, setToast });
     } else if (page.tab === "calendar") {
@@ -2138,7 +2128,13 @@
         return /* @__PURE__ */ React.createElement("details", { key: p.id, className: "ps-person ps-teamfold" }, /* @__PURE__ */ React.createElement("summary", null, /* @__PURE__ */ React.createElement(Avatar, { person: p, size: 28 }), /* @__PURE__ */ React.createElement("b", null, p.name), /* @__PURE__ */ React.createElement("span", { className: "ps-chip", style: { background: ROLES[p.role].soft, color: ROLES[p.role].color } }, ROLES[p.role].label), /* @__PURE__ */ React.createElement("span", { className: "ps-muted" }, rows.length, " video", rows.length === 1 ? "" : "s", " \xB7 ", openT, " open task", openT === 1 ? "" : "s")), /* @__PURE__ */ React.createElement("div", { className: "ps-teamfold-body" }, /* @__PURE__ */ React.createElement("div", { className: "ps-teamfold-pic" }, picker(p, 40)), /* @__PURE__ */ React.createElement(TodoList, { person: p, tasks: db.tasks, clients: db.clients, canAdd: false, canToggle: true, mutate, openTask: setTaskId }), /* @__PURE__ */ React.createElement(VideoTable, { rows, db, me, open: setOpenId })));
       }));
     } else if (page.tab === "settings") {
-      body = /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("h1", { className: "ps-h1" }, "Settings"), /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "New video"), /* @__PURE__ */ React.createElement("div", { className: "ps-form" }, /* @__PURE__ */ React.createElement("select", { value: draft.client, onChange: (e) => setDraft({ ...draft, client: e.target.value }) }, /* @__PURE__ */ React.createElement("option", { value: "" }, "Choose a client"), db.clients.map((c) => /* @__PURE__ */ React.createElement("option", { key: c.id, value: c.id }, c.name))), /* @__PURE__ */ React.createElement("input", { placeholder: "Working title", value: draft.title, onChange: (e) => setDraft({ ...draft, title: e.target.value }) }), /* @__PURE__ */ React.createElement("button", { className: "ps-btn", onClick: addVideo }, "Add video")), /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Clients"), /* @__PURE__ */ React.createElement("div", { className: "ps-clients" }, db.clients.map((c) => /* @__PURE__ */ React.createElement("div", { key: c.id, className: "ps-client-row" }, /* @__PURE__ */ React.createElement("b", null, c.name), /* @__PURE__ */ React.createElement("label", { className: "ps-field" }, /* @__PURE__ */ React.createElement("span", null, "Client type"), /* @__PURE__ */ React.createElement("select", { value: clientKindOf(c).id, onChange: (e) => updateClient(c.id, { clientKind: e.target.value }) }, CLIENT_KINDS.map((k) => /* @__PURE__ */ React.createElement("option", { key: k.id, value: k.id }, k.label)))), /* @__PURE__ */ React.createElement("label", { className: "ps-field" }, /* @__PURE__ */ React.createElement("span", null, "Call day"), /* @__PURE__ */ React.createElement("select", { value: c.callDay ?? "", onChange: (e) => updateClient(c.id, { callDay: e.target.value === "" ? null : +e.target.value }) }, /* @__PURE__ */ React.createElement("option", { value: "" }, "Not set"), [1, 2, 3, 4, 5].map((d) => /* @__PURE__ */ React.createElement("option", { key: d, value: d }, WEEKDAYS[d])))), /* @__PURE__ */ React.createElement("label", { className: "ps-field" }, /* @__PURE__ */ React.createElement("span", null, "Script floor"), /* @__PURE__ */ React.createElement("input", { type: "number", min: "0", value: c.bankFloor ?? 2, onChange: (e) => updateClient(c.id, { bankFloor: Math.max(0, parseInt(e.target.value) || 0) }) }))))), /* @__PURE__ */ React.createElement("div", { className: "ps-form", style: { marginTop: 10 } }, /* @__PURE__ */ React.createElement("input", { placeholder: "New client name", value: draft.clientName, onChange: (e) => setDraft({ ...draft, clientName: e.target.value }) }), /* @__PURE__ */ React.createElement("button", { className: "ps-btn ghost", onClick: addClient }, "Add client")), /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Current teammates"), /* @__PURE__ */ React.createElement("div", { className: "ps-people-list" }, db.people.filter((p) => p.role !== "client").map((p) => /* @__PURE__ */ React.createElement("div", { key: p.id, className: "ps-person-row" }, /* @__PURE__ */ React.createElement(Avatar, { person: p, size: 24 }), /* @__PURE__ */ React.createElement("span", { className: "ps-person-name" }, p.name), /* @__PURE__ */ React.createElement("span", { className: "ps-chip" }, (ROLES[p.role] || {}).label || p.role), /* @__PURE__ */ React.createElement("input", { className: "ps-person-mail", type: "email", placeholder: "login email", value: p.email || "", onChange: (e) => {
+      body = /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("h1", { className: "ps-h1" }, "Settings"), /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "New video"), /* @__PURE__ */ React.createElement("div", { className: "ps-form" }, /* @__PURE__ */ React.createElement("select", { value: draft.client, onChange: (e) => setDraft({ ...draft, client: e.target.value }) }, /* @__PURE__ */ React.createElement("option", { value: "" }, "Choose a client"), db.clients.map((c) => /* @__PURE__ */ React.createElement("option", { key: c.id, value: c.id }, c.name))), /* @__PURE__ */ React.createElement("input", { placeholder: "Working title", value: draft.title, onChange: (e) => setDraft({ ...draft, title: e.target.value }) }), /* @__PURE__ */ React.createElement("button", { className: "ps-btn", onClick: addVideo }, "Add video")), /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Clients"), /* @__PURE__ */ React.createElement("div", { className: "ps-clients" }, db.clients.map((c) => /* @__PURE__ */ React.createElement("div", { key: c.id, className: "ps-client-row" }, /* @__PURE__ */ React.createElement("b", null, c.name), /* @__PURE__ */ React.createElement("label", { className: "ps-field" }, /* @__PURE__ */ React.createElement("span", null, "Client type"), /* @__PURE__ */ React.createElement("select", { value: clientKindOf(c).id, onChange: (e) => updateClient(c.id, { clientKind: e.target.value }) }, CLIENT_KINDS.map((k) => /* @__PURE__ */ React.createElement("option", { key: k.id, value: k.id }, k.label)))), /* @__PURE__ */ React.createElement("label", { className: "ps-field" }, /* @__PURE__ */ React.createElement("span", null, "Billing"), /* @__PURE__ */ React.createElement("select", { value: billingOf(c).id, onChange: (e) => updateClient(c.id, { billing: e.target.value, billingStart: c.billingStart || (e.target.value === "weekly" || e.target.value === "biweekly" ? isoDay(mondayOf(/* @__PURE__ */ new Date())) : null) }) }, BILLING_PLANS.map((k) => /* @__PURE__ */ React.createElement("option", { key: k.id, value: k.id }, k.label)))), /* @__PURE__ */ React.createElement("label", { className: "ps-field" }, /* @__PURE__ */ React.createElement("span", null, "Billing started"), billingOf(c).id === "pervideo" || billingOf(c).id === "project" || billingOf(c).id === "none" ? /* @__PURE__ */ React.createElement("span", { className: "ps-muted ps-field-na" }, "\u2014") : /* @__PURE__ */ React.createElement(PickerInput, { type: "date", ariaLabel: `When ${c.name} started being billed`, value: c.billingStart || "", onChange: (e) => updateClient(c.id, { billingStart: e.target.value || null }) }))))), /* @__PURE__ */ React.createElement("div", { className: "ps-form", style: { marginTop: 10 } }, /* @__PURE__ */ React.createElement("input", { placeholder: "New client name", value: draft.clientName, onChange: (e) => setDraft({ ...draft, clientName: e.target.value }) }), /* @__PURE__ */ React.createElement("button", { className: "ps-btn ghost", onClick: addClient }, "Add client")), /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Current teammates"), /* @__PURE__ */ React.createElement("div", { className: "ps-people-list" }, db.people.filter((p) => p.role !== "client").map((p) => /* @__PURE__ */ React.createElement("div", { key: p.id, className: "ps-person-row" }, /* @__PURE__ */ React.createElement(Avatar, { person: p, size: 24 }), /* @__PURE__ */ React.createElement("input", { className: "ps-person-name", "aria-label": `Name for ${p.name}`, value: p.name, onChange: (e) => {
+      const v = e.target.value;
+      mutate((n) => { const t = n.people.find((x) => x.id === p.id); if (t) t.name = v; });
+    }, onBlur: (e) => {
+      if (e.target.value.trim()) return;
+      mutate((n) => { const t = n.people.find((x) => x.id === p.id); if (t) t.name = "Unnamed"; });
+    } }), /* @__PURE__ */ React.createElement("span", { className: "ps-chip" }, (ROLES[p.role] || {}).label || p.role), /* @__PURE__ */ React.createElement("input", { className: "ps-person-mail", type: "email", placeholder: "login email", value: p.email || "", onChange: (e) => {
       const v = e.target.value;
       mutate((n) => { const t = n.people.find((x) => x.id === p.id); if (t) t.email = v.trim(); });
     } }), p.id === me.id ? /* @__PURE__ */ React.createElement("span", { className: "ps-muted ps-person-you" }, "you") : /* @__PURE__ */ React.createElement("button", { className: "ps-x-small", "aria-label": `Remove ${p.name}`, onClick: () => removePerson(p) }, "\xD7")))), /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "New teammate"), /* @__PURE__ */ React.createElement("div", { className: "ps-form" }, /* @__PURE__ */ React.createElement("input", { placeholder: "Name", value: draft.person, onChange: (e) => setDraft({ ...draft, person: e.target.value }) }), /* @__PURE__ */ React.createElement("input", { type: "email", placeholder: "Login email (optional)", value: draft.personEmail || "", onChange: (e) => setDraft({ ...draft, personEmail: e.target.value }) }), /* @__PURE__ */ React.createElement("select", { value: draft.role, onChange: (e) => setDraft({ ...draft, role: e.target.value }) }, ["coordinator", "hr", "editor", "qa"].map((r) => /* @__PURE__ */ React.createElement("option", { key: r, value: r }, ROLES[r].label))), /* @__PURE__ */ React.createElement("button", { className: "ps-btn ghost", onClick: addPerson }, "Add teammate")), /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Editor pictures"), /* @__PURE__ */ React.createElement("div", { className: "ps-editors" }, db.people.filter((p) => p.role === "editor").map((p) => /* @__PURE__ */ React.createElement("div", { key: p.id, className: "ps-editor" }, picker(p, 64), /* @__PURE__ */ React.createElement("span", null, p.name)))), /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Stage allowances"), /* @__PURE__ */ React.createElement("div", { className: "ps-stages" }, STAGES.filter((s) => s.owner).map((s, i) => /* @__PURE__ */ React.createElement("div", { key: s.id, className: "ps-stage-row" }, /* @__PURE__ */ React.createElement("span", { className: "ps-frame-step" }, i + 1), /* @__PURE__ */ React.createElement("span", null, s.name, CHECKS[s.id] ? " \xB7 checklist" : ""), /* @__PURE__ */ React.createElement("span", { className: "ps-chip", style: { background: ROLES[s.owner].soft, color: ROLES[s.owner].color } }, ROLES[s.owner].label), /* @__PURE__ */ React.createElement("span", { className: "ps-muted" }, s.days ? `${s.days} business day${s.days > 1 ? "s" : ""}` : "No clock")))), /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "SOP templates"), /* @__PURE__ */ React.createElement(TemplateEditor, { db, mutate, setToast }), /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Backups"), /* @__PURE__ */ React.createElement("p", { className: "ps-muted", style: { marginBottom: 10 } }, "Every change saves automatically for the whole team. Download a copy now and then so you have one outside the system."), /* @__PURE__ */ React.createElement("div", { className: "ps-form" }, /* @__PURE__ */ React.createElement("button", { className: "ps-btn", onClick: downloadBackup }, "Download a backup"), /* @__PURE__ */ React.createElement("label", { className: "ps-btn ghost ps-filebtn" }, "Restore from a backup", /* @__PURE__ */ React.createElement("input", { type: "file", accept: "application/json,.json", hidden: true, onChange: (e) => { const f = e.target.files && e.target.files[0]; e.target.value = ""; restoreBackup(f); } }))), /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Data"), /* @__PURE__ */ React.createElement("p", { className: "ps-muted", style: { marginBottom: 8 } }, "Replaces everything with the sample studio. Only for testing."), /* @__PURE__ */ React.createElement("button", { className: "ps-btn ghost", onClick: reset }, "Restore demo data"));
@@ -2164,7 +2160,10 @@
         ...myTasksDone.map((t) => ({ kind: "task", id: t.id, title: t.text, at: t.doneAt })),
         ...myVideosLive.map((v) => ({ kind: "video", id: v.id, title: v.title, at: v.enteredAt }))
       ].sort((a, b) => b.at.localeCompare(a.at)).slice(0, 10);
-      body = /* @__PURE__ */ React.createElement(React.Fragment, null, me.role !== "client" ? /* @__PURE__ */ React.createElement("div", { className: "ps-profile" }, picker(me, 72), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("h1", { className: "ps-h1" }, "My tasks"), /* @__PURE__ */ React.createElement("p", { className: "ps-muted" }, me.name, " \xB7 ", ROLES[me.role].label))) : /* @__PURE__ */ React.createElement("h1", { className: "ps-h1" }, "Hi, ", me.name), me.role !== "client" && /* @__PURE__ */ React.createElement(PinnedNotice, { db, me, mutate, canEdit: lead || me.role === "hr" }), /* @__PURE__ */ React.createElement("p", { className: "ps-lede" }, waitingLine, lead && late.length ? ` ${late.length} past due across the studio.` : ""), client && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Your weeks"), /* @__PURE__ */ React.createElement(WeekStrip, { db, client, open: setOpenId })), me.role !== "hr" && /* @__PURE__ */ React.createElement(VideoTable, { rows: mine, db, me, open: setOpenId, showClient: me.role !== "client" }), me.role !== "client" && canApproveTimeoff(db, me) && /* @__PURE__ */ React.createElement(TimeOffPanel, { db, me, mutate, setToast, queueOnly: true }), me.role !== "client" && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Tasks"), /* @__PURE__ */ React.createElement(TodoList, { person: me, tasks: db.tasks, clients: db.clients, canAdd: false, canToggle: canEditPerson(me), mutate, openTask: setTaskId, shareFinalCheck: lead })), (lead || me.role === "hr") && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Delegate"), /* @__PURE__ */ React.createElement(Delegate, { db, draft, setDraft, addTodo: delegateTodo })), client && waiting.length > 0 && /* @__PURE__ */ React.createElement("details", { className: "ps-fold" }, /* @__PURE__ */ React.createElement("summary", null, waiting.length, " with someone else"), /* @__PURE__ */ React.createElement(VideoTable, { rows: waiting, db, me, open: setOpenId, showClient: false })), !client && recentlyFinished.length > 0 && /* @__PURE__ */ React.createElement("details", { className: "ps-fold" }, /* @__PURE__ */ React.createElement("summary", null, "Recently finished (", recentlyFinished.length, ")"), /* @__PURE__ */ React.createElement("div", { className: "ps-table" }, recentlyFinished.map((f) => /* @__PURE__ */ React.createElement(
+      body = /* @__PURE__ */ React.createElement(React.Fragment, null, me.role !== "client" ? /* @__PURE__ */ React.createElement("div", { className: "ps-profile" }, picker(me, 72), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("h1", { className: "ps-h1" }, "My tasks"), /* @__PURE__ */ React.createElement("p", { className: "ps-muted" }, me.name, " \xB7 ", ROLES[me.role].label))) : /* @__PURE__ */ React.createElement("h1", { className: "ps-h1" }, "Hi, ", me.name), me.role !== "client" && /* @__PURE__ */ React.createElement(PinnedNotice, { db, me, mutate, canEdit: lead || me.role === "hr" }), /* @__PURE__ */ React.createElement("p", { className: "ps-lede" }, waitingLine, lead && late.length ? ` ${late.length} past due across the studio.` : ""), client && billingOf(client).id !== "none" && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Your invoices"), /* @__PURE__ */ React.createElement(InvoiceList, { db, client, canEdit: false, toggle: () => {
+    }, addJob: () => {
+    }, removeJob: () => {
+    }, openVideo: setOpenId })), me.role !== "hr" && /* @__PURE__ */ React.createElement(VideoTable, { rows: mine, db, me, open: setOpenId, showClient: me.role !== "client" }), me.role !== "client" && canApproveTimeoff(db, me) && /* @__PURE__ */ React.createElement(TimeOffPanel, { db, me, mutate, setToast, queueOnly: true }), me.role !== "client" && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Tasks"), /* @__PURE__ */ React.createElement(TodoList, { person: me, tasks: db.tasks, clients: db.clients, canAdd: false, canToggle: canEditPerson(me), mutate, openTask: setTaskId, shareFinalCheck: lead })), (lead || me.role === "hr") && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Delegate"), /* @__PURE__ */ React.createElement(Delegate, { db, draft, setDraft, addTodo: delegateTodo })), client && waiting.length > 0 && /* @__PURE__ */ React.createElement("details", { className: "ps-fold" }, /* @__PURE__ */ React.createElement("summary", null, waiting.length, " with someone else"), /* @__PURE__ */ React.createElement(VideoTable, { rows: waiting, db, me, open: setOpenId, showClient: false })), !client && recentlyFinished.length > 0 && /* @__PURE__ */ React.createElement("details", { className: "ps-fold" }, /* @__PURE__ */ React.createElement("summary", null, "Recently finished (", recentlyFinished.length, ")"), /* @__PURE__ */ React.createElement("div", { className: "ps-table" }, recentlyFinished.map((f) => /* @__PURE__ */ React.createElement(
         "button",
         {
           key: `${f.kind}-${f.id}`,
@@ -2288,22 +2287,21 @@
 .ps-frame-n{font-size:32px;font-weight:800;line-height:1;letter-spacing:-.03em}
 .ps-frame-name{font-size:12px;line-height:1.25;margin-top:auto;color:var(--muted)}
 .ps-frame-step{display:inline-grid;place-content:center;min-width:17px;height:17px;border-radius:50%;background:var(--paper);font-size:10px;font-weight:600;color:var(--muted)}
-.ps-weeks{display:grid;grid-template-columns:repeat(10,minmax(0,1fr));gap:6px}
-.ps-week{display:flex;flex-direction:column;align-items:flex-start;gap:2px;min-height:64px;padding:8px;border-radius:6px;border:1px solid var(--line);background:var(--card);text-align:left;cursor:default;overflow:hidden}
-.ps-week:not(:disabled){cursor:pointer}
-.ps-week.clickable:hover{border-color:var(--accent);box-shadow:inset 0 0 0 1px var(--accent)}
-.ps-week.now{box-shadow:inset 0 0 0 2px var(--ink)}
-.ps-week-date{font-size:12px;font-weight:600}
-.ps-week-label{font-size:11px;color:var(--muted);line-height:1.25;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
-.ps-week.used{background:var(--okbg);border-color:transparent}
-.ps-week.live{background:var(--accent);border-color:transparent}
-.ps-week.live .ps-week-date,.ps-week.live .ps-week-label{color:var(--card)}
-.ps-week.paid{border:2px solid var(--accent)}
-.ps-week.lost{background:var(--warnbg);border-color:transparent}
-.ps-week.lost .ps-week-label{color:var(--warn)}
-.ps-week.unpaid{border:1px dashed var(--late)}
-.ps-week.unpaid .ps-week-label{color:var(--late)}
-.ps-week.open{background:transparent;border-style:dashed}
+.ps-invoices{display:flex;flex-direction:column;gap:6px;max-width:560px}
+.ps-invoice-row{display:flex;align-items:center;gap:6px}
+.ps-job-add{margin-top:10px;max-width:560px}
+.ps-job-add input{flex:1;min-width:200px}
+.ps-invoice{display:flex;align-items:center;justify-content:space-between;gap:12px;width:100%;padding:10px 14px;border-radius:8px;border:1px solid var(--line);background:var(--card);text-align:left;cursor:default}
+.ps-invoice.clickable{cursor:pointer}
+.ps-invoice.clickable:hover{border-color:var(--accent);box-shadow:inset 0 0 0 1px var(--accent)}
+.ps-invoice-when{font-size:14px;font-weight:600}
+.ps-invoice-state{font-size:12px;color:var(--muted);white-space:nowrap}
+.ps-invoice.paid{background:var(--okbg);border-color:transparent}
+.ps-invoice.paid .ps-invoice-state{color:var(--accent);font-weight:600}
+.ps-invoice.unpaid{border:1px solid var(--late)}
+.ps-invoice.unpaid .ps-invoice-state{color:var(--late);font-weight:600}
+.ps-invoice.upcoming{border-style:dashed;background:transparent}
+.ps-field-na{display:flex;align-items:center;height:37.5px}
 .ps-table{display:flex;flex-direction:column;border-top:1px solid var(--line)}
 .ps-row{display:grid;grid-template-columns:160px minmax(0,1fr) auto 110px 110px 64px;gap:14px;align-items:center;background:none;border:0;
   border-bottom:1px solid var(--line);padding:11px 6px;text-align:left;cursor:pointer}
@@ -2445,8 +2443,10 @@
 .ps-history li{margin:3px 0}
 .ps-form{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
 .ps-form input:not([type=date]){min-width:240px}
-.ps-clients{display:flex;flex-direction:column;gap:10px;max-width:640px}
-.ps-client-row{display:grid;grid-template-columns:1fr 160px 150px 110px;gap:12px;align-items:end;padding-bottom:10px;border-bottom:1px solid var(--line)}
+.ps-clients{display:flex;flex-direction:column;gap:10px;max-width:780px}
+.ps-client-row{display:grid;grid-template-columns:minmax(120px,1fr) 150px 150px 170px;gap:12px;align-items:end;padding-bottom:10px;border-bottom:1px solid var(--line)}
+.ps-client-row .ps-field select,.ps-client-row .ps-pickerwrap input{width:100%;box-sizing:border-box}
+.ps-client-row .ps-pickerwrap{display:block;width:100%}
 .ps-stages{display:flex;flex-direction:column;gap:6px;max-width:600px}
 .ps-stage-row{display:grid;grid-template-columns:24px 1fr auto 130px;gap:10px;align-items:center}
 .ps-toast{position:fixed;bottom:22px;left:50%;transform:translateX(-50%);background:var(--ink);color:var(--paper);padding:9px 16px;border-radius:999px;font-size:14px;z-index:30;max-width:90vw;display:flex;align-items:center;justify-content:center;gap:12px}
@@ -2467,8 +2467,10 @@
 .ps-del-row{display:flex;gap:8px;flex-wrap:wrap}
 .ps-duo{display:flex;gap:6px;flex:1;min-width:0}
 .ps-routehint{margin:-2px 0 2px}
-.ps-pw-date{flex:1.3 1 136px;min-width:120px}
-.ps-pw-time{flex:1 1 106px;min-width:96px}
+/* Only inside the date+time duo, where the flex basis means width. In a
+   column-flex field it would be read as height and blow the row apart. */
+.ps-duo .ps-pw-date{flex:1.3 1 136px;min-width:120px}
+.ps-duo .ps-pw-time{flex:1 1 106px;min-width:96px}
 .ps-pickerwrap{position:relative;display:inline-block;min-width:0}
 .ps-pickerwrap input{width:100%;min-width:0;padding-right:18px}
 .ps-duo .ps-pickerwrap input[type=date],.ps-duo .ps-pickerwrap input[type=time]{font-size:12.5px;padding-left:6px;padding-right:22px}
@@ -2478,10 +2480,11 @@
 .ps-pickerwrap input[type=date]::-webkit-calendar-picker-indicator,.ps-pickerwrap input[type=time]::-webkit-calendar-picker-indicator{display:none;-webkit-appearance:none}
 .ps-people-list{display:flex;flex-direction:column;gap:6px;margin-bottom:6px}
 .ps-person-row{display:flex;align-items:center;gap:10px;padding:7px 10px;background:var(--paper);border:1px solid var(--line);border-radius:8px}
-.ps-person-name{font-weight:600;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ps-person-row .ps-chip{flex:0 0 78px;text-align:center;padding-left:4px;padding-right:4px}
+.ps-person-name{font-weight:600;flex:1 1 150px;max-width:240px;min-width:0;padding:4px 8px;font-size:13px}
 .ps-person-you{font-size:12px}
 .ps-filebtn{cursor:pointer;display:inline-flex;align-items:center}
-.ps-person-mail{flex:0 1 200px;min-width:0;padding:4px 8px;font-size:12.5px}
+.ps-person-mail{flex:1 1 200px;max-width:280px;min-width:0;padding:4px 8px;font-size:12.5px}
 .ps-search{position:relative;display:inline-flex}
 .ps-search-in{width:210px;min-width:0;padding:6px 10px;font-size:13.5px}
 .ps-searchpanel{position:absolute;top:calc(100% + 6px);right:0;width:360px;max-width:80vw;max-height:60vh;overflow-y:auto;background:var(--card);border:1px solid var(--line);border-radius:10px;box-shadow:0 18px 40px -12px rgba(0,0,0,.35);z-index:50;padding:6px}
@@ -2630,7 +2633,6 @@
   .ps-row{grid-template-columns:minmax(0,1fr) auto;row-gap:4px}
   .ps-row-client,.ps-row-ed,.ps-row-go{display:none}
   .ps-fields{grid-template-columns:1fr}
-  .ps-weeks{grid-template-columns:repeat(5,minmax(0,1fr))}
   .ps-client-row{grid-template-columns:1fr 1fr;row-gap:8px;padding-top:4px}
   .ps-client-row > b{grid-column:1 / -1;align-self:start}
   .ps-client-row .ps-field{min-width:0}

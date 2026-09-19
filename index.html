@@ -2323,7 +2323,7 @@
 
 </script>
 
-<!-- Your Supabase connection and login gate. Unchanged apart from the line that starts the app. -->
+<!-- Your Supabase connection and login gate. -->
 <script type="text/babel" data-presets="react">
 const { useState, useEffect, useMemo, useRef } = React;
 
@@ -2383,7 +2383,7 @@ function Gate() {
   const [session, setSession] = useState(undefined);
   const [allowed, setAllowed] = useState(null);
   const [email, setEmail] = useState("");
-  const [sent, setSent] = useState(false);
+  const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
 
@@ -2398,31 +2398,36 @@ function Gate() {
     sb.rpc("is_team_member").then(({ data, error }) => setAllowed(!error && data === true));
   }, [session]);
 
-  const signOut = async () => { await sb.auth.signOut(); window.cutlineAuth = null; setSent(false); };
+  const signOut = async () => { await sb.auth.signOut(); window.cutlineAuth = null; setPassword(""); };
   const send = async () => {
     setErr("");
     if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email.trim())) { setErr("Type a full email address, like name@company.com."); return; }
+    if (!password) { setErr("Type your password."); return; }
     setBusy(true);
-    const { error } = await sb.auth.signInWithOtp({ email: email.trim(), options: { emailRedirectTo: window.location.origin } });
+    const { error } = await sb.auth.signInWithPassword({ email: email.trim().toLowerCase(), password });
     setBusy(false);
-    if (error) setErr(error.message.includes("rate") ? "Too many login emails were sent. Wait a few minutes and try again." : error.message);
-    else setSent(true);
+    if (error) {
+      const m = (error.message || "").toLowerCase();
+      if (m.includes("invalid login")) setErr("That email and password don't match. Check for typos, or ask your team lead to reset it.");
+      else if (m.includes("confirm")) setErr("This account hasn't been confirmed yet. Ask your team lead to tick 'Auto Confirm User' in Supabase.");
+      else setErr(error.message);
+    }
   };
 
   const box = children => <div className="gt"><style>{GATE_CSS}</style><div className="gt-box">{children}</div></div>;
 
   if (!sb) return box(<><h1>Almost there</h1><p>Open <code>index.html</code> and paste your Supabase Project URL and anon public key near the top of the file.</p></>);
   if (session === undefined || (session && allowed === null)) return box(<p>Loading…</p>);
-  if (!session) return box(sent ? (
-    <><h1>Check your email</h1><p>We sent a login link to <b>{email}</b>. Open it on this device to get in.</p>
-      <button className="link" onClick={() => setSent(false)}>Use a different email</button></>
-  ) : (
-    <><h1>Projeclab Studios</h1><p>Type your work email and we'll send you a login link.</p>
+  if (!session) return box(
+    <><h1>Projeclab Studios</h1><p>Sign in with your work email and password.</p>
       <input type="email" placeholder="you@company.com" value={email} onChange={e => setEmail(e.target.value)}
         onKeyDown={e => e.key === "Enter" && send()} autoFocus />
-      <button onClick={send} disabled={busy}>{busy ? "Sending…" : "Send me a login link"}</button>
-      {err && <p className="err" style={{ marginTop: 10 }}>{err}</p>}</>
-  ));
+      <input type="password" placeholder="Password" value={password} onChange={e => setPassword(e.target.value)}
+        onKeyDown={e => e.key === "Enter" && send()} />
+      <button onClick={send} disabled={busy}>{busy ? "Signing in…" : "Sign in"}</button>
+      {err && <p className="err" style={{ marginTop: 10 }}>{err}</p>}
+      <p style={{ marginTop: 14, fontSize: 13 }}>Forgotten it? Ask your team lead to set a new one for you in Supabase.</p></>
+  );
   if (!allowed) return box(<><h1>Not on the team list</h1><p><b>{session.user.email}</b> isn't allowed in yet. Ask your team lead to add this email in Supabase.</p>
     <button onClick={signOut}>Sign out</button></>);
 

@@ -569,7 +569,7 @@
     if (me.role === "client") return v.clientId === me.clientId;
     return true;
   };
-  var canAct = (v, me) => me && (isManager(me.role) ? !v.archived && !(v.stage === "in_progress" && v.footageAt) : isMine(v, me));
+  var canAct = (v, me) => me && (isManager(me.role) ? !v.archived : isMine(v, me));
   var visibleTo = (v, me) => me.role === "client" ? v.clientId === me.clientId : isEditor(me.role) ? v.editorId === me.id : true;
   var resizeImage = (file) => new Promise((resolve, reject) => {
     if (!file || !file.type.startsWith("image/")) return reject(new Error("not-image"));
@@ -630,7 +630,7 @@
   function OwnerChip({ v }) {
     if (v.archived) return /* @__PURE__ */ React.createElement("span", { className: "ps-chip" }, "Rejected");
     const s = stageOf(v.stage);
-    if (v.stage === "in_progress" && v.footageAt) return /* @__PURE__ */ React.createElement("span", { className: "ps-chip filmed" }, "Filmed \xB7 waiting for its week");
+    if (v.stage === "in_progress" && v.footageAt) return /* @__PURE__ */ React.createElement("span", { className: "ps-chip filmed" }, "Filmed \xB7 ready to edit");
     const r = s && s.owner ? ROLES[s.owner] : null;
     return /* @__PURE__ */ React.createElement("span", { className: "ps-stagecell" }, /* @__PURE__ */ React.createElement("span", { className: "ps-chip", style: r ? { background: r.soft, color: r.color } : void 0 }, s ? s.name : v.stage), v.startedAt && /* @__PURE__ */ React.createElement("span", { className: "ps-clock", title: "Editing in progress" }, /* @__PURE__ */ React.createElement("span", { className: "ps-dot", "aria-hidden": "true" }), /* @__PURE__ */ React.createElement(Elapsed, { from: v.startedAt })));
   }

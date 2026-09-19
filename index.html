@@ -69,6 +69,8 @@
   ];
   /* People paperwork doesn't belong in the video QA queue. */
   var NO_QA_KINDS = ["onboarding", "hrdoc"];
+  /* Actual studio work - searchable by the whole team no matter who raised it. */
+  var OPEN_KINDS = ["video", "design"];
   var skipsQA = (t) => NO_QA_KINDS.includes(t && t.kind);
   var kindOf = (id) => TASK_KINDS.find((k) => k.id === id);
   var VIDEO_CHECKS = [
@@ -376,7 +378,22 @@
         ]
       }
     ];
-    return { clients, people, videos, weeks, payments, tasks, meetings: [], timeoff: [] };
+    const templates = [
+      { id: "tpl_editor", name: "New editor onboarding", kind: "onboarding",
+        details: "First week for a new editor. Tick each step as it's done.",
+        steps: ["Accounts created and logins shared", "Added to team chat and calendar", "Walked through the pipeline and QA flow",
+                "Shown the client folders and naming rules", "Given a buddy for the first two weeks", "First edit reviewed together",
+                "End-of-week check-in booked"] },
+      { id: "tpl_video", name: "Standard video edit", kind: "video",
+        details: "The usual pass before anything goes to QA.",
+        steps: ["Rough cut assembled", "Colour and audio pass", "Captions and on-screen text added",
+                "Watched end to end at normal speed", "Exported at the right size and format", "Review link added to the task"] },
+      { id: "tpl_offboard", name: "Offboarding", kind: "hrdoc",
+        details: "Run this on someone's last week.",
+        steps: ["Work handed over and reassigned", "Equipment returned", "Accounts and logins revoked",
+                "Final pay and paperwork confirmed", "Exit chat booked"] }
+    ];
+    return { clients, people, videos, weeks, payments, tasks, meetings: [], timeoff: [], templates };
   }
   var STORE_KEY = "cutline-state-v2";
   var OLD_STAGE_MAP = {
@@ -395,7 +412,8 @@
   };
   var OLD_ROLE_MAP = { writer: "editor", publisher: "editor" };
   var normalize = (d) => {
-    const base = { weeks: [], payments: [], tasks: [], meetings: [], timeoff: [], ...d };
+    const base = { weeks: [], payments: [], tasks: [], meetings: [], timeoff: [], templates: [], ...d };
+    if (!Array.isArray(base.templates)) base.templates = [];
     if (!Array.isArray(base.meetings)) base.meetings = [];
     if (!Array.isArray(base.timeoff)) base.timeoff = [];
     const people = (base.people || []).map((p) => OLD_ROLE_MAP[p.role] ? { ...p, role: OLD_ROLE_MAP[p.role] } : p);
@@ -898,6 +916,125 @@
       canEdit && h("span", { className: "ps-pin-acts" },
         h("button", { className: "ps-btn ghost small", onClick: () => { setText(notice.text); setEditing(true); } }, "Edit"),
         h("button", { className: "ps-x-small", "aria-label": "Remove notice", onClick: () => mutate((n) => { n.notice = null; }) }, "\xD7")
+      )
+    );
+  }
+
+  function TemplateEditor({ db, mutate, setToast }) {
+    const h = React.createElement;
+    const [newName, setNewName] = useState("");
+    const list = db.templates || [];
+    const edit = (id, patch) => mutate((n) => {
+      const t = (n.templates || []).find((x) => x.id === id);
+      if (t) Object.assign(t, patch);
+    });
+    const add = () => {
+      const name = newName.trim();
+      if (!name) return setToast("Give the template a name.");
+      mutate((n) => { n.templates = [...(n.templates || []), { id: uid("tpl"), name, kind: "other", details: "", steps: [] }]; });
+      setNewName("");
+      setToast("Template added — add its steps below.");
+    };
+    const remove = (t) => mutate((n) => { n.templates = (n.templates || []).filter((x) => x.id !== t.id); });
+    return h(React.Fragment, null,
+      h("p", { className: "ps-muted", style: { marginBottom: 10 } },
+        "Saved sets of steps you can hand to someone as a task — onboarding, an edit checklist, offboarding."),
+      list.length ? list.map((t) => h("details", { key: t.id, className: "ps-tpl" },
+        h("summary", null,
+          h("b", null, t.name),
+          h("span", { className: "ps-chip" }, (kindOf(t.kind) || { label: "Task" }).label),
+          h("span", { className: "ps-muted" }, (t.steps || []).length, " step", (t.steps || []).length === 1 ? "" : "s")
+        ),
+        h("div", { className: "ps-tpl-body" },
+          h("div", { className: "ps-del-row" },
+            h("input", { value: t.name, placeholder: "Template name", onChange: (e) => edit(t.id, { name: e.target.value }) }),
+            h("select", { value: t.kind || "other", "aria-label": "Kind", onChange: (e) => edit(t.id, { kind: e.target.value }) },
+              TASK_KINDS.map((k) => h("option", { key: k.id, value: k.id }, k.label)))
+          ),
+          h("input", { value: t.details || "", placeholder: "Short brief (optional)", onChange: (e) => edit(t.id, { details: e.target.value }) }),
+          h("textarea", { className: "ps-tpl-steps", rows: Math.max(4, (t.steps || []).length + 1),
+            placeholder: "One step per line", value: (t.steps || []).join("\n"),
+            onChange: (e) => edit(t.id, { steps: e.target.value.split("\n").map((x) => x.trim()).filter(Boolean) }) }),
+          h("div", { className: "ps-tpl-foot" },
+            h("span", { className: "ps-muted" }, "One step per line. They become tick-boxes on the task."),
+            h("button", { className: "ps-btn ghost small", onClick: () => remove(t) }, "Delete template")
+          )
+        )
+      )) : h("p", { className: "ps-empty" }, "No templates yet."),
+      h("div", { className: "ps-form", style: { marginTop: 10 } },
+        h("input", { placeholder: "New template name", value: newName, onChange: (e) => setNewName(e.target.value),
+          onKeyDown: (e) => e.key === "Enter" && add() }),
+        h("button", { className: "ps-btn ghost", onClick: add }, "Add template")
+      )
+    );
+  }
+
+  function SearchBox({ db, me, lead, openTask, openVideo, openClient }) {
+    const h = React.createElement;
+    const [q, setQ] = useState("");
+    const [open, setOpen] = useState(false);
+    const wrap = useRef(null);
+    useEffect(() => {
+      if (!open) return;
+      const away = (e) => { if (wrap.current && !wrap.current.contains(e.target)) setOpen(false); };
+      const esc = (e) => { if (e.key === "Escape") { setOpen(false); } };
+      document.addEventListener("mousedown", away);
+      document.addEventListener("keydown", esc);
+      return () => { document.removeEventListener("mousedown", away); document.removeEventListener("keydown", esc); };
+    }, [open]);
+
+    const needle = q.trim().toLowerCase();
+    const canSeeAll = lead || me.role === "hr";
+    const hit = (s) => String(s || "").toLowerCase().includes(needle);
+    let tasks = [], videos = [], clients = [];
+    if (needle.length >= 2) {
+      /* Editors and QA see the team's work, but not management or people paperwork.
+         Judge by whose work it IS, not who is holding it right now - a finished
+         edit sits in the Lead's queue for final check but still belongs to the editor. */
+      const privateRoles = ["lead", "hr"];
+      tasks = (db.tasks || []).filter((t) => {
+        const mineAnyway = t.personId === me.id || t.reviewFrom === me.id || t.qaAuthorId === me.id;
+        if (!canSeeAll && !mineAnyway) {
+          if (NO_QA_KINDS.includes(t.kind)) return false;
+          /* Studio work is open to everyone whoever started it - only management's
+             own admin ("Other") stays behind the wall. */
+          if (!OPEN_KINDS.includes(t.kind)) {
+            const ownerId = t.reviewFrom || t.qaAuthorId || t.personId;
+            const owner = db.people.find((p) => p.id === ownerId);
+            if (owner && privateRoles.includes(owner.role)) return false;
+          }
+        }
+        return hit(t.text) || hit(t.details) || hit(t.notes);
+      }).slice().sort(doneSort).slice(0, 12);
+      videos = (db.videos || []).filter((v) => visibleTo(v, me) && (hit(v.title) || hit(v.notes))).slice(0, 8);
+      clients = lead ? (db.clients || []).filter((c) => hit(c.name)).slice(0, 5) : [];
+    }
+    const total = tasks.length + videos.length + clients.length;
+    const nameOf = (id) => (db.people.find((p) => p.id === id) || {}).name || "";
+    const row = (key, kind, title, meta, onClick) => h("button", { key, className: "ps-sr-row", onClick: () => { onClick(); setOpen(false); setQ(""); } },
+      h("span", { className: "ps-sr-kind" }, kind),
+      h("span", { className: "ps-sr-title" }, title),
+      h("span", { className: "ps-muted ps-sr-meta" }, meta));
+
+    return h("span", { className: "ps-search", ref: wrap },
+      h("input", { type: "search", className: "ps-search-in", placeholder: "Search tasks, videos…", value: q,
+        onChange: (e) => { setQ(e.target.value); setOpen(true); },
+        onFocus: () => setOpen(true) }),
+      open && needle.length >= 2 && h("div", { className: "ps-searchpanel" },
+        total === 0
+          ? h("p", { className: "ps-muted ps-sr-empty" }, "Nothing matches “", q.trim(), "”.")
+          : h(React.Fragment, null,
+              tasks.length > 0 && h("p", { className: "ps-sr-head" }, "Tasks"),
+              tasks.map((t) => row("t" + t.id, t.done ? "Done" : (kindOf(t.kind) || { label: "Task" }).label, t.text,
+                [nameOf(t.personId), t.done && t.doneAt ? shortDate(t.doneAt) : taskStatusMeta(t).label].filter(Boolean).join(" · "),
+                () => openTask(t.id))),
+              videos.length > 0 && h("p", { className: "ps-sr-head" }, "Videos"),
+              videos.map((v) => row("v" + v.id, "Video", v.title || "Untitled",
+                [(db.clients.find((c) => c.id === v.clientId) || {}).name, (stageOf(v.stage) || {}).name].filter(Boolean).join(" · "),
+                () => openVideo(v.id))),
+              clients.length > 0 && h("p", { className: "ps-sr-head" }, "Clients"),
+              clients.map((c) => row("c" + c.id, "Client", c.name, clientKindOf(c).label, () => openClient(c.id)))
+            )
       )
     );
   }
@@ -1526,7 +1663,11 @@
     const qa = db.people.find((p) => p.role === "qa");
     const set = (patch) => setDraft((x) => ({ ...x, ...patch }));
     const routeHint = NO_QA_KINDS.includes(draft.delKind) ? "People paperwork \u2014 goes straight to them, no QA review." : qa ? `Goes through QA (${qa.name}) before it's marked done.` : "No one has the QA role yet \u2014 this will skip review and finish directly.";
-    return /* @__PURE__ */ React.createElement("section", { className: "ps-delegate" }, /* @__PURE__ */ React.createElement("div", { className: "ps-del-col" }, /* @__PURE__ */ React.createElement("h4", { className: "ps-h4" }, "Give someone a task"), /* @__PURE__ */ React.createElement("p", { className: "ps-muted" }, "It lands in their queue and under their name in Team overview."), /* @__PURE__ */ React.createElement("div", { className: "ps-del-form" }, /* @__PURE__ */ React.createElement("select", { value: draft.delPerson || "", onChange: (e) => set({ delPerson: e.target.value }) }, /* @__PURE__ */ React.createElement("option", { value: "" }, "Choose a person"), Object.keys(ROLES).filter((r) => r !== "client").map((r) => {
+    return /* @__PURE__ */ React.createElement("section", { className: "ps-delegate" }, /* @__PURE__ */ React.createElement("div", { className: "ps-del-col" }, /* @__PURE__ */ React.createElement("h4", { className: "ps-h4" }, "Give someone a task"), /* @__PURE__ */ React.createElement("p", { className: "ps-muted" }, "It lands in their queue and under their name in Team overview."), /* @__PURE__ */ React.createElement("div", { className: "ps-del-form" }, (db.templates || []).length > 0 && /* @__PURE__ */ React.createElement("select", { value: draft.delTpl || "", "aria-label": "Start from a template", onChange: (e) => {
+      const t = (db.templates || []).find((x) => x.id === e.target.value);
+      if (!t) return set({ delTpl: "", delSteps: null });
+      set({ delTpl: t.id, delText: t.name, delDetails: (t.details || "").slice(0, DETAIL_MAX), delKind: t.kind || "other", delSteps: (t.steps || []).slice() });
+    } }, /* @__PURE__ */ React.createElement("option", { value: "" }, "Start from a template\u2026"), (db.templates || []).map((t) => /* @__PURE__ */ React.createElement("option", { key: t.id, value: t.id }, t.name, " \u00b7 ", (t.steps || []).length, " steps"))), /* @__PURE__ */ React.createElement("select", { value: draft.delPerson || "", onChange: (e) => set({ delPerson: e.target.value }) }, /* @__PURE__ */ React.createElement("option", { value: "" }, "Choose a person"), Object.keys(ROLES).filter((r) => r !== "client").map((r) => {
       const list = crew.filter((p) => p.role === r);
       return list.length ? /* @__PURE__ */ React.createElement("optgroup", { key: r, label: ROLES[r].label }, list.map((p) => /* @__PURE__ */ React.createElement("option", { key: p.id, value: p.id }, p.name, isAway(p) ? " (away)" : ""))) : null;
     })), /* @__PURE__ */ React.createElement(
@@ -1802,10 +1943,10 @@
         notes: "",
         reviewFrom: null,
         qaFrom: null,
-        steps: (draft.delKind || "video") === "video" ? VIDEO_CHECKS.map((x) => ({ text: x, done: false })) : [],
+        steps: Array.isArray(draft.delSteps) && draft.delSteps.length ? draft.delSteps.map((x) => ({ text: x, done: false })) : (draft.delKind || "video") === "video" ? VIDEO_CHECKS.map((x) => ({ text: x, done: false })) : [],
         history: [{ at: (/* @__PURE__ */ new Date()).toISOString(), by: me.id, text: `Assigned to ${name}` }]
       }));
-      setDraft((x) => ({ ...x, delText: "", delDetails: "", ...suggestedDue() }));
+      setDraft((x) => ({ ...x, delText: "", delDetails: "", delTpl: "", delSteps: null, ...suggestedDue() }));
       setToast(`Task assigned to ${name}.`);
     };
     const addVideo = () => {
@@ -1942,13 +2083,14 @@
       const team = db.people.filter((p) => p.role !== "client" && p.role !== "lead");
       body = /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("h1", { className: "ps-h1" }, "Team"), /* @__PURE__ */ React.createElement("p", { className: "ps-lede" }, "What is sitting with each person right now."), unassigned.length > 0 && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Needs an editor"), /* @__PURE__ */ React.createElement(VideoTable, { rows: unassigned, db, me, open: setOpenId })), team.map((p) => {
         const rows = db.videos.filter((v) => isMine(v, p));
-        return /* @__PURE__ */ React.createElement("section", { key: p.id, className: "ps-person" }, /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, picker(p, 40), p.name, " ", /* @__PURE__ */ React.createElement("span", { className: "ps-muted" }, ROLES[p.role].label, " \xB7 ", rows.length, " video", rows.length === 1 ? "" : "s")), /* @__PURE__ */ React.createElement(TodoList, { person: p, tasks: db.tasks, clients: db.clients, canAdd: true, canToggle: true, mutate, openTask: setTaskId }), /* @__PURE__ */ React.createElement(VideoTable, { rows, db, me, open: setOpenId }));
+        const openT = db.tasks.filter((t) => t.personId === p.id && !t.done).length;
+        return /* @__PURE__ */ React.createElement("details", { key: p.id, className: "ps-person ps-teamfold" }, /* @__PURE__ */ React.createElement("summary", null, /* @__PURE__ */ React.createElement(Avatar, { person: p, size: 28 }), /* @__PURE__ */ React.createElement("b", null, p.name), /* @__PURE__ */ React.createElement("span", { className: "ps-chip", style: { background: ROLES[p.role].soft, color: ROLES[p.role].color } }, ROLES[p.role].label), /* @__PURE__ */ React.createElement("span", { className: "ps-muted" }, rows.length, " video", rows.length === 1 ? "" : "s", " \xB7 ", openT, " open task", openT === 1 ? "" : "s")), /* @__PURE__ */ React.createElement("div", { className: "ps-teamfold-body" }, /* @__PURE__ */ React.createElement("div", { className: "ps-teamfold-pic" }, picker(p, 40)), /* @__PURE__ */ React.createElement(TodoList, { person: p, tasks: db.tasks, clients: db.clients, canAdd: false, canToggle: true, mutate, openTask: setTaskId }), /* @__PURE__ */ React.createElement(VideoTable, { rows, db, me, open: setOpenId })));
       }));
     } else if (page.tab === "settings") {
       body = /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("h1", { className: "ps-h1" }, "Settings"), /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "New video"), /* @__PURE__ */ React.createElement("div", { className: "ps-form" }, /* @__PURE__ */ React.createElement("select", { value: draft.client, onChange: (e) => setDraft({ ...draft, client: e.target.value }) }, /* @__PURE__ */ React.createElement("option", { value: "" }, "Choose a client"), db.clients.map((c) => /* @__PURE__ */ React.createElement("option", { key: c.id, value: c.id }, c.name))), /* @__PURE__ */ React.createElement("input", { placeholder: "Working title", value: draft.title, onChange: (e) => setDraft({ ...draft, title: e.target.value }) }), /* @__PURE__ */ React.createElement("button", { className: "ps-btn", onClick: addVideo }, "Add video")), /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Clients"), /* @__PURE__ */ React.createElement("div", { className: "ps-clients" }, db.clients.map((c) => /* @__PURE__ */ React.createElement("div", { key: c.id, className: "ps-client-row" }, /* @__PURE__ */ React.createElement("b", null, c.name), /* @__PURE__ */ React.createElement("label", { className: "ps-field" }, /* @__PURE__ */ React.createElement("span", null, "Client type"), /* @__PURE__ */ React.createElement("select", { value: clientKindOf(c).id, onChange: (e) => updateClient(c.id, { clientKind: e.target.value }) }, CLIENT_KINDS.map((k) => /* @__PURE__ */ React.createElement("option", { key: k.id, value: k.id }, k.label)))), /* @__PURE__ */ React.createElement("label", { className: "ps-field" }, /* @__PURE__ */ React.createElement("span", null, "Call day"), /* @__PURE__ */ React.createElement("select", { value: c.callDay ?? "", onChange: (e) => updateClient(c.id, { callDay: e.target.value === "" ? null : +e.target.value }) }, /* @__PURE__ */ React.createElement("option", { value: "" }, "Not set"), [1, 2, 3, 4, 5].map((d) => /* @__PURE__ */ React.createElement("option", { key: d, value: d }, WEEKDAYS[d])))), /* @__PURE__ */ React.createElement("label", { className: "ps-field" }, /* @__PURE__ */ React.createElement("span", null, "Script floor"), /* @__PURE__ */ React.createElement("input", { type: "number", min: "0", value: c.bankFloor ?? 2, onChange: (e) => updateClient(c.id, { bankFloor: Math.max(0, parseInt(e.target.value) || 0) }) }))))), /* @__PURE__ */ React.createElement("div", { className: "ps-form", style: { marginTop: 10 } }, /* @__PURE__ */ React.createElement("input", { placeholder: "New client name", value: draft.clientName, onChange: (e) => setDraft({ ...draft, clientName: e.target.value }) }), /* @__PURE__ */ React.createElement("button", { className: "ps-btn ghost", onClick: addClient }, "Add client")), /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Current teammates"), /* @__PURE__ */ React.createElement("div", { className: "ps-people-list" }, db.people.filter((p) => p.role !== "client").map((p) => /* @__PURE__ */ React.createElement("div", { key: p.id, className: "ps-person-row" }, /* @__PURE__ */ React.createElement(Avatar, { person: p, size: 24 }), /* @__PURE__ */ React.createElement("span", { className: "ps-person-name" }, p.name), /* @__PURE__ */ React.createElement("span", { className: "ps-chip" }, (ROLES[p.role] || {}).label || p.role), /* @__PURE__ */ React.createElement("input", { className: "ps-person-mail", type: "email", placeholder: "login email", value: p.email || "", onChange: (e) => {
       const v = e.target.value;
       mutate((n) => { const t = n.people.find((x) => x.id === p.id); if (t) t.email = v.trim(); });
-    } }), p.id === me.id ? /* @__PURE__ */ React.createElement("span", { className: "ps-muted ps-person-you" }, "you") : /* @__PURE__ */ React.createElement("button", { className: "ps-x-small", "aria-label": `Remove ${p.name}`, onClick: () => removePerson(p) }, "\xD7")))), /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "New teammate"), /* @__PURE__ */ React.createElement("div", { className: "ps-form" }, /* @__PURE__ */ React.createElement("input", { placeholder: "Name", value: draft.person, onChange: (e) => setDraft({ ...draft, person: e.target.value }) }), /* @__PURE__ */ React.createElement("input", { type: "email", placeholder: "Login email (optional)", value: draft.personEmail || "", onChange: (e) => setDraft({ ...draft, personEmail: e.target.value }) }), /* @__PURE__ */ React.createElement("select", { value: draft.role, onChange: (e) => setDraft({ ...draft, role: e.target.value }) }, ["coordinator", "hr", "editor", "qa"].map((r) => /* @__PURE__ */ React.createElement("option", { key: r, value: r }, ROLES[r].label))), /* @__PURE__ */ React.createElement("button", { className: "ps-btn ghost", onClick: addPerson }, "Add teammate")), /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Editor pictures"), /* @__PURE__ */ React.createElement("div", { className: "ps-editors" }, db.people.filter((p) => p.role === "editor").map((p) => /* @__PURE__ */ React.createElement("div", { key: p.id, className: "ps-editor" }, picker(p, 64), /* @__PURE__ */ React.createElement("span", null, p.name)))), /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Stage allowances"), /* @__PURE__ */ React.createElement("div", { className: "ps-stages" }, STAGES.filter((s) => s.owner).map((s, i) => /* @__PURE__ */ React.createElement("div", { key: s.id, className: "ps-stage-row" }, /* @__PURE__ */ React.createElement("span", { className: "ps-frame-step" }, i + 1), /* @__PURE__ */ React.createElement("span", null, s.name, CHECKS[s.id] ? " \xB7 checklist" : ""), /* @__PURE__ */ React.createElement("span", { className: "ps-chip", style: { background: ROLES[s.owner].soft, color: ROLES[s.owner].color } }, ROLES[s.owner].label), /* @__PURE__ */ React.createElement("span", { className: "ps-muted" }, s.days ? `${s.days} business day${s.days > 1 ? "s" : ""}` : "No clock")))), /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Backups"), /* @__PURE__ */ React.createElement("p", { className: "ps-muted", style: { marginBottom: 10 } }, "Every change saves automatically for the whole team. Download a copy now and then so you have one outside the system."), /* @__PURE__ */ React.createElement("div", { className: "ps-form" }, /* @__PURE__ */ React.createElement("button", { className: "ps-btn", onClick: downloadBackup }, "Download a backup"), /* @__PURE__ */ React.createElement("label", { className: "ps-btn ghost ps-filebtn" }, "Restore from a backup", /* @__PURE__ */ React.createElement("input", { type: "file", accept: "application/json,.json", hidden: true, onChange: (e) => { const f = e.target.files && e.target.files[0]; e.target.value = ""; restoreBackup(f); } }))), /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Data"), /* @__PURE__ */ React.createElement("p", { className: "ps-muted", style: { marginBottom: 8 } }, "Replaces everything with the sample studio. Only for testing."), /* @__PURE__ */ React.createElement("button", { className: "ps-btn ghost", onClick: reset }, "Restore demo data"));
+    } }), p.id === me.id ? /* @__PURE__ */ React.createElement("span", { className: "ps-muted ps-person-you" }, "you") : /* @__PURE__ */ React.createElement("button", { className: "ps-x-small", "aria-label": `Remove ${p.name}`, onClick: () => removePerson(p) }, "\xD7")))), /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "New teammate"), /* @__PURE__ */ React.createElement("div", { className: "ps-form" }, /* @__PURE__ */ React.createElement("input", { placeholder: "Name", value: draft.person, onChange: (e) => setDraft({ ...draft, person: e.target.value }) }), /* @__PURE__ */ React.createElement("input", { type: "email", placeholder: "Login email (optional)", value: draft.personEmail || "", onChange: (e) => setDraft({ ...draft, personEmail: e.target.value }) }), /* @__PURE__ */ React.createElement("select", { value: draft.role, onChange: (e) => setDraft({ ...draft, role: e.target.value }) }, ["coordinator", "hr", "editor", "qa"].map((r) => /* @__PURE__ */ React.createElement("option", { key: r, value: r }, ROLES[r].label))), /* @__PURE__ */ React.createElement("button", { className: "ps-btn ghost", onClick: addPerson }, "Add teammate")), /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Editor pictures"), /* @__PURE__ */ React.createElement("div", { className: "ps-editors" }, db.people.filter((p) => p.role === "editor").map((p) => /* @__PURE__ */ React.createElement("div", { key: p.id, className: "ps-editor" }, picker(p, 64), /* @__PURE__ */ React.createElement("span", null, p.name)))), /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Stage allowances"), /* @__PURE__ */ React.createElement("div", { className: "ps-stages" }, STAGES.filter((s) => s.owner).map((s, i) => /* @__PURE__ */ React.createElement("div", { key: s.id, className: "ps-stage-row" }, /* @__PURE__ */ React.createElement("span", { className: "ps-frame-step" }, i + 1), /* @__PURE__ */ React.createElement("span", null, s.name, CHECKS[s.id] ? " \xB7 checklist" : ""), /* @__PURE__ */ React.createElement("span", { className: "ps-chip", style: { background: ROLES[s.owner].soft, color: ROLES[s.owner].color } }, ROLES[s.owner].label), /* @__PURE__ */ React.createElement("span", { className: "ps-muted" }, s.days ? `${s.days} business day${s.days > 1 ? "s" : ""}` : "No clock")))), /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "SOP templates"), /* @__PURE__ */ React.createElement(TemplateEditor, { db, mutate, setToast }), /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Backups"), /* @__PURE__ */ React.createElement("p", { className: "ps-muted", style: { marginBottom: 10 } }, "Every change saves automatically for the whole team. Download a copy now and then so you have one outside the system."), /* @__PURE__ */ React.createElement("div", { className: "ps-form" }, /* @__PURE__ */ React.createElement("button", { className: "ps-btn", onClick: downloadBackup }, "Download a backup"), /* @__PURE__ */ React.createElement("label", { className: "ps-btn ghost ps-filebtn" }, "Restore from a backup", /* @__PURE__ */ React.createElement("input", { type: "file", accept: "application/json,.json", hidden: true, onChange: (e) => { const f = e.target.files && e.target.files[0]; e.target.value = ""; restoreBackup(f); } }))), /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Data"), /* @__PURE__ */ React.createElement("p", { className: "ps-muted", style: { marginBottom: 8 } }, "Replaces everything with the sample studio. Only for testing."), /* @__PURE__ */ React.createElement("button", { className: "ps-btn ghost", onClick: reset }, "Restore demo data"));
     } else {
       const client = me.role === "client" ? db.clients.find((c) => c.id === me.clientId) : null;
       const waiting = client ? active.filter((v) => !isMine(v, me)) : [];
@@ -1992,7 +2134,7 @@
       setOpenId(null);
       setTaskId(null);
       setPersonId(null);
-    } }, "Projeclab Studios"), /* @__PURE__ */ React.createElement("span", { className: "ps-spacer" }), authLock ? /* @__PURE__ */ React.createElement("span", { className: "ps-viewas" }, /* @__PURE__ */ React.createElement("b", null, me.name), /* @__PURE__ */ React.createElement("span", null, " \xB7 ", (ROLES[me.role] || {}).label || me.role)) : /* @__PURE__ */ React.createElement("label", { className: "ps-viewas" }, /* @__PURE__ */ React.createElement("span", null, "Viewing as"), /* @__PURE__ */ React.createElement("select", { value: meId, onChange: (e) => {
+    } }, "Projeclab Studios"), /* @__PURE__ */ React.createElement("span", { className: "ps-spacer" }), me.role !== "client" && /* @__PURE__ */ React.createElement(SearchBox, { db, me, lead, openTask: setTaskId, openVideo: setOpenId, openClient: (id) => { setPage({ tab: "client", id }); setFilter(null); } }), authLock ? /* @__PURE__ */ React.createElement("span", { className: "ps-viewas" }, /* @__PURE__ */ React.createElement("b", null, me.name), /* @__PURE__ */ React.createElement("span", null, " \xB7 ", (ROLES[me.role] || {}).label || me.role)) : /* @__PURE__ */ React.createElement("label", { className: "ps-viewas" }, /* @__PURE__ */ React.createElement("span", null, "Viewing as"), /* @__PURE__ */ React.createElement("select", { value: meId, onChange: (e) => {
       setMeId(e.target.value);
       setPage({ tab: "queue" });
       setFilter(null);
@@ -2289,6 +2431,30 @@
 .ps-person-you{font-size:12px}
 .ps-filebtn{cursor:pointer;display:inline-flex;align-items:center}
 .ps-person-mail{flex:0 1 200px;min-width:0;padding:4px 8px;font-size:12.5px}
+.ps-search{position:relative;display:inline-flex}
+.ps-search-in{width:210px;min-width:0;padding:6px 10px;font-size:13.5px}
+.ps-searchpanel{position:absolute;top:calc(100% + 6px);right:0;width:360px;max-width:80vw;max-height:60vh;overflow-y:auto;background:var(--card);border:1px solid var(--line);border-radius:10px;box-shadow:0 18px 40px -12px rgba(0,0,0,.35);z-index:50;padding:6px}
+.ps-sr-head{margin:6px 8px 3px;font-size:11px;letter-spacing:.07em;text-transform:uppercase;color:var(--muted)}
+.ps-sr-row{display:flex;align-items:baseline;gap:8px;width:100%;text-align:left;background:none;border:0;padding:7px 9px;border-radius:7px;cursor:pointer;color:var(--ink)}
+.ps-sr-row:hover{background:var(--paper)}
+.ps-sr-kind{flex:none;font-size:10px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--muted);border:1px solid var(--line);border-radius:4px;padding:1px 5px}
+.ps-sr-title{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ps-sr-meta{flex:none;font-size:12px;white-space:nowrap}
+.ps-sr-empty{padding:10px}
+.ps-teamfold{border:1px solid var(--line);border-radius:10px;background:var(--card);margin-bottom:8px;max-width:960px}
+.ps-teamfold summary{cursor:pointer;padding:11px 14px;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.ps-teamfold summary b{min-width:0}
+.ps-teamfold summary .ps-muted{margin-left:auto}
+.ps-teamfold-body{padding:0 14px 12px}
+.ps-teamfold-pic{margin-bottom:10px}
+.ps-tpl{border:1px solid var(--line);border-radius:9px;margin-bottom:8px;background:var(--card);max-width:720px}
+.ps-tpl summary{cursor:pointer;padding:10px 12px;display:flex;align-items:center;gap:9px;flex-wrap:wrap}
+.ps-tpl summary b{flex:1;min-width:0}
+.ps-tpl-body{padding:0 12px 12px;display:flex;flex-direction:column;gap:8px}
+.ps-tpl-body input,.ps-tpl-body select{min-width:0}
+.ps-tpl-steps{width:100%;min-width:0;font:inherit;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--paper);color:var(--ink);resize:vertical;line-height:1.6}
+.ps-tpl-foot{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.ps-tpl-foot .ps-muted{flex:1;min-width:0}
 .ps-pin{display:flex;align-items:flex-start;gap:10px;margin:0 0 16px;padding:11px 14px;background:var(--warnbg);border-radius:9px;max-width:720px}
 .ps-pin.editing{flex-direction:column;gap:8px}
 .ps-pin-icon{font-size:15px;line-height:1.5}
@@ -2418,6 +2584,8 @@
   .ps-client-row > b{grid-column:1 / -1;align-self:start}
   .ps-client-row .ps-field{min-width:0}
   .ps-viewas span{display:none}
+  .ps-search-in{width:130px}
+  .ps-searchpanel{width:300px}
 }
 @media (prefers-reduced-motion:reduce){.ps-frame{transition:none}.ps-frame:hover{transform:none}.ps-dot{animation:none}}
 `;
@@ -2429,7 +2597,6 @@
 <!-- Your Supabase connection and login gate. -->
 <script type="text/babel" data-presets="react">
 const { useState, useEffect, useMemo, useRef } = React;
-
 /* ================================================================
    STEP: paste your two Supabase values between the quotes below.
    Find them in Supabase: Project Settings → API.

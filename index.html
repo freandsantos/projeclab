@@ -967,6 +967,48 @@
     }));
   }
 
+  /* How long each open task has been sitting. One measure, one hue - the bar is
+     the ranking and the number beside it is the value, so nothing rides on colour. */
+  var taskAgeDays = (t, now) => {
+    const started = t.at || (t.history && t.history[0] && t.history[0].at) || null;
+    if (!started) return null;
+    const ms = (now || Date.now()) - new Date(started).getTime();
+    return ms < 0 ? 0 : Math.floor(ms / 864e5);
+  };
+  function AgingTasks({ db, me, openTask, limit = 10 }) {
+    const h = React.createElement;
+    const now = Date.now();
+    const today = isoDay(/* @__PURE__ */ new Date());
+    const rows = (db.tasks || [])
+      .filter((t) => !t.done && canSeeTask(db, me, t))
+      .map((t) => ({ t, days: taskAgeDays(t, now) }))
+      .filter((r) => r.days !== null)
+      .sort((a, b) => b.days - a.days)
+      .slice(0, limit);
+    if (!rows.length) return null;
+    const longest = Math.max(1, rows[0].days);
+    return h(React.Fragment, null,
+      h("h3", { className: "ps-h3" }, "Longest open tasks"),
+      h("p", { className: "ps-lede" }, "The ", rows.length === 1 ? "one" : rows.length, " that have been waiting longest, oldest first. Click any bar to open the task."),
+      h("div", { className: "ps-agecols", role: "list" }, rows.map(({ t, days }) => {
+        const who = db.people.find((p) => p.id === t.personId);
+        const client = t.clientId ? db.clients.find((c) => c.id === t.clientId) : null;
+        const overdue = !!t.due && String(t.due).slice(0, 10) < today;
+        const pct = Math.max(4, Math.round(days / longest * 100));
+        const meta = [who ? who.name : "Unassigned", taskStatusMeta(t).label, client ? client.name : "", overdue ? "overdue" : ""].filter(Boolean).join(" \xB7 ");
+        return h("button", {
+          key: t.id,
+          role: "listitem",
+          className: `ps-agecol ${overdue ? "late" : ""}`,
+          onClick: () => openTask(t.id),
+          title: `${t.text} \u2014 open ${days} day${days === 1 ? "" : "s"} \u2014 ${meta}`
+        },
+          h("span", { className: "ps-agecol-n" }, days, "d"),
+          h("span", { className: "ps-agecol-plot" }, h("span", { className: "ps-agecol-bar", style: { height: pct + "%" } })),
+          h("span", { className: "ps-agecol-name" }, t.text),
+          h("span", { className: "ps-agecol-who" }, who ? who.name : "Unassigned", overdue ? " \xB7 overdue" : ""));
+      })));
+  }
   function PinnedNotice({ db, me, mutate, canEdit }) {
     const h = React.createElement;
     const notice = db.notice && db.notice.text ? db.notice : null;
@@ -1592,7 +1634,7 @@
     });
     const add = () => {
       if (!text.trim()) return;
-      mutate((n) => n.tasks.push({ id: uid("t"), personId: person.id, text: text.trim(), due: due || null, done: false, status: "todo" }));
+      mutate((n) => n.tasks.push({ id: uid("t"), personId: person.id, text: text.trim(), due: due || null, done: false, status: "todo", at: (/* @__PURE__ */ new Date()).toISOString() }));
       setText("");
       setDue("");
     };
@@ -2135,6 +2177,61 @@
         onYes: () => doRemovePerson(p)
       });
     };
+    const removeClient = (c) => {
+      const vids = db.videos.filter((v) => v.clientId === c.id).length;
+      const tasks = db.tasks.filter((t) => t.clientId === c.id).length;
+      const bills = (db.invoices || []).filter((x) => x.clientId === c.id).length;
+      const logins = db.people.filter((p) => p.role === "client" && p.clientId === c.id).length;
+      const others = db.clients.filter((x) => x.id !== c.id);
+      setHandover(others[0] ? others[0].id : "");
+      const load = [vids ? `${vids} video${vids > 1 ? "s" : ""}` : "", tasks ? `${tasks} task${tasks > 1 ? "s" : ""}` : "", bills ? `${bills} invoice line${bills > 1 ? "s" : ""}` : ""].filter(Boolean).join(", ");
+      const lines = [];
+      if (load) lines.push(`${load} belong to them.`);
+      else lines.push("Nothing is filed under them yet.");
+      if (logins) lines.push(`${logins} client login${logins > 1 ? "s" : ""} will stop seeing anything.`);
+      setConfirming({
+        title: `Remove ${c.name}?`,
+        lines,
+        pick: load && others.length ? {
+          label: "What happens to their work",
+          options: [
+            ...others.map((x) => ({ value: x.id, label: `Move it to ${x.name}` })),
+            { value: "", label: "Delete the videos and invoices too" }
+          ]
+        } : null,
+        confirmLabel: "Remove client",
+        onYes: () => doRemoveClient(c)
+      });
+    };
+    const doRemoveClient = (c) => {
+      const at = (/* @__PURE__ */ new Date()).toISOString();
+      const moveTo = handoverRef.current;
+      mutate((n) => {
+        const to = n.clients.find((x) => x.id === moveTo && x.id !== c.id) || null;
+        if (to) {
+          n.videos.forEach((v) => {
+            if (v.clientId === c.id) {
+              v.clientId = to.id;
+              v.history = [...v.history || [], { at, by: me.id, text: `${c.name} was removed \u2014 moved to ${to.name}` }];
+            }
+          });
+          n.tasks.forEach((t) => { if (t.clientId === c.id) t.clientId = to.id; });
+          (n.invoices || []).forEach((x) => { if (x.clientId === c.id) { x.clientId = to.id; x.id = `${to.id}:${x.key}`; } });
+        } else {
+          /* No home for the work, so the videos and the billing go with the client.
+             Tasks are somebody's actual to-do, so they stay - they just lose the tag. */
+          n.videos = n.videos.filter((v) => v.clientId !== c.id);
+          n.tasks.forEach((t) => { if (t.clientId === c.id) t.clientId = null; });
+          n.invoices = (n.invoices || []).filter((x) => x.clientId !== c.id);
+        }
+        n.people.forEach((p) => { if (p.role === "client" && p.clientId === c.id) p.clientId = null; });
+        n.clients = n.clients.filter((x) => x.id !== c.id);
+      });
+      const to = db.clients.find((x) => x.id === moveTo);
+      setToast(to ? `${c.name} removed \u2014 their work moved to ${to.name}.` : `${c.name} removed.`);
+      setHandover("");
+      if (page.tab === "client" && page.id === c.id) setPage({ tab: "queue" });
+    };
     const doRemovePerson = (p) => {
       const at = (/* @__PURE__ */ new Date()).toISOString();
       const pickedId = handoverRef.current;
@@ -2207,7 +2304,7 @@
       body = /* @__PURE__ */ React.createElement(CalendarPage, { db, me, mutate });
     } else if (page.tab === "overview") {
       const crew = db.people.filter((p) => p.role !== "client");
-      body = /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { className: "ps-ovhead" }, /* @__PURE__ */ React.createElement("span", { className: "ps-ovicon", "aria-hidden": "true" }, "\u{1F465}"), /* @__PURE__ */ React.createElement("h1", { className: "ps-h1" }, "Team overview")), /* @__PURE__ */ React.createElement("p", { className: "ps-lede" }, "Everyone's plate: delegated tasks and the videos sitting with each person.", unassigned.length ? ` ${unassigned.length} video${unassigned.length === 1 ? "" : "s"} still need an editor \u2014 they're on the Team page.` : ""), /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "People"), /* @__PURE__ */ React.createElement("p", { className: "ps-lede" }, "Availability, QA record, onboarding and 1:1 notes. Click anyone to open their card."), /* @__PURE__ */ React.createElement("div", { className: "ps-hr-grid" }, crew.map((p) => {
+      body = /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { className: "ps-ovhead" }, /* @__PURE__ */ React.createElement("span", { className: "ps-ovicon", "aria-hidden": "true" }, "\u{1F465}"), /* @__PURE__ */ React.createElement("h1", { className: "ps-h1" }, "Team overview")), /* @__PURE__ */ React.createElement("p", { className: "ps-lede" }, "Everyone's plate: delegated tasks and the videos sitting with each person.", unassigned.length ? ` ${unassigned.length} video${unassigned.length === 1 ? "" : "s"} still need an editor \u2014 they're on the Team page.` : ""), /* @__PURE__ */ React.createElement(AgingTasks, { db, me, openTask: setTaskId }), /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "People"), /* @__PURE__ */ React.createElement("p", { className: "ps-lede" }, "Availability, QA record, onboarding and 1:1 notes. Click anyone to open their card."), /* @__PURE__ */ React.createElement("div", { className: "ps-hr-grid" }, crew.map((p) => {
         const st = qaStats(db, p.id);
         const lv2 = leaveStats(db, p.id);
         const na = nextAway(p);
@@ -2223,7 +2320,7 @@
         return /* @__PURE__ */ React.createElement("details", { key: p.id, className: "ps-person ps-teamfold" }, /* @__PURE__ */ React.createElement("summary", null, /* @__PURE__ */ React.createElement(Avatar, { person: p, size: 28 }), /* @__PURE__ */ React.createElement("b", null, p.name), /* @__PURE__ */ React.createElement("span", { className: "ps-chip", style: { background: ROLES[p.role].soft, color: ROLES[p.role].color } }, ROLES[p.role].label), /* @__PURE__ */ React.createElement("span", { className: "ps-muted" }, rows.length, " video", rows.length === 1 ? "" : "s", " \xB7 ", openT, " open task", openT === 1 ? "" : "s")), /* @__PURE__ */ React.createElement("div", { className: "ps-teamfold-body" }, /* @__PURE__ */ React.createElement("div", { className: "ps-teamfold-pic" }, picker(p, 40)), /* @__PURE__ */ React.createElement(TodoList, { person: p, tasks: db.tasks, clients: db.clients, canAdd: false, canToggle: true, mutate, openTask: setTaskId }), /* @__PURE__ */ React.createElement(VideoTable, { rows, db, me, open: setOpenId })));
       }));
     } else if (page.tab === "settings") {
-      body = /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("h1", { className: "ps-h1" }, "Settings"), /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "New video"), /* @__PURE__ */ React.createElement("div", { className: "ps-form" }, /* @__PURE__ */ React.createElement("select", { value: draft.client, onChange: (e) => setDraft({ ...draft, client: e.target.value }) }, /* @__PURE__ */ React.createElement("option", { value: "" }, "Choose a client"), db.clients.map((c) => /* @__PURE__ */ React.createElement("option", { key: c.id, value: c.id }, c.name))), /* @__PURE__ */ React.createElement("input", { placeholder: "Working title", value: draft.title, onChange: (e) => setDraft({ ...draft, title: e.target.value }) }), /* @__PURE__ */ React.createElement("button", { className: "ps-btn", onClick: addVideo }, "Add video")), /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Clients"), /* @__PURE__ */ React.createElement("div", { className: "ps-clients" }, db.clients.map((c) => /* @__PURE__ */ React.createElement("div", { key: c.id, className: "ps-client-row" }, /* @__PURE__ */ React.createElement("b", null, c.name), /* @__PURE__ */ React.createElement("label", { className: "ps-field" }, /* @__PURE__ */ React.createElement("span", null, "Client type"), /* @__PURE__ */ React.createElement("select", { value: clientKindOf(c).id, onChange: (e) => updateClient(c.id, { clientKind: e.target.value }) }, CLIENT_KINDS.map((k) => /* @__PURE__ */ React.createElement("option", { key: k.id, value: k.id }, k.label)))), /* @__PURE__ */ React.createElement("label", { className: "ps-field" }, /* @__PURE__ */ React.createElement("span", null, "Billing"), /* @__PURE__ */ React.createElement("select", { value: billingOf(c).id, onChange: (e) => updateClient(c.id, { billing: e.target.value, billingStart: c.billingStart || (e.target.value === "weekly" || e.target.value === "biweekly" ? isoDay(mondayOf(/* @__PURE__ */ new Date())) : null) }) }, BILLING_PLANS.map((k) => /* @__PURE__ */ React.createElement("option", { key: k.id, value: k.id }, k.label)))), /* @__PURE__ */ React.createElement("label", { className: "ps-field" }, /* @__PURE__ */ React.createElement("span", null, "Billing started"), billingOf(c).id === "pervideo" || billingOf(c).id === "project" || billingOf(c).id === "none" ? /* @__PURE__ */ React.createElement("span", { className: "ps-muted ps-field-na" }, "\u2014") : /* @__PURE__ */ React.createElement(PickerInput, { type: "date", ariaLabel: `When ${c.name} started being billed`, value: c.billingStart || "", onChange: (e) => updateClient(c.id, { billingStart: e.target.value || null }) }))))), /* @__PURE__ */ React.createElement("div", { className: "ps-form", style: { marginTop: 10 } }, /* @__PURE__ */ React.createElement("input", { placeholder: "New client name", value: draft.clientName, onChange: (e) => setDraft({ ...draft, clientName: e.target.value }) }), /* @__PURE__ */ React.createElement("button", { className: "ps-btn ghost", onClick: addClient }, "Add client")), /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Current teammates"), /* @__PURE__ */ React.createElement("div", { className: "ps-people-list" }, db.people.filter((p) => p.role !== "client").map((p) => /* @__PURE__ */ React.createElement("div", { key: p.id, className: "ps-person-row" }, /* @__PURE__ */ React.createElement(Avatar, { person: p, size: 24 }), /* @__PURE__ */ React.createElement("input", { className: "ps-person-name", "aria-label": `Name for ${p.name}`, value: p.name, onChange: (e) => {
+      body = /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("h1", { className: "ps-h1" }, "Settings"), /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "New video"), /* @__PURE__ */ React.createElement("div", { className: "ps-form" }, /* @__PURE__ */ React.createElement("select", { value: draft.client, onChange: (e) => setDraft({ ...draft, client: e.target.value }) }, /* @__PURE__ */ React.createElement("option", { value: "" }, "Choose a client"), db.clients.map((c) => /* @__PURE__ */ React.createElement("option", { key: c.id, value: c.id }, c.name))), /* @__PURE__ */ React.createElement("input", { placeholder: "Working title", value: draft.title, onChange: (e) => setDraft({ ...draft, title: e.target.value }) }), /* @__PURE__ */ React.createElement("button", { className: "ps-btn", onClick: addVideo }, "Add video")), /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Clients"), /* @__PURE__ */ React.createElement("div", { className: "ps-clients" }, db.clients.map((c) => /* @__PURE__ */ React.createElement("div", { key: c.id, className: "ps-client-row" }, /* @__PURE__ */ React.createElement("b", null, c.name), /* @__PURE__ */ React.createElement("label", { className: "ps-field" }, /* @__PURE__ */ React.createElement("span", null, "Client type"), /* @__PURE__ */ React.createElement("select", { value: clientKindOf(c).id, onChange: (e) => updateClient(c.id, { clientKind: e.target.value }) }, CLIENT_KINDS.map((k) => /* @__PURE__ */ React.createElement("option", { key: k.id, value: k.id }, k.label)))), /* @__PURE__ */ React.createElement("label", { className: "ps-field" }, /* @__PURE__ */ React.createElement("span", null, "Billing"), /* @__PURE__ */ React.createElement("select", { value: billingOf(c).id, onChange: (e) => updateClient(c.id, { billing: e.target.value, billingStart: c.billingStart || (e.target.value === "weekly" || e.target.value === "biweekly" ? isoDay(mondayOf(/* @__PURE__ */ new Date())) : null) }) }, BILLING_PLANS.map((k) => /* @__PURE__ */ React.createElement("option", { key: k.id, value: k.id }, k.label)))), /* @__PURE__ */ React.createElement("label", { className: "ps-field" }, /* @__PURE__ */ React.createElement("span", null, "Billing started"), billingOf(c).id === "pervideo" || billingOf(c).id === "project" || billingOf(c).id === "none" ? /* @__PURE__ */ React.createElement("span", { className: "ps-muted ps-field-na" }, "\u2014") : /* @__PURE__ */ React.createElement(PickerInput, { type: "date", ariaLabel: `When ${c.name} started being billed`, value: c.billingStart || "", onChange: (e) => updateClient(c.id, { billingStart: e.target.value || null }) })), /* @__PURE__ */ React.createElement("button", { className: "ps-x-small ps-client-x", "aria-label": `Remove ${c.name}`, title: `Remove ${c.name}`, onClick: () => removeClient(c) }, "\xD7")))), /* @__PURE__ */ React.createElement("div", { className: "ps-form", style: { marginTop: 10 } }, /* @__PURE__ */ React.createElement("input", { placeholder: "New client name", value: draft.clientName, onChange: (e) => setDraft({ ...draft, clientName: e.target.value }) }), /* @__PURE__ */ React.createElement("button", { className: "ps-btn ghost", onClick: addClient }, "Add client")), /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Current teammates"), /* @__PURE__ */ React.createElement("div", { className: "ps-people-list" }, db.people.filter((p) => p.role !== "client").map((p) => /* @__PURE__ */ React.createElement("div", { key: p.id, className: "ps-person-row" }, /* @__PURE__ */ React.createElement(Avatar, { person: p, size: 24 }), /* @__PURE__ */ React.createElement("input", { className: "ps-person-name", "aria-label": `Name for ${p.name}`, value: p.name, onChange: (e) => {
       const v = e.target.value;
       mutate((n) => { const t = n.people.find((x) => x.id === p.id); if (t) t.name = v; });
     }, onBlur: (e) => {
@@ -2338,7 +2435,7 @@
 .ps-root button,.ps-root input,.ps-root select,.ps-root textarea{font:inherit;color:inherit}
 .ps-root :focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 .ps-loading{padding:60px;text-align:center;color:var(--muted)}
-.ps-top{display:flex;align-items:center;gap:14px;padding:12px 22px;border-bottom:1px solid var(--line);background:var(--card);position:sticky;top:0;z-index:10}
+.ps-top{display:flex;align-items:center;flex-wrap:wrap;gap:10px 14px;padding:12px 22px;border-bottom:1px solid var(--line);background:var(--card);position:sticky;top:0;z-index:10}
 .ps-top .ps-logo{font-family:inherit;font-weight:800;font-size:22px;letter-spacing:-.03em;background:none;border:0;padding:0;color:inherit;cursor:pointer;line-height:inherit}
 .ps-top .ps-logo:hover{color:var(--accent)}
 .ps-spacer{flex:1}
@@ -2355,15 +2452,16 @@
 .ps-clientbtn{width:100%;gap:8px}
 .ps-clientbtn-label{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .ps-caret{font-size:10px;opacity:.7;margin-left:2px}
-.ps-clientpanel{position:absolute;top:calc(100% + 4px);left:0;min-width:200px;max-width:280px;background:var(--card);border:1px solid var(--line);border-radius:10px;box-shadow:0 18px 40px -12px rgba(0,0,0,.35);z-index:40;padding:6px}
-.ps-client-search{width:100%;margin-bottom:5px;padding:5px 8px;font-size:13px}
-.ps-client-opts{display:flex;flex-direction:column;gap:1px;max-height:260px;overflow-y:auto}
-.ps-client-opt{border:0;background:transparent;color:var(--ink);text-align:left;padding:6px 9px;border-radius:7px;cursor:pointer;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ps-clientpanel{position:absolute;top:calc(100% + 4px);left:0;min-width:232px;max-width:300px;background:var(--card);border:1px solid var(--line);border-radius:10px;box-shadow:0 18px 40px -12px rgba(0,0,0,.35);z-index:40;padding:6px}
+.ps-client-search{flex:0 0 auto;width:100%;margin-bottom:5px;padding:6px 9px;font-size:13px}
+.ps-client-opts{display:flex;flex-direction:column;gap:1px;max-height:320px;overflow-y:auto;overscroll-behavior:contain}
+/* Never let the rows shrink to fit the box - the box scrolls instead. */
+.ps-client-opt{flex:0 0 auto;border:0;background:transparent;color:var(--ink);text-align:left;padding:6px 9px;border-radius:7px;cursor:pointer;font-size:14px;line-height:1.45;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .ps-client-opt:hover{background:var(--paper)}
 .ps-client-opt.on{background:var(--ink);color:var(--paper);font-weight:600}
 .ps-client-empty{margin:6px 9px;font-size:13px}
 .ps-group{margin:18px 12px 4px;font-size:13px;color:var(--muted)}
-.ps-main{padding:34px 40px 80px;max-width:1120px}
+.ps-main{padding:34px 40px 80px;max-width:1120px;min-width:0}
 .ps-h1{font-size:40px;font-weight:800;letter-spacing:-.035em;line-height:1.05;margin:0 0 8px}
 .ps-h2{font-size:28px;font-weight:800;letter-spacing:-.02em;margin:0 0 10px}
 .ps-h3{font-size:18px;font-weight:600;margin:30px 0 10px;display:flex;align-items:center;gap:10px}
@@ -2382,6 +2480,7 @@
 .ps-frame-n{font-size:32px;font-weight:800;line-height:1;letter-spacing:-.03em}
 .ps-frame-name{font-size:12px;line-height:1.25;margin-top:auto;color:var(--muted)}
 .ps-frame-step{display:inline-grid;place-content:center;min-width:17px;height:17px;border-radius:50%;background:var(--paper);font-size:10px;font-weight:600;color:var(--muted)}
+.ps-client-x{align-self:center}
 .ps-confirm-pick{margin:4px 0 14px;max-width:340px}
 .ps-confirm-pick select{width:100%}
 .ps-invoices{display:flex;flex-direction:column;gap:6px;max-width:560px}
@@ -2432,6 +2531,20 @@
 .ps-editors{display:flex;flex-wrap:wrap;gap:20px}
 .ps-editor{display:flex;flex-direction:column;align-items:center;gap:6px;font-size:14px}
 .ps-todos{display:flex;flex-direction:column;gap:4px;margin-bottom:14px;max-width:720px}
+.ps-agecols{display:flex;align-items:flex-end;gap:8px;max-width:900px;margin:4px 0 10px;padding-bottom:2px;border-bottom:1px solid var(--line)}
+.ps-agecol{flex:1 1 0;min-width:0;display:flex;flex-direction:column;align-items:center;gap:5px;padding:4px 2px 8px;border:0;background:none;font:inherit;color:var(--ink);cursor:pointer;border-radius:6px 6px 0 0}
+.ps-agecol:hover{background:var(--paper)}
+.ps-agecol-n{font-size:12.5px;font-weight:600;font-variant-numeric:tabular-nums;color:var(--muted)}
+.ps-agecol.late .ps-agecol-n{color:var(--late)}
+.ps-agecol-plot{display:flex;align-items:flex-end;justify-content:center;width:100%;height:170px}
+.ps-agecol-bar{display:block;width:60%;max-width:34px;min-height:4px;border-radius:4px 4px 0 0;background:var(--accent)}
+.ps-agecol.late .ps-agecol-bar{background:var(--late)}
+.ps-agecol-name{font-size:11px;line-height:1.3;font-weight:600;text-align:center;width:100%;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.ps-agecol-who{font-size:10.5px;color:var(--muted);text-align:center;width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+@media (max-width:900px){
+  .ps-agecols{overflow-x:auto;padding-bottom:6px}
+  .ps-agecol{flex:0 0 78px}
+}
 .ps-tgroup{border-bottom:0}
 .ps-tgroup > summary{display:flex;align-items:center;gap:10px;cursor:pointer;list-style:none;padding:10px 0 6px;font-weight:600;font-size:14px;color:var(--ink)}
 .ps-tgroup > summary::-webkit-details-marker{display:none}
@@ -2550,7 +2663,7 @@
 .ps-form{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
 .ps-form input:not([type=date]){min-width:240px}
 .ps-clients{display:flex;flex-direction:column;gap:10px;max-width:780px}
-.ps-client-row{display:grid;grid-template-columns:minmax(120px,1fr) 150px 150px 170px;gap:12px;align-items:end;padding-bottom:10px;border-bottom:1px solid var(--line)}
+.ps-client-row{display:grid;grid-template-columns:minmax(110px,1fr) 150px 150px 170px 26px;gap:12px;align-items:end;padding-bottom:10px;border-bottom:1px solid var(--line)}
 .ps-client-row .ps-field select,.ps-client-row .ps-pickerwrap input{width:100%;box-sizing:border-box}
 .ps-client-row .ps-pickerwrap{display:block;width:100%}
 .ps-stages{display:flex;flex-direction:column;gap:6px;max-width:600px}
@@ -2565,10 +2678,23 @@
 .ps-clock.big{font-size:26px;font-weight:800;letter-spacing:-.02em;gap:10px}
 .ps-clock.big .ps-dot{width:10px;height:10px}
 .ps-clock-act{margin-left:auto}
-.ps-delegate{display:block;max-width:560px;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px 18px 18px}
+.ps-delegate{display:block;max-width:900px;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px 18px 18px}
 .ps-del-col{min-width:0}
 .ps-h4{font-size:15px;font-weight:600;margin:0 0 4px}
 .ps-del-form{display:flex;flex-direction:column;gap:8px;margin-top:10px}
+/* With room to spare, the form reads as two columns instead of one long strip:
+   who and what on the left, the briefing note on the right. */
+@media (min-width:1000px){
+  .ps-del-form{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);grid-template-rows:auto auto auto auto auto;column-gap:14px;align-content:start}
+  .ps-del-form > select:nth-of-type(1){grid-column:1;grid-row:1}
+  .ps-del-form > select:nth-of-type(2){grid-column:1;grid-row:2}
+  .ps-del-form > input{grid-column:1;grid-row:3}
+  .ps-del-form .ps-del-row{grid-column:1;grid-row:4;align-self:start}
+  .ps-del-note{grid-column:2;grid-row:1 / span 4}
+  .ps-del-note textarea{height:100%;min-height:0}
+  .ps-routehint{grid-column:1 / -1;grid-row:5;margin:2px 0 0}
+  .ps-del-form > .ps-btn{grid-column:1 / -1;grid-row:6}
+}
 .ps-del-form select,.ps-del-form input{width:100%;min-width:0}
 .ps-del-row{display:flex;gap:8px;flex-wrap:wrap}
 /* Date and time need their natural width or the browser clips the value. */
@@ -2712,6 +2838,7 @@
 .ps-plate-top{display:flex;align-items:center;gap:10px;margin-bottom:10px}
 .ps-grid{display:flex;flex-direction:column;overflow-x:auto}
 .ps-grid-head,.ps-grid-row{display:grid;grid-template-columns:150px minmax(180px,1fr) auto auto 104px 150px;gap:14px;align-items:center;min-width:760px}
+.ps-grid{overflow-x:auto;max-width:100%}
 .ps-grid-head{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);padding-bottom:7px;border-bottom:1px solid var(--line)}
 .ps-grid-group{border-bottom:1px solid var(--line)}
 .ps-grid-row{padding:11px 0}
@@ -2727,7 +2854,7 @@
   .ps-board{grid-template-columns:1fr}
   .ps-item-acts{opacity:1}
   .ps-plate{padding:12px 12px 14px}
-  .ps-shell{grid-template-columns:1fr}
+  .ps-shell{grid-template-columns:minmax(0,1fr)}
   .ps-side{flex-direction:row;flex-wrap:wrap;min-height:0;border-right:0;border-bottom:1px solid var(--line)}
   .ps-bigcal{gap:2px}
   .ps-bigcal-day,.ps-bigcal-blank{min-height:64px}
@@ -2745,6 +2872,7 @@
   .ps-client-row{grid-template-columns:1fr 1fr;row-gap:8px;padding-top:4px}
   .ps-client-row > b{grid-column:1 / -1;align-self:start}
   .ps-client-row .ps-field{min-width:0}
+  .ps-client-x{grid-column:2;justify-self:end}
   .ps-viewas span{display:none}
   .ps-search-in{width:130px}
   .ps-searchpanel{width:300px}

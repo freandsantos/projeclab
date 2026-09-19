@@ -2417,7 +2417,7 @@ function Gate() {
     <><h1>Check your email</h1><p>We sent a login link to <b>{email}</b>. Open it on this device to get in.</p>
       <button className="link" onClick={() => setSent(false)}>Use a different email</button></>
   ) : (
-    <><h1>Cutline</h1><p>Type your work email and we'll send you a login link.</p>
+    <><h1>Projeclab Studios</h1><p>Type your work email and we'll send you a login link.</p>
       <input type="email" placeholder="you@company.com" value={email} onChange={e => setEmail(e.target.value)}
         onKeyDown={e => e.key === "Enter" && send()} autoFocus />
       <button onClick={send} disabled={busy}>{busy ? "Sending…" : "Send me a login link"}</button>

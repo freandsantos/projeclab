@@ -1346,6 +1346,46 @@
       return /* @__PURE__ */ React.createElement("button", { key: ds, className: `ps-bigcal-day ${ds === todayStr ? "today" : ""}`, onClick: () => setDay(ds) }, /* @__PURE__ */ React.createElement("span", { className: "ps-bigcal-num" }, d.getDate()), os.slice(0, 2).map(({ p }) => /* @__PURE__ */ React.createElement("span", { key: p.id, className: "ps-ev off" }, p.name, " off")), os.length > 2 && /* @__PURE__ */ React.createElement("span", { className: "ps-ev more" }, "+", os.length - 2, " off"), ms.slice(0, 2).map((m) => /* @__PURE__ */ React.createElement("span", { key: m.id, className: "ps-ev meet" }, m.time ? timeLabel(m.time).replace(":00", "") : "", " ", m.title)), ms.length > 2 && /* @__PURE__ */ React.createElement("span", { className: "ps-ev more" }, "+", ms.length - 2, " more"));
     })), day && /* @__PURE__ */ React.createElement(DayPanel, { day, db, me, mutate, canEdit, close: () => setDay(null) }));
   }
+  /* Tasks move through the same stages as videos, minus Editing, so the Pipeline
+     can show both side by side instead of only half the studio's work. */
+  var taskStage = (t) => {
+    const st = taskStatus(t);
+    if (st === "final_check") return "final";
+    if (st === "review") return "qa";
+    if (st === "in_progress") return "in_progress";
+    return "todo";
+  };
+  function PipelineTable({ rows, db, me, openVideo, openTask }) {
+    const h = React.createElement;
+    if (!rows.length) return h("p", { className: "ps-empty" }, "Nothing here right now.");
+    const key = (r) => {
+      if (!r.__task) { const d = dueOf(r); return d ? +d : 8e15; }
+      return r.due ? +new Date(String(r.due).length > 10 ? r.due : r.due + "T23:59") : 8e15;
+    };
+    const sorted = rows.slice().sort((a, b) => key(a) - key(b));
+    return h("div", { className: "ps-table" }, sorted.map((r) => {
+      const client = db.clients.find((c) => c.id === r.clientId);
+      if (!r.__task) {
+        const editor = db.people.find((p) => p.id === r.editorId);
+        return h("button", { key: "v" + r.id, className: "ps-row", onClick: () => openVideo(r.id) },
+          h("span", { className: "ps-row-client" }, client ? client.name : "\u2014"),
+          h("span", { className: "ps-row-title" }, r.title || "Untitled"),
+          h(OwnerChip, { v: r }),
+          h("span", { className: "ps-row-ed" }, editor && h(React.Fragment, null, h(Avatar, { person: editor, size: 22 }), editor.name)),
+          h(Due, { date: dueOf(r) }),
+          h("span", { className: `ps-row-go ${canAct(r, me) ? "mine" : ""}` }, canAct(r, me) ? "Open" : "View"));
+      }
+      const who = db.people.find((p) => p.id === r.personId);
+      const meta = taskStatusMeta(r);
+      return h("button", { key: "t" + r.id, className: "ps-row", onClick: () => openTask(r.id) },
+        h("span", { className: "ps-row-client" }, client ? client.name : "\u2014"),
+        h("span", { className: "ps-row-title" }, h("span", { className: "ps-rowtag" }, "Task"), r.text),
+        h("span", { className: "ps-chip", style: meta.color ? { background: meta.soft, color: meta.color } : void 0 }, meta.label),
+        h("span", { className: "ps-row-ed" }, who && h(React.Fragment, null, h(Avatar, { person: who, size: 22 }), who.name)),
+        r.due ? h(TaskDue, { due: r.due }) : h("span", { className: "ps-muted" }, "no date"),
+        h("span", { className: "ps-row-go mine" }, "Open"));
+    }));
+  }
   function FilmStrip({ videos, filter, setFilter }) {
     return /* @__PURE__ */ React.createElement("div", { className: "ps-strip", role: "list" }, STAGES.filter((s) => s.id !== "ready").map((s, i) => {
       const n = videos.filter((v) => v.stage === s.id && !v.archived).length;
@@ -2020,6 +2060,15 @@
     const mine = active.filter((v) => isMine(v, me));
     const unassigned = db.videos.filter((v) => v.stage === "editing" && !v.editorId);
     const late = active.filter((v) => dueOf(v) && dueOf(v) < startOfDay(/* @__PURE__ */ new Date()));
+    /* A manager's Pipeline is the whole studio; everyone else's is their own plate. */
+    const pipeTasks = (db.tasks || []).filter((t) => {
+      if (t.done) return false;
+      return lead ? canSeeTask(db, me, t) : t.personId === me.id || t.reviewFrom === me.id || t.qaAuthorId === me.id;
+    }).map((t) => ({ ...t, stage: taskStage(t), __task: true }));
+    /* Videos on someone's own bench: an editor's own cuts, whatever is sitting in
+       QA for the reviewer. HR does no video work, so they get tasks only. */
+    const pipeVideos = lead ? active : active.filter((v) => isEditor(me.role) ? v.editorId === me.id : me.role === "qa" ? v.stage === "qa" : false);
+    const mineInMotion = lead ? [] : [...pipeVideos, ...pipeTasks];
     const openVideo = openId ? db.videos.find((v) => v.id === openId) : null;
     const openTaskRow = taskId ? db.tasks.find((t) => t.id === taskId) : null;
     const canEditPerson = (p) => lead || p.id === me.id && p.role !== "client";
@@ -2285,14 +2334,18 @@
         ["calendar", "Calendar", ""]
       ] : [],
       ...me.role === "hr" ? [["overview", "Team overview", ""], ["calendar", "Calendar", ""]] : [],
+      /* Everyone else gets the same stage view, narrowed to their own work. */
+      ...!lead && me.role !== "client" ? [["pipeline", "Pipeline", mineInMotion.length || ""]] : [],
       ...me.role !== "client" && !isLead ? [["timeoff", "Time off", leaveStats(db, me.id).left]] : [],
       ...isLead ? [["settings", "Settings", ""]] : []
     ];
     const clientsShown = clientsFor(db, me);
     let body;
     if (page.tab === "pipeline") {
-      const rows = filter ? active.filter((v) => v.stage === filter) : active;
-      body = /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("h1", { className: "ps-h1" }, "Pipeline"), /* @__PURE__ */ React.createElement("p", { className: "ps-lede" }, active.length, " videos in motion", late.length ? `, ${late.length} past due` : "", ". Select a frame to see only that stage."), /* @__PURE__ */ React.createElement(FilmStrip, { videos: active, filter, setFilter }), /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, filter ? stageOf(filter).name : "Everything in motion"), /* @__PURE__ */ React.createElement(VideoTable, { rows, db, me, open: setOpenId }));
+      const openTasks = pipeTasks;
+      const inMotion = [...pipeVideos, ...openTasks];
+      const rows = filter ? inMotion.filter((v) => v.stage === filter) : inMotion;
+      body = /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("h1", { className: "ps-h1" }, "Pipeline"), /* @__PURE__ */ React.createElement("p", { className: "ps-lede" }, pipeVideos.length, " video", pipeVideos.length === 1 ? "" : "s", " and ", openTasks.length, " task", openTasks.length === 1 ? "" : "s", lead ? " in motion" : " on your plate", late.length ? `, ${late.length} past due` : "", ". Select a frame to see only that stage."), /* @__PURE__ */ React.createElement(FilmStrip, { videos: inMotion, filter, setFilter }), /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, filter ? stageOf(filter).name : lead ? "Everything in motion" : "Everything on your plate"), /* @__PURE__ */ React.createElement(PipelineTable, { rows, db, me, openVideo: setOpenId, openTask: setTaskId }));
     } else if (page.tab === "client") {
       const c = db.clients.find((x) => x.id === page.id);
       const rows = visible.filter((v) => v.clientId === page.id);
@@ -2376,7 +2429,7 @@
       setOpenId(null);
       setTaskId(null);
       setPersonId(null);
-    } }, "Projeclab Studios"), /* @__PURE__ */ React.createElement("span", { className: "ps-spacer" }), me.role !== "client" && /* @__PURE__ */ React.createElement(SearchBox, { db, me, lead, openTask: setTaskId, openVideo: setOpenId, openClient: (id) => { setPage({ tab: "client", id }); setFilter(null); } }), authLock ? /* @__PURE__ */ React.createElement("span", { className: "ps-viewas" }, /* @__PURE__ */ React.createElement("b", null, me.name), /* @__PURE__ */ React.createElement("span", null, " \xB7 ", (ROLES[me.role] || {}).label || me.role)) : /* @__PURE__ */ React.createElement("label", { className: "ps-viewas" }, /* @__PURE__ */ React.createElement("span", null, "Viewing as"), /* @__PURE__ */ React.createElement("select", { value: meId, onChange: (e) => {
+    } }, "Projeclab", /* @__PURE__ */ React.createElement("span", { className: "ps-logo-sub" }, "Studios")), /* @__PURE__ */ React.createElement("span", { className: "ps-spacer" }), me.role !== "client" && /* @__PURE__ */ React.createElement(SearchBox, { db, me, lead, openTask: setTaskId, openVideo: setOpenId, openClient: (id) => { setPage({ tab: "client", id }); setFilter(null); } }), authLock ? /* @__PURE__ */ React.createElement("span", { className: "ps-viewas" }, /* @__PURE__ */ React.createElement("b", null, me.name), /* @__PURE__ */ React.createElement("span", null, " \xB7 ", (ROLES[me.role] || {}).label || me.role)) : /* @__PURE__ */ React.createElement("label", { className: "ps-viewas" }, /* @__PURE__ */ React.createElement("span", null, "Viewing as"), /* @__PURE__ */ React.createElement("select", { value: meId, onChange: (e) => {
       setMeId(e.target.value);
       setPage({ tab: "queue" });
       setFilter(null);
@@ -2438,6 +2491,8 @@
 .ps-top{display:flex;align-items:center;flex-wrap:wrap;gap:10px 14px;padding:12px 22px;border-bottom:1px solid var(--line);background:var(--card);position:sticky;top:0;z-index:10}
 .ps-top .ps-logo{font-family:inherit;font-weight:800;font-size:22px;letter-spacing:-.03em;background:none;border:0;padding:0;color:inherit;cursor:pointer;line-height:inherit}
 .ps-top .ps-logo:hover{color:var(--accent)}
+/* Same size, lighter weight - "Studios" reads as a subtitle, not a second name. */
+.ps-top .ps-logo-sub{font-weight:400;font-size:23px;margin-left:.28em}
 .ps-spacer{flex:1}
 .ps-viewas{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:13px}
 .ps-root select,.ps-root input,.ps-root textarea{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:7px 10px}
@@ -2499,7 +2554,7 @@
 .ps-invoice.upcoming{border-style:dashed;background:transparent}
 .ps-field-na{display:flex;align-items:center;height:37.5px}
 .ps-table{display:flex;flex-direction:column;border-top:1px solid var(--line)}
-.ps-row{display:grid;grid-template-columns:160px minmax(0,1fr) auto 110px 110px 64px;gap:14px;align-items:center;background:none;border:0;
+.ps-row{display:grid;grid-template-columns:150px minmax(0,1fr) auto 104px 150px 58px;gap:12px;align-items:center;background:none;border:0;
   border-bottom:1px solid var(--line);padding:11px 6px;text-align:left;cursor:pointer}
 .ps-row:hover{background:var(--card)}
 .ps-row-client{font-size:13px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -2545,6 +2600,7 @@
   .ps-agecols{overflow-x:auto;padding-bottom:6px}
   .ps-agecol{flex:0 0 78px}
 }
+.ps-rowtag{display:inline-block;margin-right:7px;padding:1px 6px;border-radius:5px;background:var(--line);color:var(--muted);font-size:10.5px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;vertical-align:1px}
 .ps-tgroup{border-bottom:0}
 .ps-tgroup > summary{display:flex;align-items:center;gap:10px;cursor:pointer;list-style:none;padding:10px 0 6px;font-weight:600;font-size:14px;color:var(--ink)}
 .ps-tgroup > summary::-webkit-details-marker{display:none}
@@ -2810,7 +2866,12 @@
 .ps-todo-text{display:block}
 .ps-modal.narrow{max-width:520px}
 .ps-fields.trio{grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-bottom:12px}
-.ps-fields.quad{grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin-bottom:12px}
+/* The last cell holds a date AND a time, so it gets roughly double the width -
+   four equal columns can't fit both and the time box spills out of the card. */
+.ps-fields.quad{grid-template-columns:minmax(0,1fr) minmax(0,1fr) minmax(0,1fr) minmax(0,2.2fr);gap:10px;margin-bottom:12px}
+.ps-fields .ps-duo{min-width:0}
+.ps-fields .ps-pw-date{flex:1.2 1 128px;min-width:126px}
+.ps-fields .ps-pw-time{flex:1 1 106px;min-width:102px}
 .ps-fields.trio select,.ps-fields.trio input,.ps-fields.quad select,.ps-fields.quad input{padding:5px 8px;font-size:14px}
 .ps-client-tag{display:inline-block;margin-right:7px;padding:1px 7px;border-radius:5px;background:var(--card);border:1px solid var(--line);font-size:11px;font-weight:600;color:var(--muted);vertical-align:1px;white-space:nowrap}
 .ps-step-done{text-decoration:line-through;color:var(--muted)}
@@ -2869,6 +2930,8 @@
   .ps-row{grid-template-columns:minmax(0,1fr) auto;row-gap:4px}
   .ps-row-client,.ps-row-ed,.ps-row-go{display:none}
   .ps-fields{grid-template-columns:1fr}
+  .ps-fields.quad{grid-template-columns:1fr 1fr}
+  .ps-fields.quad .ps-field:last-child{grid-column:1 / -1}
   .ps-client-row{grid-template-columns:1fr 1fr;row-gap:8px;padding-top:4px}
   .ps-client-row > b{grid-column:1 / -1;align-self:start}
   .ps-client-row .ps-field{min-width:0}

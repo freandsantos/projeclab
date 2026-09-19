@@ -431,7 +431,7 @@
     });
     /* Plain settings (the pinned notice, flags): only overwrite what we changed. */
     Object.keys(mine).forEach((k) => {
-      if (COLLECTIONS.includes(k)) return;
+      if (COLLECTIONS.includes(k) || k === "rev" || k === "savedAt") return;
       if (JSON.stringify(base[k]) !== JSON.stringify(mine[k])) out[k] = mine[k];
     });
     return out;
@@ -1089,6 +1089,8 @@
   }
 
   function PersonModal({ person, db, me, mutate, close }) {
+    /* Leave allowance is a people decision: the Lead and HR set it, nobody else. */
+    const setsLeave = me.role === "lead" || me.role === "hr";
     const [tab, setTab] = useState("time");
     const [from, setFrom] = useState(isoDay(/* @__PURE__ */ new Date()));
     const [to, setTo] = useState(isoDay(/* @__PURE__ */ new Date()));
@@ -1129,8 +1131,9 @@
       setStep("");
     };
     const who = (id) => (db.people.find((x) => x.id === id) || {}).name || "Someone";
-    return /* @__PURE__ */ React.createElement("div", { className: "ps-overlay", onClick: (e) => e.target === e.currentTarget && close() }, /* @__PURE__ */ React.createElement("div", { className: "ps-modal", role: "dialog", "aria-modal": "true" }, /* @__PURE__ */ React.createElement("button", { className: "ps-x", onClick: close, "aria-label": "Close" }, "\xD7"), /* @__PURE__ */ React.createElement("div", { className: "ps-person-head" }, /* @__PURE__ */ React.createElement(Avatar, { person: p, size: 44 }), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("h2", { className: "ps-h2" }, p.name), /* @__PURE__ */ React.createElement("p", { className: "ps-muted" }, (ROLES[p.role] || {}).label || p.role, isAway(p) ? " \xB7 away today" : nextAway(p) ? ` \xB7 away from ${shortDate(fromIso(nextAway(p).from))}` : ""))), /* @__PURE__ */ React.createElement("div", { className: "ps-tabs" }, [["time", "Time off"], ["qa", "QA record"], ["onb", `Onboarding ${ob.length ? `${obDone}/${ob.length}` : ""}`], ["notes", `1:1 notes ${notes.length || ""}`]].map(([k, l]) => /* @__PURE__ */ React.createElement("button", { key: k, className: `ps-tab ${tab === k ? "on" : ""}`, onClick: () => setTab(k) }, l))), tab === "time" && /* @__PURE__ */ React.createElement("div", { className: "ps-tabbody" }, /* @__PURE__ */ React.createElement("p", { className: "ps-muted" }, "Mark days off so they're flagged when work is assigned."), /* @__PURE__ */ React.createElement("div", { className: "ps-allow" }, /* @__PURE__ */ React.createElement("label", { className: "ps-field" }, /* @__PURE__ */ React.createElement("span", null, "Yearly leave allowance"), /* @__PURE__ */ React.createElement("input", { type: "number", min: "0", max: "365", value: lv.allowance, onChange: (e) => {
+    return /* @__PURE__ */ React.createElement("div", { className: "ps-overlay", onClick: (e) => e.target === e.currentTarget && close() }, /* @__PURE__ */ React.createElement("div", { className: "ps-modal", role: "dialog", "aria-modal": "true" }, /* @__PURE__ */ React.createElement("button", { className: "ps-x", onClick: close, "aria-label": "Close" }, "\xD7"), /* @__PURE__ */ React.createElement("div", { className: "ps-person-head" }, /* @__PURE__ */ React.createElement(Avatar, { person: p, size: 44 }), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("h2", { className: "ps-h2" }, p.name), /* @__PURE__ */ React.createElement("p", { className: "ps-muted" }, (ROLES[p.role] || {}).label || p.role, isAway(p) ? " \xB7 away today" : nextAway(p) ? ` \xB7 away from ${shortDate(fromIso(nextAway(p).from))}` : ""))), /* @__PURE__ */ React.createElement("div", { className: "ps-tabs" }, [["time", "Time off"], ["qa", "QA record"], ["onb", `Onboarding ${ob.length ? `${obDone}/${ob.length}` : ""}`], ["notes", `1:1 notes ${notes.length || ""}`]].map(([k, l]) => /* @__PURE__ */ React.createElement("button", { key: k, className: `ps-tab ${tab === k ? "on" : ""}`, onClick: () => setTab(k) }, l))), tab === "time" && /* @__PURE__ */ React.createElement("div", { className: "ps-tabbody" }, /* @__PURE__ */ React.createElement("p", { className: "ps-muted" }, "Mark days off so they're flagged when work is assigned."), /* @__PURE__ */ React.createElement("div", { className: "ps-allow" }, /* @__PURE__ */ React.createElement("label", { className: "ps-field" }, /* @__PURE__ */ React.createElement("span", null, "Yearly leave allowance"), /* @__PURE__ */ React.createElement("input", { type: "number", min: "0", max: "365", value: lv.allowance, disabled: !setsLeave, title: setsLeave ? "" : "Only the Lead and HR can change this", onChange: (e) => {
       const raw = e.target.value;
+      if (!setsLeave) return;
       editPerson((t) => {
         t.leaveAllowance = raw === "" ? LEAVE_DEFAULT : Math.max(0, Math.min(365, parseInt(raw) || 0));
       });
@@ -1813,6 +1816,7 @@
     const [authLock, setAuthLock] = useState(null);
     const [draft, setDraft] = useState({ client: "", title: "", person: "", role: "editor", clientName: "", ...suggestedDue() });
     const lastSaved = useRef("");
+    const dbRef = useRef(null);
     const [loadError, setLoadError] = useState(false);
     useEffect(() => {
       (async () => {
@@ -1834,22 +1838,27 @@
       if (json === lastSaved.current) return;
       const t = setTimeout(async () => {
         try {
-          let toSave = json, merged = null;
+          let next = db, highest = db.rev || 0;
           /* Look before writing. If a teammate saved since we loaded, replay our
              edits on top of theirs rather than overwriting their work. */
           try {
             const now = await window.storage.get(STORE_KEY, false);
             const theirs = now && now.value;
             if (theirs && theirs !== lastSaved.current && lastSaved.current) {
-              merged = mergeStates(JSON.parse(lastSaved.current), db, normalize(JSON.parse(theirs)));
-              toSave = JSON.stringify(merged);
+              const parsed = normalize(JSON.parse(theirs));
+              highest = Math.max(highest, parsed.rev || 0);
+              next = mergeStates(JSON.parse(lastSaved.current), db, parsed);
             }
           } catch (e) {
             console.error("Merge check failed - saving this screen as-is", e);
           }
+          /* Stamp it. The version number is how a slow answer from the server
+             is recognised as out of date instead of being applied over this. */
+          const stamped = { ...next, rev: highest + 1, savedAt: (/* @__PURE__ */ new Date()).toISOString() };
+          const toSave = JSON.stringify(stamped);
           await window.storage.set(STORE_KEY, toSave, false);
           lastSaved.current = toSave;
-          if (merged) setDb(merged);
+          setDb(stamped);
         } catch (e) {
           console.error("Save failed", e);
           setToast("Your last change didn't save. Check your internet, then try again.");
@@ -1862,14 +1871,31 @@
       return window.storage.subscribe(STORE_KEY, (value) => {
         if (!value || value === lastSaved.current) return;
         try {
-          const next = normalize(JSON.parse(value));
-          lastSaved.current = value;
-          setDb(next);
+          const theirs = normalize(JSON.parse(value));
+          const cur = dbRef.current;
+          if (!cur) {
+            lastSaved.current = value;
+            setDb(theirs);
+            return;
+          }
+          /* A read that set off before our own save can land after it. Older
+             version number means it is stale - drop it, don't apply it. */
+          if ((theirs.rev || 0) < (cur.rev || 0)) return;
+          if (JSON.stringify(cur) === lastSaved.current) {
+            lastSaved.current = value;
+            setDb(theirs);
+            return;
+          }
+          /* Edits here haven't saved yet - keep them on top of what arrived. */
+          setDb(mergeStates(JSON.parse(lastSaved.current), cur, theirs));
         } catch (e) {
           console.error(e);
         }
       });
     }, []);
+    useEffect(() => {
+      dbRef.current = db;
+    }, [db]);
     useEffect(() => {
       if (!toast) return;
       const t = setTimeout(() => setToast(""), typeof toast === "object" ? 8e3 : 2600);

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Projeclab Studios</title>å
+<title>Projeclab Studios</title>
 <style>html,body{margin:0;background:#EDF0F3}html[data-theme="dark"],html[data-theme="dark"] body{background:#10151D}</style>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
@@ -20,8 +20,8 @@
   var { useState, useEffect, useMemo, useRef } = React;
   var STAGES = [
     { id: "todo", name: "To do", owner: "editor", days: 2 },
-    { id: "in_progress", name: "In progress", owner: "editor", days: 4 },
-    { id: "editing", name: "Editing", owner: "editor", days: 3 },
+    { id: "in_progress", name: "On hold", owner: "editor", days: 4 },
+    { id: "editing", name: "In progress", owner: "editor", days: 3 },
     { id: "qa", name: "QA", owner: "qa", days: 1 },
     { id: "final", name: "Final approval", owner: "lead", days: 1 },
     { id: "ready", name: "Sent to client", owner: "client", days: 2 }
@@ -71,6 +71,52 @@
     { id: "other", label: "Other" }
   ];
   /* People paperwork doesn't belong in the video QA queue. */
+  /* Recurring work: there's no server to run a schedule, so the next copy is made
+     the moment the current one is finished. No cron, nothing to drift. */
+  var REPEATS = [
+    { id: "none", label: "Doesn't repeat" },
+    { id: "daily", label: "Every weekday" },
+    { id: "weekly", label: "Every week" },
+    { id: "biweekly", label: "Every 2 weeks" },
+    { id: "monthly", label: "Every month" }
+  ];
+  var repeatOf = (t) => REPEATS.find((r) => r.id === (t && t.repeat)) || REPEATS[0];
+  var nextDue = (due, every) => {
+    const hasTime = !!due && String(due).length > 10;
+    const d = due ? new Date(hasTime ? due : due + "T00:00") : /* @__PURE__ */ new Date();
+    if (every === "daily") {
+      do { d.setDate(d.getDate() + 1); } while (d.getDay() % 6 === 0);
+    } else if (every === "weekly") d.setDate(d.getDate() + 7);
+    else if (every === "biweekly") d.setDate(d.getDate() + 14);
+    else if (every === "monthly") d.setMonth(d.getMonth() + 1);
+    else return due || null;
+    return hasTime ? isoDay(d) + String(due).slice(10) : isoDay(d);
+  };
+  /* The next copy goes back to whoever the work belongs to, not whoever happened
+     to be holding it at the finish line (QA, or the lead at final check). */
+  var repeatFrom = (t) => ({
+    ...t,
+    id: uid("t"),
+    done: false,
+    doneAt: null,
+    status: "todo",
+    personId: t.home || t.reviewFrom || t.qaAuthorId || t.personId,
+    due: nextDue(t.due, repeatOf(t).id),
+    at: (/* @__PURE__ */ new Date()).toISOString(),
+    startedAt: null,
+    workMs: 0,
+    sessions: [],
+    comments: [],
+    notes: "",
+    reviewFrom: null,
+    qaFrom: null,
+    qaPassedAt: null,
+    qaBounces: 0,
+    askFrom: null,
+    askPrev: null,
+    steps: (t.steps || []).map((x) => ({ ...x, done: false })),
+    history: [{ at: (/* @__PURE__ */ new Date()).toISOString(), by: "system", text: `Repeated \u2014 ${repeatOf(t).label.toLowerCase()}` }]
+  });
   var NO_QA_KINDS = ["onboarding", "hrdoc"];
   /* Actual studio work - searchable by the whole team no matter who raised it. */
   var OPEN_KINDS = ["video", "design"];
@@ -95,7 +141,8 @@
     todo: { label: "To do" },
     in_progress: { label: "In progress", color: ROLES.editor.color, soft: ROLES.editor.soft },
     review: { label: "With QA", color: ROLES.qa.color, soft: ROLES.qa.soft },
-    final_check: { label: "Final check", color: ROLES.lead.color, soft: ROLES.lead.soft }
+    final_check: { label: "Final check", color: ROLES.lead.color, soft: ROLES.lead.soft },
+    question: { label: "Question asked", color: ROLES.hr.color, soft: ROLES.hr.soft }
   };
   var taskStatusMeta = (t) => TASK_STATUS_META[taskStatus(t)] || TASK_STATUS_META.todo;
   var stageOf = (id) => STAGES.find((s) => s.id === id);
@@ -229,6 +276,41 @@
   /* One rule for who may see a task, used by search and by the client pages so
      the two can't drift apart. Managers see everything; everyone else sees the
      studio's work but not management's own admin or people paperwork. */
+  /* Monday to Friday of whichever week contains `when`. */
+  var workWeek = (when) => {
+    const mon = mondayOf(when || /* @__PURE__ */ new Date());
+    return [0, 1, 2, 3, 4].map((i) => {
+      const d = new Date(mon);
+      d.setDate(d.getDate() + i);
+      return d;
+    });
+  };
+  /* Hours logged per person across those days, plus any clock running right now. */
+  var hoursInWeek = (db, days) => {
+    const keys = days.map(isoDay);
+    const set = /* @__PURE__ */ new Set(keys);
+    const today = isoDay(/* @__PURE__ */ new Date());
+    const per = /* @__PURE__ */ new Map();
+    const add = (id, day, ms) => {
+      if (!id || !ms || ms < 0) return;
+      const row = per.get(id) || { total: 0, byDay: {} };
+      row.total += ms;
+      row.byDay[day] = (row.byDay[day] || 0) + ms;
+      per.set(id, row);
+    };
+    const sweep = (list, fallback) => (list || []).forEach((x) => {
+      (x.sessions || []).forEach((sn) => { if (set.has(sn.day)) add(sn.by || fallback(x), sn.day, sn.ms); });
+      if (x.startedAt && !x.done && set.has(today)) add(fallback(x), today, Date.now() - new Date(x.startedAt).getTime());
+    });
+    sweep(db.tasks, (t) => t.personId);
+    sweep(db.videos, (v) => v.editorId);
+    return per;
+  };
+  var hoursLabel = (ms) => {
+    const h = ms / 36e5;
+    if (!ms) return "0h";
+    return h < 1 ? `${Math.max(1, Math.round(ms / 6e4))}m` : `${h.toFixed(h < 10 ? 1 : 0)}h`;
+  };
   var canSeeTask = (db, me, t) => {
     if (!me) return false;
     if (isManager(me.role) || me.role === "hr") return true;
@@ -949,6 +1031,64 @@
     );
   }
 
+  /* Everything an editor needs to work this client correctly, in one place:
+     SOPs, brand rules, do-nots. The lead writes them, everyone else reads. */
+  function ClientBrief({ db, client, canEdit, mutate, setToast }) {
+    const h = React.createElement;
+    const [title, setTitle] = useState("");
+    const [body, setBody] = useState("");
+    const [openId, setOpenId] = useState(null);
+    const [draft, setDraft] = useState("");
+    const notes = client.brief || [];
+    const add = () => {
+      const tt = title.trim(), bb = body.trim();
+      if (!tt) return setToast("Give it a heading first.");
+      mutate((n) => {
+        const c = n.clients.find((x) => x.id === client.id);
+        if (!c) return;
+        c.brief = [...c.brief || [], { id: uid("br"), title: tt, body: bb, at: (/* @__PURE__ */ new Date()).toISOString() }];
+      });
+      setTitle("");
+      setBody("");
+      setToast("Added to the brief.");
+    };
+    const save = (id) => {
+      mutate((n) => {
+        const c = n.clients.find((x) => x.id === client.id);
+        const note = (c && c.brief || []).find((x) => x.id === id);
+        if (note) { note.body = draft; note.at = (/* @__PURE__ */ new Date()).toISOString(); }
+      });
+      setOpenId(null);
+      setToast("Saved.");
+    };
+    const drop = (id) => mutate((n) => {
+      const c = n.clients.find((x) => x.id === client.id);
+      if (c) c.brief = (c.brief || []).filter((x) => x.id !== id);
+    });
+    return h(React.Fragment, null,
+      h("h3", { className: "ps-h3" }, "Brief & rules"),
+      h("p", { className: "ps-lede" }, canEdit
+        ? "SOPs, brand rules, anything the team needs to get this client right. Everyone working on them can read this."
+        : notes.length ? "How this client wants their work done." : "Nothing here yet \u2014 the lead hasn't added a brief for this client."),
+      notes.length > 0 && h("div", { className: "ps-brief" }, notes.map((b) => h("details", { key: b.id, className: "ps-briefnote" },
+        h("summary", null, h("span", { className: "ps-brief-t" }, b.title),
+          h("span", { className: "ps-muted ps-brief-at" }, shortDate(b.at))),
+        openId === b.id
+          ? h("div", { className: "ps-brief-edit" },
+              h("textarea", { value: draft, onChange: (e) => setDraft(e.target.value), autoFocus: true }),
+              h("div", { className: "ps-btnrow" },
+                h("button", { className: "ps-btn ghost small", onClick: () => setOpenId(null) }, "Cancel"),
+                h("button", { className: "ps-btn small", onClick: () => save(b.id) }, "Save")))
+          : h(React.Fragment, null,
+              h("p", { className: "ps-brief-body" }, b.body || "No detail written yet."),
+              canEdit && h("div", { className: "ps-btnrow" },
+                h("button", { className: "ps-btn ghost small", onClick: () => { setDraft(b.body || ""); setOpenId(b.id); } }, "Edit"),
+                h("button", { className: "ps-btn ghost small danger", onClick: () => drop(b.id) }, "Remove")))))),
+      canEdit && h("div", { className: "ps-briefadd" },
+        h("input", { placeholder: "Heading \u2014 e.g. Brand colours, Editing SOP, Do nots", value: title, onChange: (e) => setTitle(e.target.value) }),
+        h("textarea", { placeholder: "The detail. Links, rules, anything the editor should follow.", value: body, onChange: (e) => setBody(e.target.value) }),
+        h("button", { className: "ps-btn ghost", onClick: add }, "Add to the brief")));
+  }
   function ClientTasks({ db, me, client, openTask }) {
     const h = React.createElement;
     const rows = (db.tasks || []).filter((t) => t.clientId === client.id && !t.done && canSeeTask(db, me, t)).slice().sort(doneSort);
@@ -975,6 +1115,45 @@
     const ms = (now || Date.now()) - new Date(started).getTime();
     return ms < 0 ? 0 : Math.floor(ms / 864e5);
   };
+  function WeekHours({ db, me, weekOffset, setWeekOffset, openPerson }) {
+    const h = React.createElement;
+    const base = /* @__PURE__ */ new Date();
+    base.setDate(base.getDate() + weekOffset * 7);
+    const days = workWeek(base);
+    const per = hoursInWeek(db, days);
+    const crew = (db.people || []).filter((p) => p.role !== "client");
+    const rows = crew.map((p) => ({ p, ...per.get(p.id) || { total: 0, byDay: {} } })).sort((a, b) => b.total - a.total);
+    const team = rows.reduce((n, r) => n + r.total, 0);
+    const longest = Math.max(1, rows[0] ? rows[0].total : 1);
+    const span = `${shortDate(days[0])} \u2013 ${shortDate(days[4])}`;
+    const dayName = (d) => d.toLocaleDateString(void 0, { weekday: "short" });
+    return h(React.Fragment, null,
+      h("div", { className: "ps-weekhead" },
+        h("h3", { className: "ps-h3" }, "Hours this week"),
+        h("div", { className: "ps-weeknav" },
+          h("button", { className: "ps-btn ghost small", onClick: () => setWeekOffset(weekOffset - 1), "aria-label": "Previous week" }, "\u2039"),
+          h("span", { className: "ps-muted ps-weekspan" }, weekOffset === 0 ? "This week" : span),
+          h("button", { className: "ps-btn ghost small", disabled: weekOffset >= 0, onClick: () => setWeekOffset(weekOffset + 1), "aria-label": "Next week" }, "\u203A"))),
+      h("p", { className: "ps-lede" }, "Monday to Friday, ", span, ". ", team ? `${hoursLabel(team)} across the team.` : "Nothing logged yet.", " Time is counted when someone runs the clock on a task or an edit."),
+      team === 0
+        ? h("p", { className: "ps-empty" }, "No hours logged for this week.")
+        : h("div", { className: "ps-hrbars", role: "list" }, rows.map(({ p, total, byDay }) => {
+            const pct = total ? Math.max(2, Math.round(total / longest * 100)) : 0;
+            const split = days.map((d) => `${dayName(d)} ${hoursLabel(byDay[isoDay(d)] || 0)}`).join("  \u00b7  ");
+            return h("button", {
+              key: p.id,
+              role: "listitem",
+              className: "ps-hrrow",
+              onClick: () => openPerson && openPerson(p.id),
+              title: `${p.name} \u2014 ${hoursLabel(total)} this week\n${split}`
+            },
+              h("span", { className: "ps-hr-name" }, p.name,
+                h("span", { className: "ps-muted ps-hr-role" }, (ROLES[p.role] || {}).label || p.role)),
+              h("span", { className: "ps-hr-val" }, hoursLabel(total),
+                h("span", { className: "ps-muted ps-hr-unit" }, " | week")),
+              h("span", { className: "ps-hr-track" }, total ? h("span", { className: "ps-hr-fill", style: { width: pct + "%" } }) : null));
+          })));
+  }
   function AgingTasks({ db, me, openTask, limit = 10 }) {
     const h = React.createElement;
     const now = Date.now();
@@ -1148,7 +1327,7 @@
     );
   }
 
-  function PersonModal({ person, db, me, mutate, close }) {
+  function PersonModal({ person, db, me, mutate, close, picker }) {
     /* Leave allowance is a people decision: the Lead and HR set it, nobody else. */
     const setsLeave = me.role === "lead" || me.role === "hr";
     const [tab, setTab] = useState("time");
@@ -1191,7 +1370,7 @@
       setStep("");
     };
     const who = (id) => (db.people.find((x) => x.id === id) || {}).name || "Someone";
-    return /* @__PURE__ */ React.createElement("div", { className: "ps-overlay", onClick: (e) => e.target === e.currentTarget && close() }, /* @__PURE__ */ React.createElement("div", { className: "ps-modal", role: "dialog", "aria-modal": "true" }, /* @__PURE__ */ React.createElement("button", { className: "ps-x", onClick: close, "aria-label": "Close" }, "\xD7"), /* @__PURE__ */ React.createElement("div", { className: "ps-person-head" }, /* @__PURE__ */ React.createElement(Avatar, { person: p, size: 44 }), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("h2", { className: "ps-h2" }, p.name), /* @__PURE__ */ React.createElement("p", { className: "ps-muted" }, (ROLES[p.role] || {}).label || p.role, isAway(p) ? " \xB7 away today" : nextAway(p) ? ` \xB7 away from ${shortDate(fromIso(nextAway(p).from))}` : ""))), /* @__PURE__ */ React.createElement("div", { className: "ps-tabs" }, [["time", "Time off"], ["qa", "QA record"], ["onb", `Onboarding ${ob.length ? `${obDone}/${ob.length}` : ""}`], ["notes", `1:1 notes ${notes.length || ""}`]].map(([k, l]) => /* @__PURE__ */ React.createElement("button", { key: k, className: `ps-tab ${tab === k ? "on" : ""}`, onClick: () => setTab(k) }, l))), tab === "time" && /* @__PURE__ */ React.createElement("div", { className: "ps-tabbody" }, /* @__PURE__ */ React.createElement("p", { className: "ps-muted" }, "Mark days off so they're flagged when work is assigned."), /* @__PURE__ */ React.createElement("div", { className: "ps-allow" }, /* @__PURE__ */ React.createElement("label", { className: "ps-field" }, /* @__PURE__ */ React.createElement("span", null, "Yearly leave allowance"), /* @__PURE__ */ React.createElement("input", { type: "number", min: "0", max: "365", value: lv.allowance, disabled: !setsLeave, title: setsLeave ? "" : "Only the Lead and HR can change this", onChange: (e) => {
+    return /* @__PURE__ */ React.createElement("div", { className: "ps-overlay", onClick: (e) => e.target === e.currentTarget && close() }, /* @__PURE__ */ React.createElement("div", { className: "ps-modal", role: "dialog", "aria-modal": "true" }, /* @__PURE__ */ React.createElement("button", { className: "ps-x", onClick: close, "aria-label": "Close" }, "\xD7"), /* @__PURE__ */ React.createElement("div", { className: "ps-person-head" }, picker ? picker(p, 44) : /* @__PURE__ */ React.createElement(Avatar, { person: p, size: 44 }), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("h2", { className: "ps-h2" }, p.name), /* @__PURE__ */ React.createElement("p", { className: "ps-muted" }, (ROLES[p.role] || {}).label || p.role, isAway(p) ? " \xB7 away today" : nextAway(p) ? ` \xB7 away from ${shortDate(fromIso(nextAway(p).from))}` : ""))), /* @__PURE__ */ React.createElement("div", { className: "ps-tabs" }, [["time", "Time off"], ["qa", "QA record"], ["onb", `Onboarding ${ob.length ? `${obDone}/${ob.length}` : ""}`], ["notes", `1:1 notes ${notes.length || ""}`]].map(([k, l]) => /* @__PURE__ */ React.createElement("button", { key: k, className: `ps-tab ${tab === k ? "on" : ""}`, onClick: () => setTab(k) }, l))), tab === "time" && /* @__PURE__ */ React.createElement("div", { className: "ps-tabbody" }, /* @__PURE__ */ React.createElement("p", { className: "ps-muted" }, "Mark days off so they're flagged when work is assigned."), /* @__PURE__ */ React.createElement("div", { className: "ps-allow" }, /* @__PURE__ */ React.createElement("label", { className: "ps-field" }, /* @__PURE__ */ React.createElement("span", null, "Yearly leave allowance"), /* @__PURE__ */ React.createElement("input", { type: "number", min: "0", max: "365", value: lv.allowance, disabled: !setsLeave, title: setsLeave ? "" : "Only the Lead and HR can change this", onChange: (e) => {
       const raw = e.target.value;
       if (!setsLeave) return;
       editPerson((t) => {
@@ -1350,9 +1529,11 @@
      can show both side by side instead of only half the studio's work. */
   var taskStage = (t) => {
     const st = taskStatus(t);
+    /* A question parks the task: that IS on hold. */
+    if (st === "question") return "in_progress";
     if (st === "final_check") return "final";
     if (st === "review") return "qa";
-    if (st === "in_progress") return "in_progress";
+    if (st === "in_progress") return "editing";
     return "todo";
   };
   function PipelineTable({ rows, db, me, openVideo, openTask }) {
@@ -1452,8 +1633,35 @@
         h("input", { placeholder: "Job name, e.g. Launch film \u2014 deposit", value: job, onChange: (e) => setJob(e.target.value), onKeyDown: (e) => e.key === "Enter" && add() }),
         h("button", { className: "ps-btn ghost", onClick: add }, "Add invoice")));
   }
+  function CommentBox({ t, db, me, comments, comment, setComment, postComment, askQuestion, answerQuestion, askBack, asker, status, mine }) {
+    const h = React.createElement;
+    const waiting = status === "question" && asker && mine;
+    return h("div", { className: "ps-comments" },
+      h("b", { className: "ps-comments-h" }, "Comments", comments.length ? ` (${comments.length})` : ""),
+      waiting && h("p", { className: "ps-warn" }, asker.name, " is waiting on an answer before they can carry on."),
+      comments.length === 0 && h("p", { className: "ps-muted ps-comments-none" }, "No comments yet."),
+      comments.map((c) => {
+        const by = db.people.find((p) => p.id === c.by);
+        return h("div", { key: c.id, className: `ps-comment ${c.ask ? "ask" : ""} ${c.answer ? "answer" : ""}` },
+          by ? h(Avatar, { person: by, size: 24 }) : null,
+          h("div", { className: "ps-comment-body" },
+            h("span", { className: "ps-comment-who" }, by ? by.name : "Someone", c.ask ? " asked" : c.answer ? " answered" : "",
+              h("span", { className: "ps-muted ps-comment-at" }, new Date(c.at).toLocaleString(void 0, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }))),
+            h("p", { className: "ps-comment-text" }, c.text)));
+      }),
+      h("textarea", { className: "ps-comment-in", value: comment, onChange: (e) => setComment(e.target.value),
+        placeholder: waiting ? `Answer ${asker.name}\u2026` : "Add a comment, or ask a question" }),
+      h("div", { className: "ps-btnrow" },
+        h("button", { className: "ps-btn ghost small", disabled: !comment.trim(), onClick: postComment }, "Comment"),
+        waiting
+          ? h("button", { className: "ps-btn small", disabled: !comment.trim(), onClick: answerQuestion }, "Answer and send back to ", asker.name)
+          : mine && !t.done && askBack
+            ? h("button", { className: "ps-btn ghost small", disabled: !comment.trim(), onClick: askQuestion }, "Ask ", askBack.name)
+            : null));
+  }
   function TaskModal({ t, db, me, lead, updateTask, mutate, setToast, close }) {
     const [note, setNote] = useState("");
+    const [comment, setComment] = useState("");
     const [stepText, setStepText] = useState("");
     const person = db.people.find((p) => p.id === t.personId);
     const taskClient = t.clientId ? db.clients.find((c) => c.id === t.clientId) : null;
@@ -1481,6 +1689,9 @@
     const bankedMs = workMs + runMs;
     const who = (id) => (db.people.find((p) => p.id === id) || {}).name || "Someone";
     const log = (text) => ({ history: [...history, { at: (/* @__PURE__ */ new Date()).toISOString(), by: me.id, text }] });
+    /* A running total can't be split across a week, so bank WHEN the time was
+       spent as well as how much. Attributed to the day the session started. */
+    const session = () => runMs > 0 && t.startedAt ? { sessions: [...t.sessions || [], { day: isoDay(new Date(t.startedAt)), ms: runMs, by: me.id, at: (/* @__PURE__ */ new Date()).toISOString() }] } : {};
     const toggleStep = (i) => updateTask(t.id, { steps: steps.map((x, n) => n === i ? { ...x, done: !x.done } : x) });
     const addStep = () => {
       if (!stepText.trim()) return;
@@ -1499,9 +1710,21 @@
         status: "done",
         startedAt: null,
         workMs: bankedMs,
+        ...session(),
         ...atReview && viaQA && !atFinal ? { qaPassedAt: now } : {},
         ...log(runMs ? `${text} \xB7 ${hms(runMs)} this session, ${hms(bankedMs)} in total` : text)
       });
+      if (repeatOf(t).id !== "none") {
+        let landedWith = "";
+        mutate((n) => {
+          const done = n.tasks.find((x) => x.id === t.id);
+          if (!done) return;
+          const next = repeatFrom(done);
+          landedWith = (n.people.find((p) => p.id === next.personId) || {}).name || "the team";
+          n.tasks.push(next);
+        });
+        setTimeout(() => setToast(`Done. The next one is already with ${landedWith}.`), 0);
+      }
       close();
     };
     const passToLead = () => {
@@ -1535,6 +1758,7 @@
         qaPassedAt: null,
         startedAt: null,
         workMs: bankedMs,
+        ...session(),
         ...log(`Sent to ${viaQA ? "QA" : "review"} \xB7 ${reviewer.name}${runMs ? ` \xB7 ${hms(runMs)} of work` : ""}`)
       });
       setToast({
@@ -1571,6 +1795,61 @@
       setNote("");
       close();
     };
+    const comments = t.comments || [];
+    const postComment = () => {
+      const text = comment.trim();
+      if (!text) return;
+      updateTask(t.id, { comments: [...comments, { id: uid("cm"), by: me.id, at: (/* @__PURE__ */ new Date()).toISOString(), text }] });
+      setComment("");
+    };
+    /* Ask whoever handed it over. The task parks with them until they answer, so a
+       blocked editor isn't sitting on work nobody knows is stuck. */
+    const askBack = t.by && t.by !== me.id ? db.people.find((p) => p.id === t.by) : null;
+    const asker = t.askFrom ? db.people.find((p) => p.id === t.askFrom) : null;
+    const askQuestion = () => {
+      const text = comment.trim();
+      if (!text) return setToast("Type your question first.");
+      if (!askBack) return setToast("Nobody to ask - this task has no sender.");
+      const now = (/* @__PURE__ */ new Date()).toISOString();
+      updateTask(t.id, {
+        personId: askBack.id,
+        status: "question",
+        askPrev: status,
+        askFrom: me.id,
+        startedAt: null,
+        workMs: bankedMs,
+        ...session(),
+        comments: [...comments, { id: uid("cm"), by: me.id, at: now, text, ask: true }],
+        ...log(`Asked ${askBack.name}: ${text}`)
+      });
+      setComment("");
+      setToast(`Sent to ${askBack.name}. It comes back to you once they answer.`);
+      close();
+    };
+    const answerQuestion = () => {
+      const text = comment.trim();
+      if (!text) return setToast("Type your answer first.");
+      if (!asker) return setToast("The person who asked is no longer on the team.");
+      const now = (/* @__PURE__ */ new Date()).toISOString();
+      updateTask(t.id, {
+        personId: asker.id,
+        status: t.askPrev || "in_progress",
+        askPrev: null,
+        askFrom: null,
+        comments: [...comments, { id: uid("cm"), by: me.id, at: now, text, answer: true }],
+        ...log(`Answered ${asker.name}: ${text}`)
+      });
+      setComment("");
+      setToast(`Answered - back with ${asker.name}.`);
+      close();
+    };
+    const handTo = (id) => {
+      const to = db.people.find((p) => p.id === id);
+      if (!to || id === t.personId) return;
+      updateTask(t.id, { personId: id, startedAt: null, workMs: bankedMs,
+        ...session(), ...log(`Handed to ${to.name}`) });
+      setToast(`Now with ${to.name}.`);
+    };
     const reopen = () => updateTask(t.id, {
       done: false,
       doneAt: null,
@@ -1599,17 +1878,18 @@
         onChange: (e) => updateTask(t.id, { [key]: e.target.value })
       }
     ));
-    return /* @__PURE__ */ React.createElement("div", { className: "ps-overlay", onClick: (e) => e.target === e.currentTarget && close() }, /* @__PURE__ */ React.createElement("div", { className: "ps-modal", role: "dialog", "aria-modal": "true" }, /* @__PURE__ */ React.createElement("button", { className: "ps-x", onClick: close, "aria-label": "Close" }, "\xD7"), /* @__PURE__ */ React.createElement("p", { className: "ps-muted" }, "Task", from ? ` \xB7 from ${from.id === me.id ? "you" : from.name}` : "", t.at ? ` \xB7 ${shortDate(t.at)}` : ""), lead ? /* @__PURE__ */ React.createElement("input", { className: "ps-title-in", value: t.text, onChange: (e) => updateTask(t.id, { text: e.target.value }) }) : /* @__PURE__ */ React.createElement("h2", { className: "ps-h2" }, t.text), /* @__PURE__ */ React.createElement("div", { className: "ps-meta" }, /* @__PURE__ */ React.createElement("span", { className: "ps-chip" }, (kindOf(t.kind) || { label: "Task" }).label), taskClient && /* @__PURE__ */ React.createElement("span", { className: "ps-chip" }, taskClient.name), person && /* @__PURE__ */ React.createElement("span", { className: "ps-who" }, /* @__PURE__ */ React.createElement(Avatar, { person, size: 24 }), person.name), t.done ? /* @__PURE__ */ React.createElement("span", { className: "ps-chip ok" }, "Done", t.doneAt ? ` ${shortDate(t.doneAt)}` : "") : t.due ? /* @__PURE__ */ React.createElement(TaskDue, { due: t.due }) : /* @__PURE__ */ React.createElement("span", { className: "ps-muted" }, "no date"), !t.done && /* @__PURE__ */ React.createElement("span", { className: "ps-chip", style: taskStatusMeta(t).color ? { background: taskStatusMeta(t).soft, color: taskStatusMeta(t).color } : void 0 }, taskStatusMeta(t).label), running ? /* @__PURE__ */ React.createElement("span", { className: "ps-clock", title: "Working time" }, /* @__PURE__ */ React.createElement("span", { className: "ps-dot", "aria-hidden": "true" }), /* @__PURE__ */ React.createElement(Elapsed, { from: t.startedAt, interval: 1e3, seconds: true })) : bankedMs > 0 ? /* @__PURE__ */ React.createElement("span", { className: "ps-muted" }, hms(bankedMs), " of work") : null, steps.length > 0 && !t.done && /* @__PURE__ */ React.createElement("span", { className: "ps-muted" }, steps.filter((x) => x.done).length, " of ", steps.length, " steps")), details && /* @__PURE__ */ React.createElement("div", { className: "ps-notebox" }, /* @__PURE__ */ React.createElement("b", null, "The brief"), /* @__PURE__ */ React.createElement("p", null, details)), t.notes && /* @__PURE__ */ React.createElement("div", { className: "ps-notebox" }, /* @__PURE__ */ React.createElement("b", null, "Latest note"), /* @__PURE__ */ React.createElement("p", null, t.notes)), lead && /* @__PURE__ */ React.createElement("div", { className: "ps-fields quad" }, /* @__PURE__ */ React.createElement("label", { className: "ps-field" }, /* @__PURE__ */ React.createElement("span", null, "Kind"), /* @__PURE__ */ React.createElement("select", { value: t.kind || "other", onChange: (e) => updateTask(t.id, { kind: e.target.value }) }, TASK_KINDS.map((k) => /* @__PURE__ */ React.createElement("option", { key: k.id, value: k.id }, k.label)))), /* @__PURE__ */ React.createElement("label", { className: "ps-field" }, /* @__PURE__ */ React.createElement("span", null, "Client"), /* @__PURE__ */ React.createElement("select", { value: t.clientId || "", onChange: (e) => updateTask(t.id, { clientId: e.target.value || null }) }, /* @__PURE__ */ React.createElement("option", { value: "" }, "No client"), db.clients.map((c) => /* @__PURE__ */ React.createElement("option", { key: c.id, value: c.id }, c.name)))), /* @__PURE__ */ React.createElement("label", { className: "ps-field" }, /* @__PURE__ */ React.createElement("span", null, "Assigned to"), /* @__PURE__ */ React.createElement(
+    return /* @__PURE__ */ React.createElement("div", { className: "ps-overlay", onClick: (e) => e.target === e.currentTarget && close() }, /* @__PURE__ */ React.createElement("div", { className: "ps-modal", role: "dialog", "aria-modal": "true" }, /* @__PURE__ */ React.createElement("button", { className: "ps-x", onClick: close, "aria-label": "Close" }, "\xD7"), /* @__PURE__ */ React.createElement("p", { className: "ps-muted" }, "Task", from ? ` \xB7 from ${from.id === me.id ? "you" : from.name}` : "", t.at ? ` \xB7 ${shortDate(t.at)}` : ""), lead ? /* @__PURE__ */ React.createElement("input", { className: "ps-title-in", value: t.text, onChange: (e) => updateTask(t.id, { text: e.target.value }) }) : /* @__PURE__ */ React.createElement("h2", { className: "ps-h2" }, t.text), /* @__PURE__ */ React.createElement("div", { className: "ps-meta" }, /* @__PURE__ */ React.createElement("span", { className: "ps-chip" }, (kindOf(t.kind) || { label: "Task" }).label), taskClient && /* @__PURE__ */ React.createElement("span", { className: "ps-chip" }, taskClient.name), person && /* @__PURE__ */ React.createElement("span", { className: "ps-who" }, /* @__PURE__ */ React.createElement(Avatar, { person, size: 24 }), person.name), t.done ? /* @__PURE__ */ React.createElement("span", { className: "ps-chip ok" }, "Done", t.doneAt ? ` ${shortDate(t.doneAt)}` : "") : t.due ? /* @__PURE__ */ React.createElement(TaskDue, { due: t.due }) : /* @__PURE__ */ React.createElement("span", { className: "ps-muted" }, "no date"), !t.done && /* @__PURE__ */ React.createElement("span", { className: "ps-chip", style: taskStatusMeta(t).color ? { background: taskStatusMeta(t).soft, color: taskStatusMeta(t).color } : void 0 }, taskStatusMeta(t).label), running ? /* @__PURE__ */ React.createElement("span", { className: "ps-clock", title: "Working time" }, /* @__PURE__ */ React.createElement("span", { className: "ps-dot", "aria-hidden": "true" }), /* @__PURE__ */ React.createElement(Elapsed, { from: t.startedAt, interval: 1e3, seconds: true })) : bankedMs > 0 ? /* @__PURE__ */ React.createElement("span", { className: "ps-muted" }, hms(bankedMs), " of work") : null, steps.length > 0 && !t.done && /* @__PURE__ */ React.createElement("span", { className: "ps-muted" }, steps.filter((x) => x.done).length, " of ", steps.length, " steps")), details && /* @__PURE__ */ React.createElement("div", { className: "ps-notebox" }, /* @__PURE__ */ React.createElement("b", null, "The brief"), /* @__PURE__ */ React.createElement("p", null, details)), t.notes && /* @__PURE__ */ React.createElement("div", { className: "ps-notebox" }, /* @__PURE__ */ React.createElement("b", null, "Latest note"), /* @__PURE__ */ React.createElement("p", null, t.notes)), canEdit && /* @__PURE__ */ React.createElement("div", { className: "ps-fields quad" }, /* @__PURE__ */ React.createElement("label", { className: "ps-field" }, /* @__PURE__ */ React.createElement("span", null, "Kind"), /* @__PURE__ */ React.createElement("select", { value: t.kind || "other", disabled: !lead, onChange: (e) => updateTask(t.id, { kind: e.target.value }) }, TASK_KINDS.map((k) => /* @__PURE__ */ React.createElement("option", { key: k.id, value: k.id }, k.label)))), lead && /* @__PURE__ */ React.createElement("label", { className: "ps-field" }, /* @__PURE__ */ React.createElement("span", null, "Repeats"), /* @__PURE__ */ React.createElement("select", { value: repeatOf(t).id, onChange: (e) => updateTask(t.id, { repeat: e.target.value, ...log(`Set to ${(REPEATS.find((r) => r.id === e.target.value) || REPEATS[0]).label.toLowerCase()}`) }) }, REPEATS.map((r) => /* @__PURE__ */ React.createElement("option", { key: r.id, value: r.id }, r.label)))), /* @__PURE__ */ React.createElement("label", { className: "ps-field" }, /* @__PURE__ */ React.createElement("span", null, "Client"), /* @__PURE__ */ React.createElement("select", { value: t.clientId || "", disabled: !lead, onChange: (e) => updateTask(t.id, { clientId: e.target.value || null }) }, /* @__PURE__ */ React.createElement("option", { value: "" }, "No client"), db.clients.map((c) => /* @__PURE__ */ React.createElement("option", { key: c.id, value: c.id }, c.name)))), /* @__PURE__ */ React.createElement("label", { className: "ps-field" }, /* @__PURE__ */ React.createElement("span", null, "Assigned to"), /* @__PURE__ */ React.createElement(
       "select",
       {
         value: t.personId,
-        onChange: (e) => updateTask(t.id, { personId: e.target.value, ...log(`Handed to ${who(e.target.value)}`) })
+        onChange: (e) => handTo(e.target.value)
       },
       db.people.filter((p) => p.role !== "client").map((p) => /* @__PURE__ */ React.createElement("option", { key: p.id, value: p.id }, p.name, isAway(p) ? " (away)" : ""))
     )), /* @__PURE__ */ React.createElement("label", { className: "ps-field" }, /* @__PURE__ */ React.createElement("span", null, "Due date"), /* @__PURE__ */ React.createElement("span", { className: "ps-duo" }, /* @__PURE__ */ React.createElement(
       PickerInput,
       {
         type: "date",
+        disabled: !lead,
         value: dueDatePart(t.due),
         onChange: (e) => updateTask(t.id, { due: combineDue(e.target.value, dueTimePart(t.due)) })
       }
@@ -1618,7 +1898,7 @@
       {
         type: "time",
         value: dueTimePart(t.due),
-        disabled: !t.due,
+        disabled: !t.due || !lead,
         onChange: (e) => updateTask(t.id, { due: combineDue(dueDatePart(t.due), e.target.value) })
       }
     )))), /* @__PURE__ */ React.createElement("div", { className: "ps-fields" }, url("link", "Reference link", lead), url("deliverable", "Google Drive link", canEdit)), status === "todo" ? steps.length > 0 && /* @__PURE__ */ React.createElement("p", { className: "ps-checkhint" }, steps.length, " check", steps.length === 1 ? "" : "s", " to work through \u2014 they appear once the task is started.") : (steps.length > 0 || lead) && /* @__PURE__ */ React.createElement("fieldset", { className: "ps-checks" }, /* @__PURE__ */ React.createElement("legend", null, steps.length ? "Tick every item before finishing" : "Break it into steps (optional)"), steps.map((x, i) => /* @__PURE__ */ React.createElement("label", { key: i }, /* @__PURE__ */ React.createElement("input", { type: "checkbox", checked: x.done, disabled: !canEdit || t.done, onChange: () => toggleStep(i) }), /* @__PURE__ */ React.createElement("span", { className: x.done ? "ps-step-done" : "" }, x.text), lead && /* @__PURE__ */ React.createElement("button", { className: "ps-x-small", "aria-label": "Remove step", onClick: (e) => {
@@ -1632,7 +1912,7 @@
         onChange: (e) => setStepText(e.target.value),
         onKeyDown: (e) => e.key === "Enter" && addStep()
       }
-    ), /* @__PURE__ */ React.createElement("button", { className: "ps-btn ghost small", onClick: addStep }, "Add step"))), canEdit ? /* @__PURE__ */ React.createElement("div", { className: "ps-actions" }, !t.done && status === "in_progress" && !qa && !skipsQA(t) && /* @__PURE__ */ React.createElement("p", { className: "ps-warn" }, "Nobody has the QA role right now, so finishing this will skip review and mark it done directly. Add someone as QA in Settings first if that's not what you want."), !t.done && status !== "todo" && steps.length > 0 && !allTicked && /* @__PURE__ */ React.createElement("p", { className: "ps-warn" }, "Tick every step before this can ", status === "in_progress" ? canGoToReview ? viaQA ? "go to QA" : "be submitted for review" : "be finished" : status === "review" ? viaQA ? "pass QA" : "be approved" : "be finished", "."), /* @__PURE__ */ React.createElement(
+    ), /* @__PURE__ */ React.createElement("button", { className: "ps-btn ghost small", onClick: addStep }, "Add step"))), /* @__PURE__ */ React.createElement(CommentBox, { t, db, me, comments, comment, setComment, postComment, askQuestion, answerQuestion, askBack, asker, status, mine }), canEdit ? /* @__PURE__ */ React.createElement("div", { className: "ps-actions" }, !t.done && status === "in_progress" && !qa && !skipsQA(t) && /* @__PURE__ */ React.createElement("p", { className: "ps-warn" }, "Nobody has the QA role right now, so finishing this will skip review and mark it done directly. Add someone as QA in Settings first if that's not what you want."), !t.done && status !== "todo" && steps.length > 0 && !allTicked && /* @__PURE__ */ React.createElement("p", { className: "ps-warn" }, "Tick every step before this can ", status === "in_progress" ? canGoToReview ? viaQA ? "go to QA" : "be submitted for review" : "be finished" : status === "review" ? viaQA ? "pass QA" : "be approved" : "be finished", "."), /* @__PURE__ */ React.createElement(
       "textarea",
       {
         value: note,
@@ -1769,7 +2049,7 @@
     });
     const pauseEditing = () => {
       const run = Date.now() - new Date(v.startedAt).getTime();
-      update(v.id, { startedAt: null, editMs: logged + run, ...log(`Editing paused after ${hms(run)}`) });
+      update(v.id, { startedAt: null, editMs: logged + run, sessions: [...v.sessions || [], { day: isoDay(new Date(v.startedAt)), ms: run, by: v.editorId || me.id, at: (/* @__PURE__ */ new Date()).toISOString() }], ...log(`Editing paused after ${hms(run)}`) });
     };
     const sendBack = () => {
       if (!note.trim()) return;
@@ -1853,7 +2133,7 @@
         value: draft.delDetails || "",
         onChange: (e) => set({ delDetails: e.target.value.slice(0, DETAIL_MAX) })
       }
-    ), /* @__PURE__ */ React.createElement("span", { className: `ps-counter ${(draft.delDetails || "").length >= DETAIL_MAX ? "full" : ""}` }, (draft.delDetails || "").length, " / ", DETAIL_MAX)), /* @__PURE__ */ React.createElement("div", { className: "ps-del-row" }, /* @__PURE__ */ React.createElement("select", { value: draft.delKind || "video", onChange: (e) => set({ delKind: e.target.value }), "aria-label": "Kind of task" }, TASK_KINDS.map((k) => /* @__PURE__ */ React.createElement("option", { key: k.id, value: k.id }, k.label))), /* @__PURE__ */ React.createElement("select", { value: draft.delClient || "", onChange: (e) => set({ delClient: e.target.value }), "aria-label": "Client" }, /* @__PURE__ */ React.createElement("option", { value: "" }, "No client"), db.clients.map((c) => /* @__PURE__ */ React.createElement("option", { key: c.id, value: c.id }, c.name))), /* @__PURE__ */ React.createElement("span", { className: "ps-duo" }, /* @__PURE__ */ React.createElement(PickerInput, { type: "date", value: draft.delDue || "", onChange: (e) => set({ delDue: e.target.value }), ariaLabel: "Due date" }), /* @__PURE__ */ React.createElement(
+    ), /* @__PURE__ */ React.createElement("span", { className: `ps-counter ${(draft.delDetails || "").length >= DETAIL_MAX ? "full" : ""}` }, (draft.delDetails || "").length, " / ", DETAIL_MAX)), /* @__PURE__ */ React.createElement("div", { className: "ps-del-row" }, /* @__PURE__ */ React.createElement("select", { value: draft.delKind || "video", onChange: (e) => set({ delKind: e.target.value }), "aria-label": "Kind of task" }, TASK_KINDS.map((k) => /* @__PURE__ */ React.createElement("option", { key: k.id, value: k.id }, k.label))), /* @__PURE__ */ React.createElement("select", { value: draft.delClient || "", onChange: (e) => set({ delClient: e.target.value }), "aria-label": "Client" }, /* @__PURE__ */ React.createElement("option", { value: "" }, "No client"), db.clients.map((c) => /* @__PURE__ */ React.createElement("option", { key: c.id, value: c.id }, c.name))), /* @__PURE__ */ React.createElement("select", { value: draft.delRepeat || "none", onChange: (e) => set({ delRepeat: e.target.value }), "aria-label": "How often it repeats" }, REPEATS.map((r) => /* @__PURE__ */ React.createElement("option", { key: r.id, value: r.id }, r.label))), /* @__PURE__ */ React.createElement("span", { className: "ps-duo" }, /* @__PURE__ */ React.createElement(PickerInput, { type: "date", value: draft.delDue || "", onChange: (e) => set({ delDue: e.target.value }), ariaLabel: "Due date" }), /* @__PURE__ */ React.createElement(
       PickerInput,
       {
         type: "time",
@@ -1891,7 +2171,7 @@
   }
   function PersonTasks({ person, db, me, open, mutate, lead, openTask }) {
     const rows = db.videos.filter((v) => isMine(v, person)).sort((a, b) => (dueOf(a) || 8e15) - (dueOf(b) || 8e15));
-    const tasks = db.tasks.filter((t) => t.personId === person.id).slice().sort(doneSort);
+    const tasks = db.tasks.filter((t) => t.personId === person.id && canSeeTask(db, me, t)).slice().sort(doneSort);
     const openTasks = tasks.filter((t) => !t.done).length;
     const canEdit = lead || me.id === person.id;
     const setDone = (id, done) => mutate((n) => {
@@ -1943,6 +2223,7 @@
     }, [dark]);
     const [toast, setToast] = useState("");
     const [confirming, setConfirming] = useState(null);
+    const [weekOffset, setWeekOffset] = useState(0);
     const [handover, setHandoverState] = useState("");
     const handoverRef = useRef("");
     const setHandover = (v) => { handoverRef.current = v; setHandoverState(v); };
@@ -2058,7 +2339,8 @@
     const isLead = me.role === "lead";
     const active = visible.filter((v) => !v.archived && v.stage !== "ready");
     const mine = active.filter((v) => isMine(v, me));
-    const unassigned = db.videos.filter((v) => v.stage === "editing" && !v.editorId);
+    /* Anything still moving with nobody on it - not just the ones already at the desk. */
+    const unassigned = db.videos.filter((v) => !v.editorId && !v.archived && v.stage !== "ready");
     const late = active.filter((v) => dueOf(v) && dueOf(v) < startOfDay(/* @__PURE__ */ new Date()));
     /* A manager's Pipeline is the whole studio; everyone else's is their own plate. */
     const pipeTasks = (db.tasks || []).filter((t) => {
@@ -2149,6 +2431,8 @@
         doneAt: null,
         status: "todo",
         by: me.id,
+        home: who,
+        repeat: draft.delRepeat || "none",
         at: (/* @__PURE__ */ new Date()).toISOString(),
         link: "",
         deliverable: "",
@@ -2158,8 +2442,8 @@
         steps: Array.isArray(draft.delSteps) && draft.delSteps.length ? draft.delSteps.map((x) => ({ text: x, done: false })) : (draft.delKind || "video") === "video" ? VIDEO_CHECKS.map((x) => ({ text: x, done: false })) : [],
         history: [{ at: (/* @__PURE__ */ new Date()).toISOString(), by: me.id, text: `Assigned to ${name}` }]
       }));
-      setDraft((x) => ({ ...x, delText: "", delDetails: "", delTpl: "", delSteps: null, ...suggestedDue() }));
-      setToast(`Task assigned to ${name}.`);
+      setDraft((x) => ({ ...x, delText: "", delDetails: "", delTpl: "", delSteps: null, delRepeat: "none", ...suggestedDue() }));
+      setToast(draft.delRepeat && draft.delRepeat !== "none" ? `Assigned to ${name} \u2014 ${(REPEATS.find((r) => r.id === draft.delRepeat) || REPEATS[0]).label.toLowerCase()}.` : `Task assigned to ${name}.`);
     };
     const addVideo = () => {
       if (!draft.client || !draft.title.trim()) return setToast("Pick a client and type a title.");
@@ -2330,12 +2614,13 @@
       ...lead ? [
         ["pipeline", "Pipeline", active.length],
         ["overview", "Team overview", ""],
-        ["team", "Team", unassigned.length || ""],
         ["calendar", "Calendar", ""]
       ] : [],
       ...me.role === "hr" ? [["overview", "Team overview", ""], ["calendar", "Calendar", ""]] : [],
-      /* Everyone else gets the same stage view, narrowed to their own work. */
+      /* Everyone else gets the same stage view, narrowed to their own work,
+         plus a trimmed Team overview: the work, not the personnel. */
       ...!lead && me.role !== "client" ? [["pipeline", "Pipeline", mineInMotion.length || ""]] : [],
+      ...!lead && me.role !== "hr" && me.role !== "client" ? [["overview", "Team overview", ""]] : [],
       ...me.role !== "client" && !isLead ? [["timeoff", "Time off", leaveStats(db, me.id).left]] : [],
       ...isLead ? [["settings", "Settings", ""]] : []
     ];
@@ -2350,28 +2635,24 @@
       const c = db.clients.find((x) => x.id === page.id);
       const rows = visible.filter((v) => v.clientId === page.id);
       const live = rows.filter((v) => v.stage === "ready");
-      body = c ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("h1", { className: "ps-h1" }, c.name), /* @__PURE__ */ React.createElement("div", { className: "ps-meta" }, /* @__PURE__ */ React.createElement("span", { className: `ps-chip ${clientKindOf(c).id === "personal" ? "warn" : "ok"}` }, clientKindOf(c).label)), lead && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Invoices"), /* @__PURE__ */ React.createElement("p", { className: "ps-muted" }, billingOf(c).label, " \xB7 ", billingOf(c).note, unpaidFor(db, c).length > 0 ? ` \u2014 ${unpaidFor(db, c).length} unpaid` : billingOf(c).id === "none" ? "" : " \u2014 all settled", billingOf(c).id !== "none" ? ". Click a line to mark it paid or unpaid." : ""), /* @__PURE__ */ React.createElement(InvoiceList, { db, client: c, canEdit: lead, toggle: (k) => toggleInvoice(c.id, k), addJob: (label) => addJobInvoice(c.id, label), removeJob: (k) => removeJobInvoice(c.id, k), openVideo: setOpenId })), /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Pipeline"), /* @__PURE__ */ React.createElement(FilmStrip, { videos: rows, filter, setFilter }), /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "In production"), /* @__PURE__ */ React.createElement(VideoTable, { rows: rows.filter((v) => !v.archived && v.stage !== "ready" && (!filter || v.stage === filter)), db, me, open: setOpenId, showClient: false }), /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Tasks"), /* @__PURE__ */ React.createElement(ClientTasks, { db, me, client: c, openTask: setTaskId }), /* @__PURE__ */ React.createElement(SentToClient, { db, me, client: c, openTask: setTaskId, openVideo: setOpenId })) : /* @__PURE__ */ React.createElement("p", { className: "ps-empty" }, "That client no longer exists.");
+      body = c ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("h1", { className: "ps-h1" }, c.name), /* @__PURE__ */ React.createElement("div", { className: "ps-meta" }, /* @__PURE__ */ React.createElement("span", { className: `ps-chip ${clientKindOf(c).id === "personal" ? "warn" : "ok"}` }, clientKindOf(c).label)), lead && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Invoices"), /* @__PURE__ */ React.createElement("p", { className: "ps-muted" }, billingOf(c).label, " \xB7 ", billingOf(c).note, unpaidFor(db, c).length > 0 ? ` \u2014 ${unpaidFor(db, c).length} unpaid` : billingOf(c).id === "none" ? "" : " \u2014 all settled", billingOf(c).id !== "none" ? ". Click a line to mark it paid or unpaid." : ""), /* @__PURE__ */ React.createElement(InvoiceList, { db, client: c, canEdit: lead, toggle: (k) => toggleInvoice(c.id, k), addJob: (label) => addJobInvoice(c.id, label), removeJob: (k) => removeJobInvoice(c.id, k), openVideo: setOpenId })), /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Pipeline"), /* @__PURE__ */ React.createElement(FilmStrip, { videos: rows, filter, setFilter }), /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "In production"), /* @__PURE__ */ React.createElement(VideoTable, { rows: rows.filter((v) => !v.archived && v.stage !== "ready" && (!filter || v.stage === filter)), db, me, open: setOpenId, showClient: false }), /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Tasks"), /* @__PURE__ */ React.createElement(ClientTasks, { db, me, client: c, openTask: setTaskId }), /* @__PURE__ */ React.createElement(SentToClient, { db, me, client: c, openTask: setTaskId, openVideo: setOpenId }), /* @__PURE__ */ React.createElement(ClientBrief, { db, client: c, canEdit: lead, mutate, setToast })) : /* @__PURE__ */ React.createElement("p", { className: "ps-empty" }, "That client no longer exists.");
     } else if (page.tab === "timeoff") {
       body = /* @__PURE__ */ React.createElement(TimeOffPage, { db, me, mutate, setToast });
     } else if (page.tab === "calendar") {
       body = /* @__PURE__ */ React.createElement(CalendarPage, { db, me, mutate });
     } else if (page.tab === "overview") {
       const crew = db.people.filter((p) => p.role !== "client");
-      body = /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { className: "ps-ovhead" }, /* @__PURE__ */ React.createElement("span", { className: "ps-ovicon", "aria-hidden": "true" }, "\u{1F465}"), /* @__PURE__ */ React.createElement("h1", { className: "ps-h1" }, "Team overview")), /* @__PURE__ */ React.createElement("p", { className: "ps-lede" }, "Everyone's plate: delegated tasks and the videos sitting with each person.", unassigned.length ? ` ${unassigned.length} video${unassigned.length === 1 ? "" : "s"} still need an editor \u2014 they're on the Team page.` : ""), /* @__PURE__ */ React.createElement(AgingTasks, { db, me, openTask: setTaskId }), /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "People"), /* @__PURE__ */ React.createElement("p", { className: "ps-lede" }, "Availability, QA record, onboarding and 1:1 notes. Click anyone to open their card."), /* @__PURE__ */ React.createElement("div", { className: "ps-hr-grid" }, crew.map((p) => {
+      /* The Lead and HR run the people side, so they get hours, the person cards
+         and the QA ledger. Everyone else gets the work, not the personnel. */
+      const fullView = isLead || me.role === "hr";
+      body = /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { className: "ps-ovhead" }, /* @__PURE__ */ React.createElement("span", { className: "ps-ovicon", "aria-hidden": "true" }, "\u{1F465}"), /* @__PURE__ */ React.createElement("h1", { className: "ps-h1" }, "Team overview")), /* @__PURE__ */ React.createElement("p", { className: "ps-lede" }, "Everyone's plate: delegated tasks and the videos sitting with each person.", unassigned.length ? ` ${unassigned.length} video${unassigned.length === 1 ? "" : "s"} still need an editor.` : ""), unassigned.length > 0 && me.role !== "hr" && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Needs an editor"), /* @__PURE__ */ React.createElement("p", { className: "ps-lede" }, unassigned.length, " video", unassigned.length === 1 ? "" : "s", " with nobody on ", unassigned.length === 1 ? "it" : "them", " yet. Open one to pick an editor."), /* @__PURE__ */ React.createElement(VideoTable, { rows: unassigned, db, me, open: setOpenId })), fullView && /* @__PURE__ */ React.createElement(WeekHours, { db, me, weekOffset, setWeekOffset, openPerson: setPersonId }), /* @__PURE__ */ React.createElement(AgingTasks, { db, me, openTask: setTaskId }), fullView && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "People"), /* @__PURE__ */ React.createElement("p", { className: "ps-lede" }, "Availability, QA record, onboarding and 1:1 notes. Click anyone to open their card."), /* @__PURE__ */ React.createElement("div", { className: "ps-hr-grid" }, crew.map((p) => {
         const st = qaStats(db, p.id);
         const lv2 = leaveStats(db, p.id);
         const na = nextAway(p);
         const ob = p.onboarding || [];
         const obLeft = ob.filter((x) => !x.done).length;
         return /* @__PURE__ */ React.createElement("button", { key: p.id, className: "ps-hr-card", onClick: () => setPersonId(p.id) }, /* @__PURE__ */ React.createElement(Avatar, { person: p, size: 32 }), /* @__PURE__ */ React.createElement("span", { className: "ps-hr-main" }, /* @__PURE__ */ React.createElement("b", null, p.name), /* @__PURE__ */ React.createElement("span", { className: "ps-muted" }, (ROLES[p.role] || {}).label || p.role)), /* @__PURE__ */ React.createElement("span", { className: "ps-hr-chips" }, isAway(p) ? /* @__PURE__ */ React.createElement("span", { className: "ps-chip warn" }, "Away today") : na ? /* @__PURE__ */ React.createElement("span", { className: "ps-chip" }, "Away ", shortDate(fromIso(na.from))) : null, /* @__PURE__ */ React.createElement("span", { className: `ps-chip ${lv2.left === 0 ? "warn" : ""}` }, "Leave ", lv2.left, "/", lv2.allowance), st.rate !== null && /* @__PURE__ */ React.createElement("span", { className: "ps-chip" }, "QA ", st.rate, "%"), obLeft > 0 && /* @__PURE__ */ React.createElement("span", { className: "ps-chip" }, "Onboarding ", ob.length - obLeft, "/", ob.length)));
-      })), /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Team tasks"), crew.map((p) => /* @__PURE__ */ React.createElement(PersonTasks, { key: p.id, person: p, db, me, open: setOpenId, mutate, lead, openTask: setTaskId })), /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Passed QA"), /* @__PURE__ */ React.createElement("p", { className: "ps-lede" }, "Everything QA has signed off on, newest first \u2014 still waiting on your final check, or already done."), /* @__PURE__ */ React.createElement(PassedQA, { db, openTask: setTaskId }));
-    } else if (page.tab === "team") {
-      const team = db.people.filter((p) => p.role !== "client" && p.role !== "lead");
-      body = /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("h1", { className: "ps-h1" }, "Team"), /* @__PURE__ */ React.createElement("p", { className: "ps-lede" }, "What is sitting with each person right now."), unassigned.length > 0 && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Needs an editor"), /* @__PURE__ */ React.createElement(VideoTable, { rows: unassigned, db, me, open: setOpenId })), team.map((p) => {
-        const rows = db.videos.filter((v) => isMine(v, p));
-        const openT = db.tasks.filter((t) => t.personId === p.id && !t.done).length;
-        return /* @__PURE__ */ React.createElement("details", { key: p.id, className: "ps-person ps-teamfold" }, /* @__PURE__ */ React.createElement("summary", null, /* @__PURE__ */ React.createElement(Avatar, { person: p, size: 28 }), /* @__PURE__ */ React.createElement("b", null, p.name), /* @__PURE__ */ React.createElement("span", { className: "ps-chip", style: { background: ROLES[p.role].soft, color: ROLES[p.role].color } }, ROLES[p.role].label), /* @__PURE__ */ React.createElement("span", { className: "ps-muted" }, rows.length, " video", rows.length === 1 ? "" : "s", " \xB7 ", openT, " open task", openT === 1 ? "" : "s")), /* @__PURE__ */ React.createElement("div", { className: "ps-teamfold-body" }, /* @__PURE__ */ React.createElement("div", { className: "ps-teamfold-pic" }, picker(p, 40)), /* @__PURE__ */ React.createElement(TodoList, { person: p, tasks: db.tasks, clients: db.clients, canAdd: false, canToggle: true, mutate, openTask: setTaskId }), /* @__PURE__ */ React.createElement(VideoTable, { rows, db, me, open: setOpenId })));
-      }));
+      }))), /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Team tasks"), crew.map((p) => /* @__PURE__ */ React.createElement(PersonTasks, { key: p.id, person: p, db, me, open: setOpenId, mutate, lead, openTask: setTaskId })), fullView && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Passed QA"), /* @__PURE__ */ React.createElement("p", { className: "ps-lede" }, "Everything QA has signed off on, newest first \u2014 still waiting on your final check, or already done."), /* @__PURE__ */ React.createElement(PassedQA, { db, openTask: setTaskId })));
     } else if (page.tab === "settings") {
       body = /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("h1", { className: "ps-h1" }, "Settings"), /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "New video"), /* @__PURE__ */ React.createElement("div", { className: "ps-form" }, /* @__PURE__ */ React.createElement("select", { value: draft.client, onChange: (e) => setDraft({ ...draft, client: e.target.value }) }, /* @__PURE__ */ React.createElement("option", { value: "" }, "Choose a client"), db.clients.map((c) => /* @__PURE__ */ React.createElement("option", { key: c.id, value: c.id }, c.name))), /* @__PURE__ */ React.createElement("input", { placeholder: "Working title", value: draft.title, onChange: (e) => setDraft({ ...draft, title: e.target.value }) }), /* @__PURE__ */ React.createElement("button", { className: "ps-btn", onClick: addVideo }, "Add video")), /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Clients"), /* @__PURE__ */ React.createElement("div", { className: "ps-clients" }, db.clients.map((c) => /* @__PURE__ */ React.createElement("div", { key: c.id, className: "ps-client-row" }, /* @__PURE__ */ React.createElement("b", null, c.name), /* @__PURE__ */ React.createElement("label", { className: "ps-field" }, /* @__PURE__ */ React.createElement("span", null, "Client type"), /* @__PURE__ */ React.createElement("select", { value: clientKindOf(c).id, onChange: (e) => updateClient(c.id, { clientKind: e.target.value }) }, CLIENT_KINDS.map((k) => /* @__PURE__ */ React.createElement("option", { key: k.id, value: k.id }, k.label)))), /* @__PURE__ */ React.createElement("label", { className: "ps-field" }, /* @__PURE__ */ React.createElement("span", null, "Billing"), /* @__PURE__ */ React.createElement("select", { value: billingOf(c).id, onChange: (e) => updateClient(c.id, { billing: e.target.value, billingStart: c.billingStart || (e.target.value === "weekly" || e.target.value === "biweekly" ? isoDay(mondayOf(/* @__PURE__ */ new Date())) : null) }) }, BILLING_PLANS.map((k) => /* @__PURE__ */ React.createElement("option", { key: k.id, value: k.id }, k.label)))), /* @__PURE__ */ React.createElement("label", { className: "ps-field" }, /* @__PURE__ */ React.createElement("span", null, "Billing started"), billingOf(c).id === "pervideo" || billingOf(c).id === "project" || billingOf(c).id === "none" ? /* @__PURE__ */ React.createElement("span", { className: "ps-muted ps-field-na" }, "\u2014") : /* @__PURE__ */ React.createElement(PickerInput, { type: "date", ariaLabel: `When ${c.name} started being billed`, value: c.billingStart || "", onChange: (e) => updateClient(c.id, { billingStart: e.target.value || null }) })), /* @__PURE__ */ React.createElement("button", { className: "ps-x-small ps-client-x", "aria-label": `Remove ${c.name}`, title: `Remove ${c.name}`, onClick: () => removeClient(c) }, "\xD7")))), /* @__PURE__ */ React.createElement("div", { className: "ps-form", style: { marginTop: 10 } }, /* @__PURE__ */ React.createElement("input", { placeholder: "New client name", value: draft.clientName, onChange: (e) => setDraft({ ...draft, clientName: e.target.value }) }), /* @__PURE__ */ React.createElement("button", { className: "ps-btn ghost", onClick: addClient }, "Add client")), /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Current teammates"), /* @__PURE__ */ React.createElement("div", { className: "ps-people-list" }, db.people.filter((p) => p.role !== "client").map((p) => /* @__PURE__ */ React.createElement("div", { key: p.id, className: "ps-person-row" }, /* @__PURE__ */ React.createElement(Avatar, { person: p, size: 24 }), /* @__PURE__ */ React.createElement("input", { className: "ps-person-name", "aria-label": `Name for ${p.name}`, value: p.name, onChange: (e) => {
       const v = e.target.value;
@@ -2408,7 +2689,7 @@
       body = /* @__PURE__ */ React.createElement(React.Fragment, null, me.role !== "client" ? /* @__PURE__ */ React.createElement("div", { className: "ps-profile" }, picker(me, 72), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("h1", { className: "ps-h1" }, "My tasks"), /* @__PURE__ */ React.createElement("p", { className: "ps-muted" }, me.name, " \xB7 ", ROLES[me.role].label))) : /* @__PURE__ */ React.createElement("h1", { className: "ps-h1" }, "Hi, ", me.name), me.role !== "client" && /* @__PURE__ */ React.createElement(PinnedNotice, { db, me, mutate, canEdit: lead || me.role === "hr" }), /* @__PURE__ */ React.createElement("p", { className: "ps-lede" }, waitingLine, lead && late.length ? ` ${late.length} past due across the studio.` : ""), client && billingOf(client).id !== "none" && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Your invoices"), /* @__PURE__ */ React.createElement(InvoiceList, { db, client, canEdit: false, toggle: () => {
     }, addJob: () => {
     }, removeJob: () => {
-    }, openVideo: setOpenId })), me.role !== "hr" && /* @__PURE__ */ React.createElement(VideoTable, { rows: mine, db, me, open: setOpenId, showClient: me.role !== "client" }), me.role !== "client" && canApproveTimeoff(db, me) && /* @__PURE__ */ React.createElement(TimeOffPanel, { db, me, mutate, setToast, queueOnly: true }), me.role !== "client" && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Tasks"), /* @__PURE__ */ React.createElement(TodoList, { person: me, tasks: db.tasks, clients: db.clients, canAdd: false, canToggle: canEditPerson(me), mutate, openTask: setTaskId, shareFinalCheck: lead })), (lead || me.role === "hr") && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Delegate"), /* @__PURE__ */ React.createElement(Delegate, { db, draft, setDraft, addTodo: delegateTodo })), client && waiting.length > 0 && /* @__PURE__ */ React.createElement("details", { className: "ps-fold" }, /* @__PURE__ */ React.createElement("summary", null, waiting.length, " with someone else"), /* @__PURE__ */ React.createElement(VideoTable, { rows: waiting, db, me, open: setOpenId, showClient: false })), !client && recentlyFinished.length > 0 && /* @__PURE__ */ React.createElement("details", { className: "ps-fold" }, /* @__PURE__ */ React.createElement("summary", null, "Recently finished (", recentlyFinished.length, ")"), /* @__PURE__ */ React.createElement("div", { className: "ps-table" }, recentlyFinished.map((f) => /* @__PURE__ */ React.createElement(
+    }, openVideo: setOpenId })), me.role !== "hr" && mine.length > 0 && /* @__PURE__ */ React.createElement(React.Fragment, null, me.role !== "client" && /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Videos"), /* @__PURE__ */ React.createElement(VideoTable, { rows: mine, db, me, open: setOpenId, showClient: me.role !== "client" })), me.role !== "client" && canApproveTimeoff(db, me) && /* @__PURE__ */ React.createElement(TimeOffPanel, { db, me, mutate, setToast, queueOnly: true }), me.role !== "client" && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Tasks"), /* @__PURE__ */ React.createElement(TodoList, { person: me, tasks: db.tasks, clients: db.clients, canAdd: false, canToggle: canEditPerson(me), mutate, openTask: setTaskId, shareFinalCheck: lead })), (lead || me.role === "hr") && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Delegate"), /* @__PURE__ */ React.createElement(Delegate, { db, draft, setDraft, addTodo: delegateTodo })), client && waiting.length > 0 && /* @__PURE__ */ React.createElement("details", { className: "ps-fold" }, /* @__PURE__ */ React.createElement("summary", null, waiting.length, " with someone else"), /* @__PURE__ */ React.createElement(VideoTable, { rows: waiting, db, me, open: setOpenId, showClient: false })), !client && recentlyFinished.length > 0 && /* @__PURE__ */ React.createElement("details", { className: "ps-fold" }, /* @__PURE__ */ React.createElement("summary", null, "Recently finished (", recentlyFinished.length, ")"), /* @__PURE__ */ React.createElement("div", { className: "ps-table" }, recentlyFinished.map((f) => /* @__PURE__ */ React.createElement(
         "button",
         {
           key: `${f.kind}-${f.id}`,
@@ -2470,7 +2751,7 @@
         mutate,
         close: () => setOpenId(null)
       }
-    ), openTaskRow && /* @__PURE__ */ React.createElement(TaskModal, { t: openTaskRow, db, me, lead, updateTask, mutate, setToast, close: () => setTaskId(null) }), personId && db.people.find((p) => p.id === personId) && /* @__PURE__ */ React.createElement(PersonModal, { person: db.people.find((p) => p.id === personId), db, me, mutate, close: () => setPersonId(null) }), confirming && /* @__PURE__ */ React.createElement("div", { className: "ps-overlay", onClick: (e) => e.target === e.currentTarget && setConfirming(null) }, /* @__PURE__ */ React.createElement("div", { className: "ps-modal ps-confirm", role: "dialog", "aria-modal": "true" }, /* @__PURE__ */ React.createElement("h2", { className: "ps-h2" }, confirming.title), (confirming.lines || []).map((l, i) => /* @__PURE__ */ React.createElement("p", { key: i, className: "ps-muted ps-confirm-line" }, l)), confirming.pick && /* @__PURE__ */ React.createElement("label", { className: "ps-field ps-confirm-pick" }, /* @__PURE__ */ React.createElement("span", null, confirming.pick.label), /* @__PURE__ */ React.createElement("select", { value: handover, onChange: (e) => setHandover(e.target.value) }, confirming.pick.options.map((o) => /* @__PURE__ */ React.createElement("option", { key: o.value || "none", value: o.value }, o.label)))), /* @__PURE__ */ React.createElement("div", { className: "ps-confirm-btns" }, /* @__PURE__ */ React.createElement("button", { className: "ps-btn ghost", onClick: () => setConfirming(null) }, "Cancel"), /* @__PURE__ */ React.createElement("button", { className: "ps-btn danger", onClick: () => {
+    ), openTaskRow && /* @__PURE__ */ React.createElement(TaskModal, { t: openTaskRow, db, me, lead, updateTask, mutate, setToast, close: () => setTaskId(null) }), personId && db.people.find((p) => p.id === personId) && /* @__PURE__ */ React.createElement(PersonModal, { person: db.people.find((p) => p.id === personId), db, me, mutate, picker, close: () => setPersonId(null) }), confirming && /* @__PURE__ */ React.createElement("div", { className: "ps-overlay", onClick: (e) => e.target === e.currentTarget && setConfirming(null) }, /* @__PURE__ */ React.createElement("div", { className: "ps-modal ps-confirm", role: "dialog", "aria-modal": "true" }, /* @__PURE__ */ React.createElement("h2", { className: "ps-h2" }, confirming.title), (confirming.lines || []).map((l, i) => /* @__PURE__ */ React.createElement("p", { key: i, className: "ps-muted ps-confirm-line" }, l)), confirming.pick && /* @__PURE__ */ React.createElement("label", { className: "ps-field ps-confirm-pick" }, /* @__PURE__ */ React.createElement("span", null, confirming.pick.label), /* @__PURE__ */ React.createElement("select", { value: handover, onChange: (e) => setHandover(e.target.value) }, confirming.pick.options.map((o) => /* @__PURE__ */ React.createElement("option", { key: o.value || "none", value: o.value }, o.label)))), /* @__PURE__ */ React.createElement("div", { className: "ps-confirm-btns" }, /* @__PURE__ */ React.createElement("button", { className: "ps-btn ghost", onClick: () => setConfirming(null) }, "Cancel"), /* @__PURE__ */ React.createElement("button", { className: "ps-btn danger", onClick: () => {
       const f = confirming.onYes;
       setConfirming(null);
       f();
@@ -2586,6 +2867,36 @@
 .ps-editors{display:flex;flex-wrap:wrap;gap:20px}
 .ps-editor{display:flex;flex-direction:column;align-items:center;gap:6px;font-size:14px}
 .ps-todos{display:flex;flex-direction:column;gap:4px;margin-bottom:14px;max-width:720px}
+.ps-brief{display:flex;flex-direction:column;gap:6px;max-width:760px;margin-bottom:12px}
+.ps-briefnote{border:1px solid var(--line);border-radius:9px;padding:9px 13px;background:var(--card)}
+.ps-briefnote>summary{display:flex;align-items:baseline;gap:10px;cursor:pointer;list-style:none;font-weight:600;font-size:14px}
+.ps-briefnote>summary::-webkit-details-marker{display:none}
+.ps-briefnote>summary::before{content:"\u25B8";color:var(--muted);font-size:11px;transition:transform .12s;display:inline-block}
+.ps-briefnote[open]>summary::before{transform:rotate(90deg)}
+.ps-brief-t{flex:1;min-width:0}
+.ps-brief-at{font-size:12px;font-weight:400}
+.ps-brief-body{margin:8px 0 6px;font-size:14px;line-height:1.55;white-space:pre-wrap;overflow-wrap:anywhere}
+.ps-briefnote .ps-btnrow{justify-content:flex-start;gap:8px;margin-top:2px}
+.ps-brief-edit textarea{width:100%;min-height:110px;resize:vertical;line-height:1.5;margin:8px 0 6px}
+.ps-briefadd{display:flex;flex-direction:column;gap:8px;max-width:760px;margin-bottom:8px}
+.ps-briefadd textarea{min-height:88px;resize:vertical;line-height:1.5}
+.ps-briefadd .ps-btn{align-self:flex-start}
+.ps-hrbars{display:flex;flex-direction:column;max-width:900px;margin:2px 0 10px}
+.ps-hrrow{display:grid;grid-template-columns:minmax(0,150px) 96px minmax(0,1fr);align-items:center;gap:14px;width:100%;padding:9px 6px;border:0;border-bottom:1px solid var(--line);background:none;font:inherit;color:var(--ink);text-align:left;cursor:pointer;border-radius:6px}
+.ps-hrrow:hover{background:var(--paper)}
+.ps-hr-name{display:flex;flex-direction:column;min-width:0;font-size:13.5px;font-weight:600;overflow:hidden}
+.ps-hr-role{font-size:11.5px;font-weight:400}
+.ps-hr-val{text-align:right;font-size:14px;font-weight:700;font-variant-numeric:tabular-nums;white-space:nowrap}
+.ps-hr-unit{font-size:11.5px;font-weight:400}
+.ps-hr-track{height:10px;border-radius:5px;background:var(--line);overflow:hidden}
+.ps-hr-fill{display:block;height:100%;border-radius:5px;background:var(--accent)}
+@media (max-width:640px){
+  .ps-hrrow{grid-template-columns:minmax(0,1fr) 92px;row-gap:6px}
+  .ps-hr-track{grid-column:1 / -1}
+}
+.ps-weekhead{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;max-width:900px}
+.ps-weeknav{display:flex;align-items:center;gap:8px}
+.ps-weekspan{font-size:13px;min-width:104px;text-align:center}
 .ps-agecols{display:flex;align-items:flex-end;gap:8px;max-width:900px;margin:4px 0 10px;padding-bottom:2px;border-bottom:1px solid var(--line)}
 .ps-agecol{flex:1 1 0;min-width:0;display:flex;flex-direction:column;align-items:center;gap:5px;padding:4px 2px 8px;border:0;background:none;font:inherit;color:var(--ink);cursor:pointer;border-radius:6px 6px 0 0}
 .ps-agecol:hover{background:var(--paper)}
@@ -2601,6 +2912,17 @@
   .ps-agecol{flex:0 0 78px}
 }
 .ps-rowtag{display:inline-block;margin-right:7px;padding:1px 6px;border-radius:5px;background:var(--line);color:var(--muted);font-size:10.5px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;vertical-align:1px}
+.ps-comments{margin:16px 0 4px;padding-top:14px;border-top:1px solid var(--line)}
+.ps-comments-h{display:block;font-size:14px;margin-bottom:8px}
+.ps-comments-none{font-size:13px;margin:0 0 8px}
+.ps-comment{display:flex;gap:9px;padding:7px 0}
+.ps-comment-body{min-width:0;flex:1}
+.ps-comment-who{font-size:13px;font-weight:600}
+.ps-comment-at{font-weight:400;font-size:12px;margin-left:8px}
+.ps-comment-text{margin:2px 0 0;font-size:14px;line-height:1.45;white-space:pre-wrap;overflow-wrap:anywhere}
+.ps-comment.ask .ps-comment-text{border-left:3px solid var(--warn);padding-left:9px}
+.ps-comment.answer .ps-comment-text{border-left:3px solid var(--accent);padding-left:9px}
+.ps-comment-in{width:100%;min-height:62px;resize:vertical;line-height:1.45;margin-top:6px}
 .ps-tgroup{border-bottom:0}
 .ps-tgroup > summary{display:flex;align-items:center;gap:10px;cursor:pointer;list-style:none;padding:10px 0 6px;font-weight:600;font-size:14px;color:var(--ink)}
 .ps-tgroup > summary::-webkit-details-marker{display:none}
@@ -2868,7 +3190,8 @@
 .ps-fields.trio{grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-bottom:12px}
 /* The last cell holds a date AND a time, so it gets roughly double the width -
    four equal columns can't fit both and the time box spills out of the card. */
-.ps-fields.quad{grid-template-columns:minmax(0,1fr) minmax(0,1fr) minmax(0,1fr) minmax(0,2.2fr);gap:10px;margin-bottom:12px}
+.ps-fields.quad{grid-template-columns:repeat(auto-fit,minmax(118px,1fr));gap:10px;margin-bottom:12px}
+.ps-fields.quad .ps-field:last-child{grid-column:span 2}
 .ps-fields .ps-duo{min-width:0}
 .ps-fields .ps-pw-date{flex:1.2 1 128px;min-width:126px}
 .ps-fields .ps-pw-time{flex:1 1 106px;min-width:102px}

@@ -126,7 +126,9 @@
   var NO_QA_KINDS = ["onboarding", "hrdoc"];
   /* Actual studio work - searchable by the whole team no matter who raised it. */
   var OPEN_KINDS = ["video", "design"];
-  var skipsQA = (t) => NO_QA_KINDS.includes(t && t.kind);
+  /* QA reviews the craft. Admin, paperwork and onboarding finish where they are -
+     sending a to-do list to the video reviewer helps nobody. */
+  var skipsQA = (t) => !OPEN_KINDS.includes(t && t.kind);
   var kindOf = (id) => TASK_KINDS.find((k) => k.id === id);
   var VIDEO_CHECKS = [
     "Watched the whole cut at normal speed",
@@ -2269,7 +2271,7 @@
     const crew = db.people.filter((p) => p.role !== "client" && (!me || me.role !== "teamlead" || isEditor(p.role) || p.role === "qa"));
     const qa = db.people.find((p) => p.role === "qa");
     const set = (patch) => setDraft((x) => ({ ...x, ...patch }));
-    const routeHint = NO_QA_KINDS.includes(draft.delKind) ? "People paperwork \u2014 goes straight to them, no QA review." : qa ? `Goes through QA (${qa.name}) before it's marked done.` : "No one has the QA role yet \u2014 this will skip review and finish directly.";
+    const routeHint = !OPEN_KINDS.includes(draft.delKind || "video") ? (NO_QA_KINDS.includes(draft.delKind) ? "People paperwork \u2014 goes straight to them, no QA review." : "A to-do \u2014 goes straight to them, no QA review.") : qa ? `Goes through QA (${qa.name}) before it's marked done.` : "No one has the QA role yet \u2014 this will skip review and finish directly.";
     return /* @__PURE__ */ React.createElement("section", { className: "ps-delegate" }, /* @__PURE__ */ React.createElement("div", { className: "ps-del-col" }, /* @__PURE__ */ React.createElement("h4", { className: "ps-h4" }, "Give someone a task"), /* @__PURE__ */ React.createElement("p", { className: "ps-muted" }, "It lands in their queue and under their name in Team overview."), /* @__PURE__ */ React.createElement("div", { className: "ps-del-form" }, (db.templates || []).length > 0 && /* @__PURE__ */ React.createElement("select", { value: draft.delTpl || "", "aria-label": "Start from a template", onChange: (e) => {
       const t = (db.templates || []).find((x) => x.id === e.target.value);
       if (!t) return set({ delTpl: "", delSteps: null });

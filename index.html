@@ -1188,6 +1188,60 @@
           h("span", { className: "ps-agecol-who" }, who ? who.name : "Unassigned", overdue ? " \xB7 overdue" : ""));
       })));
   }
+  /* What has happened lately on work this person can see, newest first.
+     A step can be taken back only while it is still the last one on that item -
+     once someone else moves it on, the undo is gone. */
+  function ActivityHistory({ db, me, mutate, setToast, openTask, openVideo, limit = 25 }) {
+    const h = React.createElement;
+    const mine = (t) => t.personId === me.id || t.reviewFrom === me.id || t.qaAuthorId === me.id || t.by === me.id || t.home === me.id;
+    const rows = [];
+    (db.tasks || []).forEach((t) => {
+      if (!canSeeTask(db, me, t) && !mine(t)) return;
+      const hist = t.history || [];
+      hist.forEach((e, i) => rows.push({
+        kind: "task", id: t.id, title: t.text, at: e.at, by: e.by, text: e.text,
+        canUndo: !!e.undo && i === hist.length - 1 && e.by === me.id, idx: i
+      }));
+    });
+    (db.videos || []).forEach((v) => {
+      if (!visibleTo(v, me)) return;
+      const hist = v.history || [];
+      hist.forEach((e, i) => rows.push({
+        kind: "video", id: v.id, title: v.title || "Untitled", at: e.at, by: e.by, text: e.text,
+        canUndo: !!e.undo && i === hist.length - 1 && e.by === me.id, idx: i
+      }));
+    });
+    rows.sort((a, b) => String(b.at || "").localeCompare(String(a.at || "")));
+    const shown = rows.slice(0, limit);
+    if (!shown.length) return null;
+    const undo = (r) => mutate((n) => {
+      const list = r.kind === "task" ? n.tasks : n.videos;
+      const item = list.find((x) => x.id === r.id);
+      if (!item) return;
+      const hist = item.history || [];
+      const last = hist[hist.length - 1];
+      /* Someone may have moved it on while this list was open. */
+      if (!last || hist.length - 1 !== r.idx || !last.undo || last.by !== me.id) {
+        setTimeout(() => setToast("Too late \u2014 that step has already been built on."), 0);
+        return;
+      }
+      Object.assign(item, last.undo);
+      item.history = [...hist.slice(0, -1), { at: (/* @__PURE__ */ new Date()).toISOString(), by: me.id, text: `Undid: ${last.text}` }];
+      setTimeout(() => setToast("Taken back."), 0);
+    });
+    const who = (id) => id === "system" ? "Projeclab" : (db.people.find((p) => p.id === id) || {}).name || "Someone";
+    const when = (at) => new Date(at).toLocaleString(void 0, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+    return h("details", { className: "ps-fold ps-activity" },
+      h("summary", null, "View activity history ", h("span", { className: "ps-count" }, rows.length)),
+      h("p", { className: "ps-muted ps-act-note" }, "Any step here can be undone until someone else takes the next one."),
+      h("div", { className: "ps-actlist" }, shown.map((r, i) => h("div", { key: r.kind + r.id + r.idx + "-" + i, className: "ps-actrow" },
+        h("span", { className: "ps-muted ps-act-at" }, when(r.at)),
+        h("span", { className: "ps-act-who" }, who(r.by)),
+        h("button", { className: "ps-act-title", onClick: () => r.kind === "task" ? openTask(r.id) : openVideo(r.id), title: r.title }, r.title),
+        h("span", { className: "ps-muted ps-act-what" }, r.text),
+        h("button", { className: "ps-btn ghost small ps-act-undo", disabled: !r.canUndo, onClick: () => r.canUndo && undo(r),
+          title: r.canUndo ? "Take this step back" : "Someone has already taken the next step" }, "\u21B6 Undo")))));
+  }
   function PinnedNotice({ db, me, mutate, canEdit }) {
     const h = React.createElement;
     const notice = db.notice && db.notice.text ? db.notice : null;
@@ -1688,7 +1742,16 @@
     const runMs = running ? Date.now() - new Date(t.startedAt).getTime() : 0;
     const bankedMs = workMs + runMs;
     const who = (id) => (db.people.find((p) => p.id === id) || {}).name || "Someone";
-    const log = (text) => ({ history: [...history, { at: (/* @__PURE__ */ new Date()).toISOString(), by: me.id, text }] });
+    /* Each logged step carries the state it replaced, so it can be rolled back
+       for as long as it is still the newest thing on the task. */
+    const snap = () => ({
+      personId: t.personId, status: t.status || null, done: !!t.done, doneAt: t.doneAt || null,
+      reviewFrom: t.reviewFrom || null, qaFrom: t.qaFrom || null, qaPassedAt: t.qaPassedAt || null,
+      askFrom: t.askFrom || null, askPrev: t.askPrev || null,
+      startedAt: t.startedAt || null, workMs: t.workMs || 0, steps: t.steps || [],
+      notes: t.notes || "", comments: t.comments || []
+    });
+    const log = (text) => ({ history: [...history, { at: (/* @__PURE__ */ new Date()).toISOString(), by: me.id, text, undo: snap() }] });
     /* A running total can't be split across a week, so bank WHEN the time was
        spent as well as how much. Attributed to the day the session started. */
     const session = () => runMs > 0 && t.startedAt ? { sessions: [...t.sessions || [], { day: isoDay(new Date(t.startedAt)), ms: runMs, by: me.id, at: (/* @__PURE__ */ new Date()).toISOString() }] } : {};
@@ -2024,7 +2087,12 @@
     const who = (id) => id === "system" ? "Projeclab" : (db.people.find((p) => p.id === id) || {}).name || "Someone";
     const client = db.clients.find((c) => c.id === v.clientId);
     const editorP = db.people.find((p) => p.id === v.editorId);
-    const log = (text) => ({ history: [...v.history, { at: (/* @__PURE__ */ new Date()).toISOString(), by: me.id, text }] });
+    const vsnap = () => ({
+      stage: v.stage, editorId: v.editorId || null, enteredAt: v.enteredAt || null,
+      startedAt: v.startedAt || null, editMs: v.editMs || 0, notes: v.notes || "",
+      rounds: v.rounds || 0, archived: !!v.archived, footageAt: v.footageAt || null
+    });
+    const log = (text) => ({ history: [...v.history, { at: (/* @__PURE__ */ new Date()).toISOString(), by: me.id, text, undo: vsnap() }] });
     const advance = () => {
       const next = STAGES[idxOf(v.stage) + 1];
       if (!next || missing || noEditor || !allTicked || notStarted) return;
@@ -2689,7 +2757,7 @@
       body = /* @__PURE__ */ React.createElement(React.Fragment, null, me.role !== "client" ? /* @__PURE__ */ React.createElement("div", { className: "ps-profile" }, picker(me, 72), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("h1", { className: "ps-h1" }, "My tasks"), /* @__PURE__ */ React.createElement("p", { className: "ps-muted" }, me.name, " \xB7 ", ROLES[me.role].label))) : /* @__PURE__ */ React.createElement("h1", { className: "ps-h1" }, "Hi, ", me.name), me.role !== "client" && /* @__PURE__ */ React.createElement(PinnedNotice, { db, me, mutate, canEdit: lead || me.role === "hr" }), /* @__PURE__ */ React.createElement("p", { className: "ps-lede" }, waitingLine, lead && late.length ? ` ${late.length} past due across the studio.` : ""), client && billingOf(client).id !== "none" && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Your invoices"), /* @__PURE__ */ React.createElement(InvoiceList, { db, client, canEdit: false, toggle: () => {
     }, addJob: () => {
     }, removeJob: () => {
-    }, openVideo: setOpenId })), me.role !== "hr" && mine.length > 0 && /* @__PURE__ */ React.createElement(React.Fragment, null, me.role !== "client" && /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Videos"), /* @__PURE__ */ React.createElement(VideoTable, { rows: mine, db, me, open: setOpenId, showClient: me.role !== "client" })), me.role !== "client" && canApproveTimeoff(db, me) && /* @__PURE__ */ React.createElement(TimeOffPanel, { db, me, mutate, setToast, queueOnly: true }), me.role !== "client" && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Tasks"), /* @__PURE__ */ React.createElement(TodoList, { person: me, tasks: db.tasks, clients: db.clients, canAdd: false, canToggle: canEditPerson(me), mutate, openTask: setTaskId, shareFinalCheck: lead })), (lead || me.role === "hr") && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Delegate"), /* @__PURE__ */ React.createElement(Delegate, { db, draft, setDraft, addTodo: delegateTodo })), client && waiting.length > 0 && /* @__PURE__ */ React.createElement("details", { className: "ps-fold" }, /* @__PURE__ */ React.createElement("summary", null, waiting.length, " with someone else"), /* @__PURE__ */ React.createElement(VideoTable, { rows: waiting, db, me, open: setOpenId, showClient: false })), !client && recentlyFinished.length > 0 && /* @__PURE__ */ React.createElement("details", { className: "ps-fold" }, /* @__PURE__ */ React.createElement("summary", null, "Recently finished (", recentlyFinished.length, ")"), /* @__PURE__ */ React.createElement("div", { className: "ps-table" }, recentlyFinished.map((f) => /* @__PURE__ */ React.createElement(
+    }, openVideo: setOpenId })), me.role !== "hr" && mine.length > 0 && /* @__PURE__ */ React.createElement(React.Fragment, null, me.role !== "client" && /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Videos"), /* @__PURE__ */ React.createElement(VideoTable, { rows: mine, db, me, open: setOpenId, showClient: me.role !== "client" })), me.role !== "client" && canApproveTimeoff(db, me) && /* @__PURE__ */ React.createElement(TimeOffPanel, { db, me, mutate, setToast, queueOnly: true }), me.role !== "client" && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Tasks"), /* @__PURE__ */ React.createElement(TodoList, { person: me, tasks: db.tasks, clients: db.clients, canAdd: false, canToggle: canEditPerson(me), mutate, openTask: setTaskId, shareFinalCheck: lead })), (lead || me.role === "hr") && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Delegate"), /* @__PURE__ */ React.createElement(Delegate, { db, draft, setDraft, addTodo: delegateTodo })), client && waiting.length > 0 && /* @__PURE__ */ React.createElement("details", { className: "ps-fold" }, /* @__PURE__ */ React.createElement("summary", null, waiting.length, " with someone else"), /* @__PURE__ */ React.createElement(VideoTable, { rows: waiting, db, me, open: setOpenId, showClient: false })), me.role !== "client" && /* @__PURE__ */ React.createElement(ActivityHistory, { db, me, mutate, setToast, openTask: setTaskId, openVideo: setOpenId }), !client && recentlyFinished.length > 0 && /* @__PURE__ */ React.createElement("details", { className: "ps-fold" }, /* @__PURE__ */ React.createElement("summary", null, "Recently finished (", recentlyFinished.length, ")"), /* @__PURE__ */ React.createElement("div", { className: "ps-table" }, recentlyFinished.map((f) => /* @__PURE__ */ React.createElement(
         "button",
         {
           key: `${f.kind}-${f.id}`,
@@ -2867,6 +2935,25 @@
 .ps-editors{display:flex;flex-wrap:wrap;gap:20px}
 .ps-editor{display:flex;flex-direction:column;align-items:center;gap:6px;font-size:14px}
 .ps-todos{display:flex;flex-direction:column;gap:4px;margin-bottom:14px;max-width:720px}
+.ps-activity{max-width:900px}
+.ps-act-note{font-size:13px;margin:0 0 8px}
+.ps-actlist{display:flex;flex-direction:column}
+.ps-actrow{display:grid;grid-template-columns:132px 92px minmax(0,1.1fr) minmax(0,1.4fr) 86px;align-items:center;gap:12px;padding:7px 4px;border-bottom:1px solid var(--line);font-size:13px}
+.ps-act-at{font-size:12px;white-space:nowrap}
+.ps-act-who{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ps-act-title{border:0;background:none;padding:0;font:inherit;font-weight:600;color:var(--accent);text-align:left;cursor:pointer;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ps-act-title:hover{text-decoration:underline}
+.ps-act-what{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ps-act-undo{justify-self:end;white-space:nowrap}
+.ps-act-undo:disabled{opacity:.38;cursor:default}
+@media (max-width:820px){
+  .ps-actrow{grid-template-columns:minmax(0,1fr) 86px;row-gap:2px}
+  .ps-act-at{grid-column:1}
+  .ps-act-who{grid-column:1}
+  .ps-act-title{grid-column:1}
+  .ps-act-what{grid-column:1}
+  .ps-act-undo{grid-column:2;grid-row:1 / span 4;align-self:center}
+}
 .ps-brief{display:flex;flex-direction:column;gap:6px;max-width:760px;margin-bottom:12px}
 .ps-briefnote{border:1px solid var(--line);border-radius:9px;padding:9px 13px;background:var(--card)}
 .ps-briefnote>summary{display:flex;align-items:baseline;gap:10px;cursor:pointer;list-style:none;font-weight:600;font-size:14px}

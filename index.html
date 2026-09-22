@@ -328,6 +328,58 @@
     const owner = db.people.find((p) => p.id === (t.reviewFrom || t.qaAuthorId || t.personId));
     return !(owner && (owner.role === "lead" || owner.role === "hr"));
   };
+  /* ---- Tagging people in comments --------------------------------------
+     Only people who can already open the task can be tagged on it, so a tag
+     never shows someone work they weren't allowed to see. The ids are stored
+     on the comment, so renaming somebody later doesn't lose the tag. */
+  var taggableOn = (db, me, t) => (db.people || []).filter(
+    (p) => p.role !== "client" && p.id !== me.id && p.name && canSeeTask(db, p, t)
+  );
+  var firstNameOf = (p) => String((p && p.name) || "").trim().split(/\s+/)[0] || "";
+  var reEsc = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  /* Who did this text actually tag? Full name always counts; a first name counts
+     when only one person on the task answers to it. */
+  var mentionIds = (text, people) => {
+    const low = String(text || "").toLowerCase();
+    const seen = {};
+    people.forEach((p) => {
+      const f = firstNameOf(p).toLowerCase();
+      seen[f] = (seen[f] || 0) + 1;
+    });
+    const out = [];
+    people.forEach((p) => {
+      const full = String(p.name).trim().toLowerCase();
+      const first = firstNameOf(p).toLowerCase();
+      const byFull = full && low.includes("@" + full);
+      const byFirst = first && seen[first] === 1 && new RegExp("@" + reEsc(first) + "(?![\\w'-])").test(low);
+      if ((byFull || byFirst) && !out.includes(p.id)) out.push(p.id);
+    });
+    return out;
+  };
+  /* Splits comment text so the names can be drawn in the accent colour. */
+  var mentionParts = (text, db, ids) => {
+    const words = [];
+    (ids || []).forEach((id) => {
+      const p = (db.people || []).find((x) => x.id === id);
+      if (!p || !p.name) return;
+      const full = String(p.name).trim();
+      words.push(full);
+      const first = full.split(/\s+/)[0];
+      if (first && first !== full) words.push(first);
+    });
+    if (!words.length) return [text];
+    const alts = Array.from(new Set(words)).sort((a, b) => b.length - a.length).map(reEsc).join("|");
+    const re = new RegExp("@(?:" + alts + ")", "gi");
+    const out = [];
+    let last = 0, m;
+    while ((m = re.exec(text)) !== null) {
+      if (m.index > last) out.push(text.slice(last, m.index));
+      out.push({ tag: m[0] });
+      last = m.index + m[0].length;
+    }
+    if (last < text.length) out.push(text.slice(last));
+    return out;
+  };
   /* Which clients belong on someone's sidebar: managers see the roster, a client
      sees themselves, everyone else sees only the ones they have work with. */
   var clientsFor = (db, me) => {
@@ -1390,9 +1442,19 @@
     };
     (db.tasks || []).forEach((t) => {
       const mine = t.personId === me.id || t.reviewFrom === me.id || t.qaAuthorId === me.id || t.by === me.id || t.home === me.id;
+      /* Being tagged counts even when the task isn't yours - that is the point of it. */
+      const tagged = /* @__PURE__ */ new Set();
+      (t.comments || []).forEach((c) => {
+        if (!(c.to || []).includes(me.id)) return;
+        tagged.add(c.at);
+        push(`m${t.id}:${c.at}`, c.at, c.by, `tagged you: ${c.text}`, "task", t.id, t.text);
+      });
       if (!mine) return;
       (t.history || []).forEach((e) => push(`t${t.id}:${e.at}`, e.at, e.by, e.text, "task", t.id, t.text));
-      (t.comments || []).forEach((c) => push(`c${t.id}:${c.at}`, c.at, c.by, c.ask ? `asked: ${c.text}` : c.answer ? `answered: ${c.text}` : `commented: ${c.text}`, "task", t.id, t.text));
+      (t.comments || []).forEach((c) => {
+        if (tagged.has(c.at)) return;
+        push(`c${t.id}:${c.at}`, c.at, c.by, c.ask ? `asked: ${c.text}` : c.answer ? `answered: ${c.text}` : `commented: ${c.text}`, "task", t.id, t.text);
+      });
     });
     (db.videos || []).forEach((v) => {
       if (v.editorId !== me.id) return;
@@ -1403,6 +1465,33 @@
       push(`o${r.id}:${r.decidedAt}`, r.decidedAt, r.decidedBy, `${r.status === "approved" ? "approved" : "declined"} your time off`, "timeoff", r.id, `${shortDate(fromIso(r.from))} \u2013 ${shortDate(fromIso(r.to))}`);
     });
     return out.sort((a, b) => String(b.at).localeCompare(String(a.at))).slice(0, 30);
+  };
+  /* A short two-note chime, built in the browser rather than loaded as a file, so
+     the page stays self-contained and nothing has to download before it can play. */
+  var dingCtx = null;
+  var ding = () => {
+    try {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) return;
+      if (!dingCtx) dingCtx = new AC();
+      const ctx = dingCtx;
+      if (ctx.state === "suspended") ctx.resume();
+      const t0 = ctx.currentTime;
+      [[880, 0], [1318.5, 0.1]].forEach(([hz, off]) => {
+        const osc = ctx.createOscillator(), gain = ctx.createGain();
+        osc.type = "sine";
+        osc.frequency.value = hz;
+        gain.gain.setValueAtTime(1e-4, t0 + off);
+        gain.gain.exponentialRampToValueAtTime(0.14, t0 + off + 0.012);
+        gain.gain.exponentialRampToValueAtTime(1e-4, t0 + off + 0.3);
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.start(t0 + off);
+        osc.stop(t0 + off + 0.32);
+      });
+    } catch (e) {
+      /* Some browsers refuse to make a sound until they are clicked in. Not worth a warning. */
+    }
   };
   function Notifications({ db, me, mutate, openTask, openVideo }) {
     const h = React.createElement;
@@ -1417,6 +1506,26 @@
       return () => { document.removeEventListener("mousedown", away); document.removeEventListener("keydown", esc); };
     }, [open]);
     const items = notifFor(db, me);
+    /* Ring only for something that has just landed. Clearing a row changes which
+       one is newest too, so compare the times rather than the row itself. */
+    const newest = items.length ? items[0].at : "";
+    const heard = useRef({ who: null, at: "" });
+    const soundOn = me.ding !== false;
+    useEffect(() => {
+      /* Changing who you are viewing as isn't an arrival, so start that person
+         off quiet rather than ringing for everything already waiting on them. */
+      if (heard.current.who !== me.id) { heard.current = { who: me.id, at: newest }; return; }
+      if (newest && newest > heard.current.at && soundOn) ding();
+      heard.current = { who: me.id, at: newest };
+    }, [newest, me.id]);
+    const toggleSound = () => {
+      const next = !soundOn;
+      mutate((n) => {
+        const p = n.people.find((x) => x.id === me.id);
+        if (p) p.ding = next;
+      });
+      if (next) ding();
+    };
     const clear = (keys) => mutate((n) => {
       const p = n.people.find((x) => x.id === me.id);
       if (!p) return;
@@ -1446,6 +1555,18 @@
       open && h("div", { className: "ps-bellpanel" },
         h("div", { className: "ps-bell-head" },
           h("b", null, "Notifications"),
+          h("button", {
+            className: `ps-soundbtn ${soundOn ? "on" : ""}`,
+            onClick: toggleSound,
+            "aria-pressed": soundOn,
+            title: soundOn ? "Sound is on — click to silence it" : "Sound is off — click to hear new notifications"
+          },
+            h("svg", { viewBox: "0 0 24 24", width: 16, height: 16, fill: "currentColor", "aria-hidden": "true" },
+              h("path", { d: "M11.4 3.2 6.6 7.2H3.2a1 1 0 0 0-1 1v7.6a1 1 0 0 0 1 1h3.4l4.8 4a.8.8 0 0 0 1.3-.6V3.8a.8.8 0 0 0-1.3-.6Z" }),
+              soundOn
+                ? h("path", { d: "M16.2 8.3a.9.9 0 0 0-1.2 1.3 3.3 3.3 0 0 1 0 4.8.9.9 0 0 0 1.2 1.3 5.1 5.1 0 0 0 0-7.4Zm2.6-2.8a.9.9 0 0 0-1.2 1.3 7.3 7.3 0 0 1 0 10.4.9.9 0 0 0 1.2 1.3 9.1 9.1 0 0 0 0-13Z" })
+                : h("path", { d: "m21.3 9.5-1.3-1.3-2.2 2.3-2.3-2.3-1.3 1.3 2.3 2.3-2.3 2.2 1.3 1.3 2.3-2.2 2.2 2.2 1.3-1.3-2.2-2.2Z" })),
+            h("span", null, soundOn ? "Sound on" : "Sound off")),
           items.length > 0 && h("button", { className: "ps-btn ghost small", onClick: () => clear(items.map((i) => i.key)) }, "Clear all")),
         items.length === 0
           ? h("p", { className: "ps-muted ps-bell-none" }, "Nothing new. Anything someone else does on your work shows up here.")
@@ -1817,6 +1938,42 @@
   function CommentBox({ t, db, me, comments, comment, setComment, postComment, askQuestion, answerQuestion, askBack, asker, status, mine }) {
     const h = React.createElement;
     const waiting = status === "question" && asker && mine;
+    const box = useRef(null);
+    /* q is what has been typed after an "@" so far, or null when not tagging. */
+    const [q, setQ] = useState(null);
+    const [pick, setPick] = useState(0);
+    const people = taggableOn(db, me, t);
+    const matches = q === null ? [] : people.filter((p) => {
+      const n = String(p.name).toLowerCase();
+      const needle = q.toLowerCase();
+      return !needle || n.includes(needle);
+    }).slice(0, 6);
+    const picking = q !== null && matches.length > 0;
+    const scan = (value, caret) => {
+      const m = value.slice(0, caret).match(/(?:^|\s)@([^@\s]{0,24})$/);
+      setQ(m ? m[1] : null);
+      setPick(0);
+    };
+    const change = (e) => { setComment(e.target.value); scan(e.target.value, e.target.selectionStart); };
+    const choose = (p) => {
+      const el = box.current;
+      const caret = el ? el.selectionStart : comment.length;
+      const head = comment.slice(0, caret).replace(/@[^@\s]*$/, "@" + p.name + " ");
+      setComment(head + comment.slice(caret));
+      setQ(null);
+      setTimeout(() => {
+        if (!el) return;
+        el.focus();
+        el.setSelectionRange(head.length, head.length);
+      }, 0);
+    };
+    const keys = (e) => {
+      if (!picking) return;
+      if (e.key === "ArrowDown") { e.preventDefault(); setPick((i) => (i + 1) % matches.length); }
+      else if (e.key === "ArrowUp") { e.preventDefault(); setPick((i) => (i - 1 + matches.length) % matches.length); }
+      else if (e.key === "Enter" || e.key === "Tab") { e.preventDefault(); choose(matches[pick] || matches[0]); }
+      else if (e.key === "Escape") { e.preventDefault(); setQ(null); }
+    };
     return h("div", { className: "ps-comments" },
       h("b", { className: "ps-comments-h" }, "Comments", comments.length ? ` (${comments.length})` : ""),
       waiting && h("p", { className: "ps-warn" }, asker.name, " is waiting on an answer before they can carry on."),
@@ -1828,10 +1985,25 @@
           h("div", { className: "ps-comment-body" },
             h("span", { className: "ps-comment-who" }, by ? by.name : "Someone", c.ask ? " asked" : c.answer ? " answered" : "",
               h("span", { className: "ps-muted ps-comment-at" }, new Date(c.at).toLocaleString(void 0, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }))),
-            h("p", { className: "ps-comment-text" }, c.text)));
+            h("p", { className: "ps-comment-text" },
+              mentionParts(c.text, db, c.to).map((x, i) => typeof x === "string"
+                ? x
+                : h("span", { key: i, className: "ps-mention" }, x.tag)))));
       }),
-      h("textarea", { className: "ps-comment-in", value: comment, onChange: (e) => setComment(e.target.value),
-        placeholder: waiting ? `Answer ${asker.name}\u2026` : "Add a comment, or ask a question" }),
+      h("div", { className: "ps-mentionwrap" },
+        h("textarea", { className: "ps-comment-in", ref: box, value: comment,
+          onChange: change, onKeyDown: keys, onBlur: () => setQ(null),
+          placeholder: waiting ? `Answer ${asker.name}\u2026` : "Add a comment, or ask a question" }),
+        picking && h("ul", { className: "ps-mentions", role: "listbox" },
+          matches.map((p, i) => h("li", { key: p.id },
+            h("button", {
+              className: `ps-mention-opt ${i === pick ? "on" : ""}`,
+              onMouseDown: (e) => { e.preventDefault(); choose(p); }
+            },
+              h(Avatar, { person: p, size: 20 }),
+              h("span", null, p.name),
+              h("span", { className: "ps-muted" }, (ROLES[p.role] || {}).label || p.role)))))),
+      people.length > 0 && h("p", { className: "ps-tag-hint" }, "Type @ to tag someone \u2014 they get a notification even if the task isn't theirs."),
       h("div", { className: "ps-btnrow" },
         h("button", { className: "ps-btn ghost small", disabled: !comment.trim(), onClick: postComment }, "Comment"),
         waiting
@@ -1986,11 +2158,15 @@
       close();
     };
     const comments = t.comments || [];
+    const tagsIn = (text) => mentionIds(text, taggableOn(db, me, t));
+    const tagNames = (to) => to.map((id) => (db.people.find((p) => p.id === id) || {}).name).filter(Boolean).join(" and ");
     const postComment = () => {
       const text = comment.trim();
       if (!text) return;
-      updateTask(t.id, { comments: [...comments, { id: uid("cm"), by: me.id, at: (/* @__PURE__ */ new Date()).toISOString(), text }] });
+      const to = tagsIn(text);
+      updateTask(t.id, { comments: [...comments, { id: uid("cm"), by: me.id, at: (/* @__PURE__ */ new Date()).toISOString(), text, ...to.length ? { to } : {} }] });
       setComment("");
+      if (to.length) setToast(`Comment added — ${tagNames(to)} notified.`);
     };
     /* Ask whoever handed it over. The task parks with them until they answer, so a
        blocked editor isn't sitting on work nobody knows is stuck. */
@@ -2009,7 +2185,7 @@
         startedAt: null,
         workMs: bankedMs,
         ...session(),
-        comments: [...comments, { id: uid("cm"), by: me.id, at: now, text, ask: true }],
+        comments: [...comments, { id: uid("cm"), by: me.id, at: now, text, ask: true, ...tagsIn(text).length ? { to: tagsIn(text) } : {} }],
         ...log(`Asked ${askBack.name}: ${text}`)
       });
       setComment("");
@@ -2027,7 +2203,7 @@
         status: t.askPrev || "in_progress",
         askPrev: null,
         askFrom: null,
-        comments: [...comments, { id: uid("cm"), by: me.id, at: now, text, answer: true }],
+        comments: [...comments, { id: uid("cm"), by: me.id, at: now, text, answer: true, ...tagsIn(text).length ? { to: tagsIn(text) } : {} }],
         ...log(`Answered ${asker.name}: ${text}`)
       });
       setComment("");
@@ -3121,7 +3297,11 @@ ${lines.join("\n")}`);
 .ps-bell:hover{border-color:var(--accent)}
 .ps-bell-n{position:absolute;top:-6px;right:-6px;min-width:17px;height:17px;padding:0 4px;border-radius:9px;background:var(--late);color:#fff;font-size:11px;font-weight:700;line-height:17px;text-align:center}
 .ps-bellpanel{position:absolute;top:calc(100% + 6px);right:0;width:330px;max-width:82vw;background:var(--card);border:1px solid var(--line);border-radius:10px;box-shadow:0 18px 40px -12px rgba(0,0,0,.35);z-index:50;padding:10px 12px 8px}
-.ps-bell-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:6px;font-size:14px}
+.ps-bell-head{display:flex;align-items:center;gap:8px;margin-bottom:6px;font-size:14px}
+.ps-bell-head b{flex:1;min-width:0}
+.ps-soundbtn{display:inline-flex;align-items:center;gap:5px;flex:0 0 auto;background:none;border:1px solid var(--line);border-radius:999px;padding:3px 9px 3px 7px;font:inherit;font-size:12px;color:var(--muted);cursor:pointer}
+.ps-soundbtn.on{color:var(--accent);border-color:var(--accent)}
+.ps-soundbtn:hover{background:var(--paper)}
 .ps-bell-none{font-size:13px;margin:4px 0 6px;line-height:1.5}
 .ps-belllist{display:flex;flex-direction:column;max-height:330px;overflow-y:auto;overscroll-behavior:contain}
 .ps-bellrow{display:flex;align-items:flex-start;gap:6px;border-bottom:1px solid var(--line)}
@@ -3312,6 +3492,14 @@ ${lines.join("\n")}`);
 .ps-client-row .ps-pickerwrap{display:block;width:100%}
 .ps-stages{display:flex;flex-direction:column;gap:6px;max-width:600px}
 .ps-stage-row{display:grid;grid-template-columns:24px 1fr auto 130px;gap:10px;align-items:center}
+.ps-mentionwrap{position:relative;display:block}
+.ps-mentions{position:absolute;left:0;right:0;bottom:calc(100% + 4px);z-index:6;margin:0;padding:4px;list-style:none;background:var(--card);border:1px solid var(--line);border-radius:10px;box-shadow:0 14px 30px -12px rgba(0,0,0,.45);max-height:212px;overflow:auto}
+.ps-mentions li{margin:0}
+.ps-mention-opt{display:flex;align-items:center;gap:8px;width:100%;text-align:left;background:none;border:0;border-radius:7px;padding:6px 8px;font:inherit;color:var(--ink);cursor:pointer}
+.ps-mention-opt.on,.ps-mention-opt:hover{background:var(--paper)}
+.ps-mention-opt .ps-muted{margin-left:auto;font-size:12px}
+.ps-mention{color:var(--accent);font-weight:600}
+.ps-tag-hint{font-size:12px;color:var(--muted);margin:5px 0 0}
 .ps-slack{display:flex;flex-direction:column;gap:6px;margin-bottom:12px}
 .ps-slack-row{display:flex;align-items:center;gap:9px;cursor:pointer}
 .ps-slack-row input{width:16px;height:16px;flex:0 0 auto;accent-color:var(--ink)}

@@ -530,6 +530,44 @@
   /* Three versions in play: `base` is what we know reached the server, `mine` is
      what's on this screen, `theirs` is what the server holds now. Replay only the
      rows this screen actually touched on top of theirs - everything else survives. */
+  /* ---- Slack -----------------------------------------------------------
+     window.notifySlack is wired up in index.html and talks to the 'slack'
+     Edge Function. In the Claude preview it simply isn't there, so every
+     call quietly does nothing. */
+  var SLACK_EVENTS = [
+    { id: "ready", label: "A video is sent to the client" },
+    { id: "question", label: "Someone asks a question and is stuck" },
+    { id: "timeoff", label: "Someone requests time off" },
+    { id: "overdue", label: "A daily list of what is running late" }
+  ];
+  var slackOn = (db, key) => ((db && db.slack) || {})[key] !== false;
+  var slack = (db, key, text) => {
+    try {
+      if (!slackOn(db, key)) return;
+      if (typeof window === "undefined" || typeof window.notifySlack !== "function") return;
+      window.notifySlack(text);
+    } catch (e) {
+      console.error("Slack message not sent", e);
+    }
+  };
+  var overdueLines = (db) => {
+    const today = isoDay(/* @__PURE__ */ new Date());
+    const dayStart = startOfDay(/* @__PURE__ */ new Date());
+    const nameOf = (id) => ((db.people || []).find((p) => p.id === id) || {}).name || "Unassigned";
+    const out = [];
+    (db.tasks || []).forEach((t) => {
+      if (t.done || !t.due || String(t.due).slice(0, 10) >= today) return;
+      out.push(`• ${t.text || "Untitled task"} — ${nameOf(t.personId)}`);
+    });
+    (db.videos || []).forEach((v) => {
+      if (v.archived || v.stage === "ready") return;
+      const d = dueOf(v);
+      if (!d || d >= dayStart) return;
+      const s = stageOf(v.stage);
+      out.push(`• ${v.title || "Untitled video"} — ${nameOf(v.editorId)} (${s ? s.name : v.stage})`);
+    });
+    return out.slice(0, 20);
+  };
   var mergeStates = (base, mine, theirs) => {
     const out = { ...theirs };
     const byId = (list) => {
@@ -897,6 +935,7 @@
         });
       });
       setReason("");
+      slack(db, "timeoff", `\u{1F334} ${me.name} asked for time off ${shortDate(fromIso(a))}${a === b ? "" : ` – ${shortDate(fromIso(b))}`}${approver ? ` — ${approver.name} needs to decide.` : " — nobody is set up to approve it."}`);
       setToast(approver ? `Request sent to ${approver.name}.` : "Request saved, but nobody has the HR or Lead role to approve it.");
     };
     const decide = (r, ok) => {
@@ -1974,6 +2013,7 @@
         ...log(`Asked ${askBack.name}: ${text}`)
       });
       setComment("");
+      slack(db, "question", `❓ ${me.name} asked ${askBack.name} about *${t.text || "a task"}* and is waiting: “${text}”`);
       setToast(`Sent to ${askBack.name}. It comes back to you once they answer.`);
       close();
     };
@@ -2190,6 +2230,10 @@
       const next = STAGES[idxOf(v.stage) + 1];
       if (!next || missing || noEditor || !allTicked || notStarted) return;
       const now = (/* @__PURE__ */ new Date()).toISOString();
+      if (next.id === "ready") {
+        const c = db.clients.find((x) => x.id === v.clientId);
+        slack(db, "ready", `\u{1F3AC} *${v.title || "Untitled video"}* is on its way to ${c ? c.name : "the client"} — sent by ${me.name}.`);
+      }
       if (v.stage === "editing" && v.startedAt) {
         const run = Date.now() - new Date(v.startedAt).getTime();
         const total = logged + run;
@@ -2492,6 +2536,17 @@
       fn(n);
       return n;
     });
+    /* Once a day, the first screen to open posts what is running late. The date
+       stamp lives in the shared data, so only one screen ever sends it. */
+    useEffect(() => {
+      if (!db || !db.people || !db.people.length) return;
+      const today = isoDay(/* @__PURE__ */ new Date());
+      if (db.slackDay === today) return;
+      const lines = overdueLines(db);
+      mutate((n) => { n.slackDay = today; });
+      if (lines.length) slack(db, "overdue", `⏰ *Running late today*
+${lines.join("\n")}`);
+    }, [db ? db.slackDay : null, db ? db.people.length : 0]);
     const update = (id, patch) => setDb((d) => ({ ...d, videos: d.videos.map((v) => v.id === id ? { ...v, ...patch } : v) }));
     const updateTask = (id, patch) => setDb((d) => ({ ...d, tasks: d.tasks.map((t) => t.id === id ? { ...t, ...patch } : t) }));
     const visible = useMemo(() => db && me ? db.videos.filter((v) => visibleTo(v, me)) : [], [db, me]);
@@ -2825,7 +2880,14 @@
     } }), /* @__PURE__ */ React.createElement("span", { className: "ps-chip" }, (ROLES[p.role] || {}).label || p.role), /* @__PURE__ */ React.createElement("input", { className: "ps-person-mail", type: "email", placeholder: "login email", value: p.email || "", onChange: (e) => {
       const v = e.target.value;
       mutate((n) => { const t = n.people.find((x) => x.id === p.id); if (t) t.email = v.trim(); });
-    } }), p.id === me.id ? /* @__PURE__ */ React.createElement("span", { className: "ps-muted ps-person-you" }, "you") : /* @__PURE__ */ React.createElement("button", { className: "ps-x-small", "aria-label": `Remove ${p.name}`, onClick: () => removePerson(p) }, "\xD7")))), /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "New teammate"), /* @__PURE__ */ React.createElement("div", { className: "ps-form" }, /* @__PURE__ */ React.createElement("input", { placeholder: "Name", value: draft.person, onChange: (e) => setDraft({ ...draft, person: e.target.value }) }), /* @__PURE__ */ React.createElement("input", { type: "email", placeholder: "Login email (optional)", value: draft.personEmail || "", onChange: (e) => setDraft({ ...draft, personEmail: e.target.value }) }), /* @__PURE__ */ React.createElement("select", { value: draft.role, onChange: (e) => setDraft({ ...draft, role: e.target.value }) }, ["coordinator", "hr", "teamlead", "editor", "intern", "qa"].map((r) => /* @__PURE__ */ React.createElement("option", { key: r, value: r }, ROLES[r].label))), /* @__PURE__ */ React.createElement("button", { className: "ps-btn ghost", onClick: addPerson }, "Add teammate")), /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Editor pictures"), /* @__PURE__ */ React.createElement("div", { className: "ps-editors" }, db.people.filter((p) => isEditor(p.role)).map((p) => /* @__PURE__ */ React.createElement("div", { key: p.id, className: "ps-editor" }, picker(p, 64), /* @__PURE__ */ React.createElement("span", null, p.name)))), /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Stage allowances"), /* @__PURE__ */ React.createElement("div", { className: "ps-stages" }, STAGES.filter((s) => s.owner).map((s, i) => /* @__PURE__ */ React.createElement("div", { key: s.id, className: "ps-stage-row" }, /* @__PURE__ */ React.createElement("span", { className: "ps-frame-step" }, i + 1), /* @__PURE__ */ React.createElement("span", null, s.name, CHECKS[s.id] ? " \xB7 checklist" : ""), /* @__PURE__ */ React.createElement("span", { className: "ps-chip", style: { background: ROLES[s.owner].soft, color: ROLES[s.owner].color } }, ROLES[s.owner].label), /* @__PURE__ */ React.createElement("span", { className: "ps-muted" }, s.days ? `${s.days} business day${s.days > 1 ? "s" : ""}` : "No clock")))), /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "SOP templates"), /* @__PURE__ */ React.createElement(TemplateEditor, { db, mutate, setToast }), /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Backups"), /* @__PURE__ */ React.createElement("p", { className: "ps-muted", style: { marginBottom: 10 } }, "Every change saves automatically for the whole team. Download a copy now and then so you have one outside the system."), /* @__PURE__ */ React.createElement("div", { className: "ps-form" }, /* @__PURE__ */ React.createElement("button", { className: "ps-btn", onClick: downloadBackup }, "Download a backup"), /* @__PURE__ */ React.createElement("label", { className: "ps-btn ghost ps-filebtn" }, "Restore from a backup", /* @__PURE__ */ React.createElement("input", { type: "file", accept: "application/json,.json", hidden: true, onChange: (e) => { const f = e.target.files && e.target.files[0]; e.target.value = ""; restoreBackup(f); } }))), /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Data"), /* @__PURE__ */ React.createElement("p", { className: "ps-muted", style: { marginBottom: 8 } }, "Replaces everything with the sample studio. Only for testing."), /* @__PURE__ */ React.createElement("button", { className: "ps-btn ghost", onClick: reset }, "Restore demo data"));
+    } }), p.id === me.id ? /* @__PURE__ */ React.createElement("span", { className: "ps-muted ps-person-you" }, "you") : /* @__PURE__ */ React.createElement("button", { className: "ps-x-small", "aria-label": `Remove ${p.name}`, onClick: () => removePerson(p) }, "\xD7")))), /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "New teammate"), /* @__PURE__ */ React.createElement("div", { className: "ps-form" }, /* @__PURE__ */ React.createElement("input", { placeholder: "Name", value: draft.person, onChange: (e) => setDraft({ ...draft, person: e.target.value }) }), /* @__PURE__ */ React.createElement("input", { type: "email", placeholder: "Login email (optional)", value: draft.personEmail || "", onChange: (e) => setDraft({ ...draft, personEmail: e.target.value }) }), /* @__PURE__ */ React.createElement("select", { value: draft.role, onChange: (e) => setDraft({ ...draft, role: e.target.value }) }, ["coordinator", "hr", "teamlead", "editor", "intern", "qa"].map((r) => /* @__PURE__ */ React.createElement("option", { key: r, value: r }, ROLES[r].label))), /* @__PURE__ */ React.createElement("button", { className: "ps-btn ghost", onClick: addPerson }, "Add teammate")), /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Editor pictures"), /* @__PURE__ */ React.createElement("div", { className: "ps-editors" }, db.people.filter((p) => isEditor(p.role)).map((p) => /* @__PURE__ */ React.createElement("div", { key: p.id, className: "ps-editor" }, picker(p, 64), /* @__PURE__ */ React.createElement("span", null, p.name)))), /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Stage allowances"), /* @__PURE__ */ React.createElement("div", { className: "ps-stages" }, STAGES.filter((s) => s.owner).map((s, i) => /* @__PURE__ */ React.createElement("div", { key: s.id, className: "ps-stage-row" }, /* @__PURE__ */ React.createElement("span", { className: "ps-frame-step" }, i + 1), /* @__PURE__ */ React.createElement("span", null, s.name, CHECKS[s.id] ? " \xB7 checklist" : ""), /* @__PURE__ */ React.createElement("span", { className: "ps-chip", style: { background: ROLES[s.owner].soft, color: ROLES[s.owner].color } }, ROLES[s.owner].label), /* @__PURE__ */ React.createElement("span", { className: "ps-muted" }, s.days ? `${s.days} business day${s.days > 1 ? "s" : ""}` : "No clock")))), /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "SOP templates"), /* @__PURE__ */ React.createElement(TemplateEditor, { db, mutate, setToast }), /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Slack notifications"), /* @__PURE__ */ React.createElement("p", { className: "ps-muted", style: { marginBottom: 8 } }, "Messages land in the channel you connected in Supabase. Untick anything the team doesn't need to hear about."), /* @__PURE__ */ React.createElement("div", { className: "ps-slack" }, SLACK_EVENTS.map((s) => /* @__PURE__ */ React.createElement("label", { key: s.id, className: "ps-slack-row" }, /* @__PURE__ */ React.createElement("input", { type: "checkbox", checked: slackOn(db, s.id), onChange: (e) => {
+      const on = e.target.checked;
+      mutate((n) => { n.slack = { ...n.slack || {}, [s.id]: on }; });
+    } }), /* @__PURE__ */ React.createElement("span", null, s.label)))), /* @__PURE__ */ React.createElement("button", { className: "ps-btn ghost", onClick: () => {
+      if (typeof window === "undefined" || typeof window.notifySlack !== "function") return setToast("Slack only works on your own site, not in this preview.");
+      window.notifySlack(`✅ Test message from Projeclab Studios — sent by ${me.name}.`);
+      setToast("Test sent. Have a look at your Slack channel.");
+    } }, "Send a test message"), /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Backups"), /* @__PURE__ */ React.createElement("p", { className: "ps-muted", style: { marginBottom: 10 } }, "Every change saves automatically for the whole team. Download a copy now and then so you have one outside the system."), /* @__PURE__ */ React.createElement("div", { className: "ps-form" }, /* @__PURE__ */ React.createElement("button", { className: "ps-btn", onClick: downloadBackup }, "Download a backup"), /* @__PURE__ */ React.createElement("label", { className: "ps-btn ghost ps-filebtn" }, "Restore from a backup", /* @__PURE__ */ React.createElement("input", { type: "file", accept: "application/json,.json", hidden: true, onChange: (e) => { const f = e.target.files && e.target.files[0]; e.target.value = ""; restoreBackup(f); } }))), /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Data"), /* @__PURE__ */ React.createElement("p", { className: "ps-muted", style: { marginBottom: 8 } }, "Replaces everything with the sample studio. Only for testing."), /* @__PURE__ */ React.createElement("button", { className: "ps-btn ghost", onClick: reset }, "Restore demo data"));
     } else {
       const client = me.role === "client" ? db.clients.find((c) => c.id === me.clientId) : null;
       const waiting = client ? active.filter((v) => !isMine(v, me)) : [];
@@ -3250,6 +3312,9 @@
 .ps-client-row .ps-pickerwrap{display:block;width:100%}
 .ps-stages{display:flex;flex-direction:column;gap:6px;max-width:600px}
 .ps-stage-row{display:grid;grid-template-columns:24px 1fr auto 130px;gap:10px;align-items:center}
+.ps-slack{display:flex;flex-direction:column;gap:6px;margin-bottom:12px}
+.ps-slack-row{display:flex;align-items:center;gap:9px;cursor:pointer}
+.ps-slack-row input{width:16px;height:16px;flex:0 0 auto;accent-color:var(--ink)}
 .ps-toast{position:fixed;bottom:22px;left:50%;transform:translateX(-50%);background:var(--ink);color:var(--paper);padding:9px 16px;border-radius:999px;font-size:14px;z-index:30;max-width:90vw;display:flex;align-items:center;justify-content:center;gap:12px}
 .ps-toast-action{background:none;border:0;color:var(--paper);font:inherit;font-weight:700;text-decoration:underline;cursor:pointer;white-space:nowrap;padding:0}
 .ps-stagecell{display:inline-flex;align-items:center;gap:8px;min-width:0}
@@ -3513,6 +3578,19 @@ if (sb) {
       const timer = setInterval(refresh, 30000);
       return () => { sb.removeChannel(ch); window.removeEventListener("focus", refresh); clearInterval(timer); };
     },
+  };
+}
+
+/* Slack: hands a line of text to the 'slack' Edge Function, which posts it
+   to your channel. Nothing here knows the webhook address - that lives in
+   Supabase under Edge Function Secrets as SLACK_WEBHOOK. */
+if (sb) {
+  window.notifySlack = async (text) => {
+    try {
+      await sb.functions.invoke("slack", { body: { text: String(text).slice(0, 500) } });
+    } catch (e) {
+      console.error("Slack message not sent", e);
+    }
   };
 }
 

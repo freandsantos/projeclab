@@ -44,6 +44,9 @@
   /* A team leader is an editor who can also hand work out. Nothing more: the same
      narrow view of videos, tasks and clients as anyone on the bench. */
   var canDelegate = (role) => role === "lead" || role === "coordinator" || role === "hr" || role === "teamlead";
+  /* Everyone else can still raise work - just for themselves. It goes through
+     QA the same way, because the routing follows the kind of work, not who asked. */
+  var canSelfAssign = (role) => role === "editor" || role === "intern" || role === "qa";
   var BACK_TO = { qa: "editing", final: "editing", ready: "editing" };
   var NEEDS = {
     in_progress: ["footageUrl", "Footage folder link"],
@@ -2487,16 +2490,29 @@
     return x < y ? -1 : x > y ? 1 : 0;
   };
   function Delegate({ db, me, draft, setDraft, addTodo }) {
+    /* An editor, intern or QA can only raise work for themselves. */
+    const selfOnly = canSelfAssign(me.role);
     /* A team leader gives work to the bench, not to the Lead or HR. */
-    const crew = db.people.filter((p) => p.role !== "client" && (!me || me.role !== "teamlead" || isEditor(p.role) || p.role === "qa"));
+    const crew = selfOnly
+      ? db.people.filter((p) => p.id === me.id)
+      : db.people.filter((p) => p.role !== "client" && (!me || me.role !== "teamlead" || isEditor(p.role) || p.role === "qa"));
     const qa = db.people.find((p) => p.role === "qa");
     const set = (patch) => setDraft((x) => ({ ...x, ...patch }));
-    const routeHint = !OPEN_KINDS.includes(draft.delKind || "video") ? (NO_QA_KINDS.includes(draft.delKind) ? "People paperwork \u2014 goes straight to them, no QA review." : "A to-do \u2014 goes straight to them, no QA review.") : qa ? `Goes through QA (${qa.name}) before it's marked done.` : "No one has the QA role yet \u2014 this will skip review and finish directly.";
-    return /* @__PURE__ */ React.createElement("section", { className: "ps-delegate" }, /* @__PURE__ */ React.createElement("div", { className: "ps-del-col" }, /* @__PURE__ */ React.createElement("h4", { className: "ps-h4" }, "Give someone a task"), /* @__PURE__ */ React.createElement("p", { className: "ps-muted" }, "It lands in their queue and under their name in Team overview."), /* @__PURE__ */ React.createElement("div", { className: "ps-del-form" }, (db.templates || []).length > 0 && /* @__PURE__ */ React.createElement("select", { value: draft.delTpl || "", "aria-label": "Start from a template", onChange: (e) => {
+    const them = selfOnly ? "you" : "them";
+    const routeHint = !OPEN_KINDS.includes(draft.delKind || "video")
+      ? (NO_QA_KINDS.includes(draft.delKind)
+        ? `People paperwork \u2014 goes straight to ${them}, no QA review.`
+        : `A to-do \u2014 goes straight to ${them}, no QA review.`)
+      : !qa
+        ? "No one has the QA role yet \u2014 this will skip review and finish directly."
+        : selfOnly && qa.id === me.id
+          ? "You are the QA, so there is nobody above you to review this \u2014 you finish it yourself."
+          : `Goes through QA (${qa.name}) before it's marked done.`;
+    return /* @__PURE__ */ React.createElement("section", { className: "ps-delegate" }, /* @__PURE__ */ React.createElement("div", { className: "ps-del-col" }, /* @__PURE__ */ React.createElement("h4", { className: "ps-h4" }, selfOnly ? "Give yourself a task" : "Give someone a task"), /* @__PURE__ */ React.createElement("p", { className: "ps-muted" }, selfOnly ? "It lands in your own queue. Video and graphic design still go to QA when you finish." : "It lands in their queue and under their name in Team overview."), /* @__PURE__ */ React.createElement("div", { className: "ps-del-form" }, (db.templates || []).length > 0 && /* @__PURE__ */ React.createElement("select", { value: draft.delTpl || "", "aria-label": "Start from a template", onChange: (e) => {
       const t = (db.templates || []).find((x) => x.id === e.target.value);
       if (!t) return set({ delTpl: "", delSteps: null });
       set({ delTpl: t.id, delText: t.name, delDetails: (t.details || "").slice(0, DETAIL_MAX), delKind: t.kind || "other", delSteps: (t.steps || []).slice() });
-    } }, /* @__PURE__ */ React.createElement("option", { value: "" }, "Start from a template\u2026"), (db.templates || []).map((t) => /* @__PURE__ */ React.createElement("option", { key: t.id, value: t.id }, t.name, " \u00b7 ", (t.steps || []).length, " steps"))), /* @__PURE__ */ React.createElement("select", { value: draft.delPerson || "", onChange: (e) => set({ delPerson: e.target.value }) }, /* @__PURE__ */ React.createElement("option", { value: "" }, "Choose a person"), Object.keys(ROLES).filter((r) => r !== "client").map((r) => {
+    } }, /* @__PURE__ */ React.createElement("option", { value: "" }, "Start from a template\u2026"), (db.templates || []).map((t) => /* @__PURE__ */ React.createElement("option", { key: t.id, value: t.id }, t.name, " \u00b7 ", (t.steps || []).length, " steps"))), /* @__PURE__ */ React.createElement("select", { value: selfOnly ? me.id : draft.delPerson || "", disabled: selfOnly, "aria-label": selfOnly ? "This task is for you" : "Who it goes to", onChange: (e) => set({ delPerson: e.target.value }) }, !selfOnly && /* @__PURE__ */ React.createElement("option", { value: "" }, "Choose a person"), Object.keys(ROLES).filter((r) => r !== "client").map((r) => {
       const list = crew.filter((p) => p.role === r);
       return list.length ? /* @__PURE__ */ React.createElement("optgroup", { key: r, label: ROLES[r].label }, list.map((p) => /* @__PURE__ */ React.createElement("option", { key: p.id, value: p.id }, p.name, isAway(p) ? " (away)" : ""))) : null;
     })), /* @__PURE__ */ React.createElement(
@@ -2524,7 +2540,7 @@
         onChange: (e) => set({ delDueTime: e.target.value }),
         ariaLabel: "Due time"
       }
-    ))), /* @__PURE__ */ React.createElement("p", { className: "ps-muted ps-routehint" }, routeHint), /* @__PURE__ */ React.createElement("button", { className: "ps-btn", onClick: addTodo }, "Assign task"))));
+    ))), /* @__PURE__ */ React.createElement("p", { className: "ps-muted ps-routehint" }, routeHint), /* @__PURE__ */ React.createElement("button", { className: "ps-btn", onClick: addTodo }, selfOnly ? "Add to my tasks" : "Assign task"))));
   }
   function Track({ v }) {
     const here = idxOf(v.stage);
@@ -2809,8 +2825,9 @@ ${lines.join("\n")}`);
       n.invoices = (n.invoices || []).filter((x) => x.id !== `${cid}:${key}`);
     });
     const delegateTodo = () => {
-      const who = draft.delPerson, text = (draft.delText || "").trim();
-      if (!who || !text) return setToast("Pick a person and type the task.");
+      const self = canSelfAssign(me.role);
+      const who = self ? me.id : draft.delPerson, text = (draft.delText || "").trim();
+      if (!who || !text) return setToast(self ? "Type the task first." : "Pick a person and type the task.");
       const name = (db.people.find((p) => p.id === who) || {}).name || "them";
       mutate((n) => n.tasks.push({
         id: uid("t"),
@@ -2836,7 +2853,8 @@ ${lines.join("\n")}`);
         history: [{ at: (/* @__PURE__ */ new Date()).toISOString(), by: me.id, text: `Assigned to ${name}` }]
       }));
       setDraft((x) => ({ ...x, delText: "", delDetails: "", delTpl: "", delSteps: null, delRepeat: "none", ...suggestedDue() }));
-      setToast(draft.delRepeat && draft.delRepeat !== "none" ? `Assigned to ${name} \u2014 ${(REPEATS.find((r) => r.id === draft.delRepeat) || REPEATS[0]).label.toLowerCase()}.` : `Task assigned to ${name}.`);
+      const whose = who === me.id ? "you" : name;
+      setToast(draft.delRepeat && draft.delRepeat !== "none" ? `Assigned to ${whose} \u2014 ${(REPEATS.find((r) => r.id === draft.delRepeat) || REPEATS[0]).label.toLowerCase()}.` : who === me.id ? "Added to your own tasks." : `Task assigned to ${name}.`);
     };
     const addVideo = () => {
       if (!draft.client || !draft.title.trim()) return setToast("Pick a client and type a title.");
@@ -3089,7 +3107,7 @@ ${lines.join("\n")}`);
       body = /* @__PURE__ */ React.createElement(React.Fragment, null, me.role !== "client" ? /* @__PURE__ */ React.createElement("div", { className: "ps-profile" }, picker(me, 72), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("h1", { className: "ps-h1" }, "My tasks"), /* @__PURE__ */ React.createElement("p", { className: "ps-muted" }, me.name, " \xB7 ", ROLES[me.role].label))) : /* @__PURE__ */ React.createElement("h1", { className: "ps-h1" }, "Hi, ", me.name), me.role !== "client" && /* @__PURE__ */ React.createElement(PinnedNotice, { db, me, mutate, canEdit: lead || me.role === "hr" }), /* @__PURE__ */ React.createElement("p", { className: "ps-lede" }, waitingLine, lead && late.length ? ` ${late.length} past due across the studio.` : ""), client && billingOf(client).id !== "none" && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Your invoices"), /* @__PURE__ */ React.createElement(InvoiceList, { db, client, canEdit: false, toggle: () => {
     }, addJob: () => {
     }, removeJob: () => {
-    }, openVideo: setOpenId })), me.role !== "hr" && mine.length > 0 && /* @__PURE__ */ React.createElement(React.Fragment, null, me.role !== "client" && /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Videos"), /* @__PURE__ */ React.createElement(VideoTable, { rows: mine, db, me, open: setOpenId, showClient: me.role !== "client" })), me.role !== "client" && canApproveTimeoff(db, me) && /* @__PURE__ */ React.createElement(TimeOffPanel, { db, me, mutate, setToast, queueOnly: true }), me.role !== "client" && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Tasks"), /* @__PURE__ */ React.createElement(TodoList, { person: me, tasks: db.tasks, clients: db.clients, canAdd: false, canToggle: canEditPerson(me), mutate, openTask: setTaskId, shareFinalCheck: lead })), canDelegate(me.role) && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Delegate"), /* @__PURE__ */ React.createElement(Delegate, { db, me, draft, setDraft, addTodo: delegateTodo })), client && waiting.length > 0 && /* @__PURE__ */ React.createElement("details", { className: "ps-fold" }, /* @__PURE__ */ React.createElement("summary", null, waiting.length, " with someone else"), /* @__PURE__ */ React.createElement(VideoTable, { rows: waiting, db, me, open: setOpenId, showClient: false })), me.role !== "client" && /* @__PURE__ */ React.createElement(ActivityHistory, { db, me, mutate, setToast, openTask: setTaskId, openVideo: setOpenId }), !client && recentlyFinished.length > 0 && /* @__PURE__ */ React.createElement("details", { className: "ps-fold" }, /* @__PURE__ */ React.createElement("summary", null, "Recently finished (", recentlyFinished.length, ")"), /* @__PURE__ */ React.createElement("div", { className: "ps-table" }, recentlyFinished.map((f) => /* @__PURE__ */ React.createElement(
+    }, openVideo: setOpenId })), me.role !== "hr" && mine.length > 0 && /* @__PURE__ */ React.createElement(React.Fragment, null, me.role !== "client" && /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Videos"), /* @__PURE__ */ React.createElement(VideoTable, { rows: mine, db, me, open: setOpenId, showClient: me.role !== "client" })), me.role !== "client" && canApproveTimeoff(db, me) && /* @__PURE__ */ React.createElement(TimeOffPanel, { db, me, mutate, setToast, queueOnly: true }), me.role !== "client" && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Tasks"), /* @__PURE__ */ React.createElement(TodoList, { person: me, tasks: db.tasks, clients: db.clients, canAdd: false, canToggle: canEditPerson(me), mutate, openTask: setTaskId, shareFinalCheck: lead })), (canDelegate(me.role) || canSelfAssign(me.role)) && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, canDelegate(me.role) ? "Delegate" : "Add a task"), /* @__PURE__ */ React.createElement(Delegate, { db, me, draft, setDraft, addTodo: delegateTodo })), client && waiting.length > 0 && /* @__PURE__ */ React.createElement("details", { className: "ps-fold" }, /* @__PURE__ */ React.createElement("summary", null, waiting.length, " with someone else"), /* @__PURE__ */ React.createElement(VideoTable, { rows: waiting, db, me, open: setOpenId, showClient: false })), me.role !== "client" && /* @__PURE__ */ React.createElement(ActivityHistory, { db, me, mutate, setToast, openTask: setTaskId, openVideo: setOpenId }), !client && recentlyFinished.length > 0 && /* @__PURE__ */ React.createElement("details", { className: "ps-fold" }, /* @__PURE__ */ React.createElement("summary", null, "Recently finished (", recentlyFinished.length, ")"), /* @__PURE__ */ React.createElement("div", { className: "ps-table" }, recentlyFinished.map((f) => /* @__PURE__ */ React.createElement(
         "button",
         {
           key: `${f.kind}-${f.id}`,

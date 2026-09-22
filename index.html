@@ -2057,7 +2057,17 @@
     const reviewer = qa || leadPerson;
     const viaQA = !!qa;
     const canGoToReview = status === "in_progress" && reviewer && reviewer.id !== t.personId && !skipsQA(t);
-    const canFinalCheck = viaQA && !!leadPerson && leadPerson.id !== qa.id;
+    /* Who signs work off: whoever handed it over, when they are senior enough to
+       do that, otherwise the Lead. Never the person currently holding it. */
+    const signOff = (() => {
+      const giver = t.by ? db.people.find((p) => p.id === t.by) : null;
+      if (giver && giver.id !== t.personId && (giver.role === "lead" || giver.role === "coordinator" || giver.role === "teamlead")) return giver;
+      return leadPerson && leadPerson.id !== t.personId ? leadPerson : null;
+    })();
+    const canFinalCheck = viaQA && !!signOff;
+    /* QA cannot review their own work, so their reviewed work goes up for a
+       final check instead of being marked done on the spot. */
+    const qaOwnWork = status === "in_progress" && !skipsQA(t) && !!qa && qa.id === t.personId && !!signOff;
     const workMs = t.workMs || 0;
     const running = !!t.startedAt && !t.done;
     const runMs = running ? Date.now() - new Date(t.startedAt).getTime() : 0;
@@ -2112,13 +2122,19 @@
       close();
     };
     const passToLead = () => {
-      if (!allTicked || !leadPerson) return;
+      if (!allTicked || !signOff) return;
       updateTask(t.id, {
-        personId: leadPerson.id,
+        personId: signOff.id,
         status: "final_check",
         qaFrom: null,
+        startedAt: null,
+        workMs: bankedMs,
+        ...session(),
+        ...t.reviewFrom ? {} : { reviewFrom: t.personId },
         qaPassedAt: (/* @__PURE__ */ new Date()).toISOString(),
-        ...log(`QA passed \xB7 sent to ${leadPerson.name} for final check`)
+        ...log(qaOwnWork
+          ? `Sent to ${signOff.name} for final check`
+          : `QA passed \xB7 sent to ${signOff.name} for final check`)
       });
       close();
     };
@@ -2305,14 +2321,14 @@
         onChange: (e) => setStepText(e.target.value),
         onKeyDown: (e) => e.key === "Enter" && addStep()
       }
-    ), /* @__PURE__ */ React.createElement("button", { className: "ps-btn ghost small", onClick: addStep }, "Add step"))), /* @__PURE__ */ React.createElement(CommentBox, { t, db, me, comments, comment, setComment, postComment, askQuestion, answerQuestion, askBack, asker, status, mine }), canEdit ? /* @__PURE__ */ React.createElement("div", { className: "ps-actions" }, !t.done && status === "in_progress" && !qa && !skipsQA(t) && /* @__PURE__ */ React.createElement("p", { className: "ps-warn" }, "Nobody has the QA role right now, so finishing this will skip review and mark it done directly. Add someone as QA in Settings first if that's not what you want."), !t.done && status !== "todo" && steps.length > 0 && !allTicked && /* @__PURE__ */ React.createElement("p", { className: "ps-warn" }, "Tick every step before this can ", status === "in_progress" ? canGoToReview ? viaQA ? "go to QA" : "be submitted for review" : "be finished" : status === "review" ? viaQA ? "pass QA" : "be approved" : "be finished", "."), /* @__PURE__ */ React.createElement(
+    ), /* @__PURE__ */ React.createElement("button", { className: "ps-btn ghost small", onClick: addStep }, "Add step"))), /* @__PURE__ */ React.createElement(CommentBox, { t, db, me, comments, comment, setComment, postComment, askQuestion, answerQuestion, askBack, asker, status, mine }), canEdit ? /* @__PURE__ */ React.createElement("div", { className: "ps-actions" }, !t.done && status === "in_progress" && !qa && !skipsQA(t) && /* @__PURE__ */ React.createElement("p", { className: "ps-warn" }, "Nobody has the QA role right now, so finishing this will skip review and mark it done directly. Add someone as QA in Settings first if that's not what you want."), !t.done && status !== "todo" && steps.length > 0 && !allTicked && /* @__PURE__ */ React.createElement("p", { className: "ps-warn" }, "Tick every step before this can ", status === "in_progress" ? canGoToReview ? viaQA ? "go to QA" : "be submitted for review" : qaOwnWork ? "go for final check" : "be finished" : status === "review" ? viaQA ? "pass QA" : "be approved" : "be finished", "."), /* @__PURE__ */ React.createElement(
       "textarea",
       {
         value: note,
         onChange: (e) => setNote(e.target.value),
         placeholder: atReview || atFinal ? "Notes for them (required to send back)" : mine ? "A note back to the lead" : "A note for them"
       }
-    ), /* @__PURE__ */ React.createElement("div", { className: "ps-btnrow" }, atReview || atFinal ? /* @__PURE__ */ React.createElement("button", { className: "ps-btn ghost", disabled: !note.trim(), onClick: sendBack }, "Send back to ", backTo ? backTo.name : "them") : /* @__PURE__ */ React.createElement("button", { className: "ps-btn ghost", disabled: !note.trim(), onClick: addNote }, "Add note"), t.done ? /* @__PURE__ */ React.createElement("button", { className: "ps-btn", onClick: reopen }, "Reopen") : status === "todo" ? /* @__PURE__ */ React.createElement("button", { className: "ps-btn", onClick: start }, "Start task") : status === "in_progress" ? canGoToReview ? /* @__PURE__ */ React.createElement("button", { className: "ps-btn", disabled: !allTicked, onClick: sendToReview }, viaQA ? "Go to QA" : "Submit for review") : /* @__PURE__ */ React.createElement("button", { className: "ps-btn", disabled: !allTicked, onClick: finish }, "Mark done") : status === "review" ? /* @__PURE__ */ React.createElement("button", { className: "ps-btn", disabled: !allTicked, onClick: canFinalCheck ? passToLead : finish }, viaQA ? "Pass QA" : "Approve") : /* @__PURE__ */ React.createElement("button", { className: "ps-btn", disabled: !allTicked, onClick: finish }, "Mark done")), lead && /* @__PURE__ */ React.createElement("button", { className: "ps-btn ghost small ps-del-task", onClick: remove }, "Delete task")) : /* @__PURE__ */ React.createElement("p", { className: "ps-muted", style: { marginTop: 16 } }, "Only ", person ? person.name : "the owner", " or the lead can work on this."), history.length > 0 && /* @__PURE__ */ React.createElement("details", { className: "ps-history" }, /* @__PURE__ */ React.createElement("summary", null, "History (", history.length, ")"), /* @__PURE__ */ React.createElement("ul", null, history.slice().reverse().map((h, i) => /* @__PURE__ */ React.createElement("li", { key: i }, /* @__PURE__ */ React.createElement("span", { className: "ps-muted" }, new Date(h.at).toLocaleString(void 0, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })), " ", who(h.by), ": ", h.text))))));
+    ), /* @__PURE__ */ React.createElement("div", { className: "ps-btnrow" }, atReview || atFinal ? /* @__PURE__ */ React.createElement("button", { className: "ps-btn ghost", disabled: !note.trim(), onClick: sendBack }, "Send back to ", backTo ? backTo.name : "them") : /* @__PURE__ */ React.createElement("button", { className: "ps-btn ghost", disabled: !note.trim(), onClick: addNote }, "Add note"), t.done ? /* @__PURE__ */ React.createElement("button", { className: "ps-btn", onClick: reopen }, "Reopen") : status === "todo" ? /* @__PURE__ */ React.createElement("button", { className: "ps-btn", onClick: start }, "Start task") : status === "in_progress" ? canGoToReview ? /* @__PURE__ */ React.createElement("button", { className: "ps-btn", disabled: !allTicked, onClick: sendToReview }, viaQA ? "Go to QA" : "Submit for review") : qaOwnWork ? /* @__PURE__ */ React.createElement("button", { className: "ps-btn", disabled: !allTicked, onClick: passToLead }, "Send to ", signOff.name, " for final check") : /* @__PURE__ */ React.createElement("button", { className: "ps-btn", disabled: !allTicked, onClick: finish }, "Mark done") : status === "review" ? /* @__PURE__ */ React.createElement("button", { className: "ps-btn", disabled: !allTicked, onClick: canFinalCheck ? passToLead : finish }, viaQA ? "Pass QA" : "Approve") : /* @__PURE__ */ React.createElement("button", { className: "ps-btn", disabled: !allTicked, onClick: finish }, "Mark done")), lead && /* @__PURE__ */ React.createElement("button", { className: "ps-btn ghost small ps-del-task", onClick: remove }, "Delete task")) : /* @__PURE__ */ React.createElement("p", { className: "ps-muted", style: { marginTop: 16 } }, "Only ", person ? person.name : "the owner", " or the lead can work on this."), history.length > 0 && /* @__PURE__ */ React.createElement("details", { className: "ps-history" }, /* @__PURE__ */ React.createElement("summary", null, "History (", history.length, ")"), /* @__PURE__ */ React.createElement("ul", null, history.slice().reverse().map((h, i) => /* @__PURE__ */ React.createElement("li", { key: i }, /* @__PURE__ */ React.createElement("span", { className: "ps-muted" }, new Date(h.at).toLocaleString(void 0, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })), " ", who(h.by), ": ", h.text))))));
   }
   function TodoList({ person, tasks, clients, canAdd, canToggle, mutate, openTask, shareFinalCheck = false, notify }) {
     const [shut, setShut] = useState({ done: true });
@@ -2520,14 +2536,22 @@
     const qa = db.people.find((p) => p.role === "qa");
     const set = (patch) => setDraft((x) => ({ ...x, ...patch }));
     const them = selfOnly ? "you" : "them";
+    const target = selfOnly ? me.id : draft.delPerson || "";
+    /* Whoever would sign it off: the person giving it out if they are senior
+       enough, otherwise the Lead. */
+    const boss = (me.role === "lead" || me.role === "coordinator" || me.role === "teamlead") && me.id !== target
+      ? me
+      : db.people.find((p) => p.role === "lead" && p.id !== target);
     const routeHint = !OPEN_KINDS.includes(draft.delKind || "video")
       ? (NO_QA_KINDS.includes(draft.delKind)
         ? `People paperwork \u2014 goes straight to ${them}, no QA review.`
         : `A to-do \u2014 goes straight to ${them}, no QA review.`)
       : !qa
         ? "No one has the QA role yet \u2014 this will skip review and finish directly."
-        : selfOnly && qa.id === me.id
-          ? "You are the QA, so there is nobody above you to review this \u2014 you finish it yourself."
+        : target && qa.id === target
+          ? boss
+            ? `QA can't review their own work, so this comes to ${boss.id === me.id ? "you" : boss.name} for a final check instead.`
+            : "QA can't review their own work, and there is no Lead to check it \u2014 it will be marked done directly."
           : `Goes through QA (${qa.name}) before it's marked done.`;
     return /* @__PURE__ */ React.createElement("section", { className: "ps-delegate" }, /* @__PURE__ */ React.createElement("div", { className: "ps-del-col" }, /* @__PURE__ */ React.createElement("h4", { className: "ps-h4" }, selfOnly ? "Give yourself a task" : "Give someone a task"), /* @__PURE__ */ React.createElement("p", { className: "ps-muted" }, selfOnly ? "It lands in your own queue. Video and graphic design still go to QA when you finish." : "It lands in their queue and under their name in Team overview."), /* @__PURE__ */ React.createElement("div", { className: "ps-del-form" }, (db.templates || []).length > 0 && /* @__PURE__ */ React.createElement("select", { value: draft.delTpl || "", "aria-label": "Start from a template", onChange: (e) => {
       const t = (db.templates || []).find((x) => x.id === e.target.value);

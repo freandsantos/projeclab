@@ -1206,10 +1206,14 @@
         h("textarea", { placeholder: "The detail. Links, rules, anything the editor should follow.", value: body, onChange: (e) => setBody(e.target.value) }),
         h("button", { className: "ps-btn ghost", onClick: add }, "Add to the brief")));
   }
-  function ClientTasks({ db, me, client, openTask }) {
+  function ClientTasks({ db, me, client, openTask, filter }) {
     const h = React.createElement;
-    const rows = (db.tasks || []).filter((t) => t.clientId === client.id && !t.done && canSeeTask(db, me, t)).slice().sort(doneSort);
-    if (!rows.length) return h("p", { className: "ps-empty" }, "No open tasks tagged to this client.");
+    const rows = (db.tasks || [])
+      .filter((t) => t.clientId === client.id && !t.done && canSeeTask(db, me, t) && (!filter || taskStage(t) === filter))
+      .slice().sort(doneSort);
+    if (!rows.length) return h("p", { className: "ps-empty" }, filter
+      ? `No tasks at ${stageOf(filter).name} for this client.`
+      : "No open tasks tagged to this client.");
     return h("div", { className: "ps-table" }, rows.map((t) => {
       const who = db.people.find((x) => x.id === t.personId);
       const meta = taskStatusMeta(t);
@@ -3109,7 +3113,12 @@ ${lines.join("\n")}`);
       const c = db.clients.find((x) => x.id === page.id);
       const rows = visible.filter((v) => v.clientId === page.id);
       const live = rows.filter((v) => v.stage === "ready");
-      body = c ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("h1", { className: "ps-h1" }, c.name), /* @__PURE__ */ React.createElement("div", { className: "ps-meta" }, /* @__PURE__ */ React.createElement("span", { className: `ps-chip ${clientKindOf(c).id === "personal" ? "warn" : "ok"}` }, clientKindOf(c).label)), lead && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Invoices"), /* @__PURE__ */ React.createElement("p", { className: "ps-muted" }, billingOf(c).label, " \xB7 ", billingOf(c).note, unpaidFor(db, c).length > 0 ? ` \u2014 ${unpaidFor(db, c).length} unpaid` : billingOf(c).id === "none" ? "" : " \u2014 all settled", billingOf(c).id !== "none" ? ". Click a line to mark it paid or unpaid." : ""), /* @__PURE__ */ React.createElement(InvoiceList, { db, client: c, canEdit: lead, toggle: (k) => toggleInvoice(c.id, k), addJob: (label) => addJobInvoice(c.id, label), removeJob: (k) => removeJobInvoice(c.id, k), openVideo: setOpenId })), /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Pipeline"), /* @__PURE__ */ React.createElement(FilmStrip, { videos: rows, filter, setFilter }), /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "In production"), /* @__PURE__ */ React.createElement(VideoTable, { rows: rows.filter((v) => !v.archived && v.stage !== "ready" && (!filter || v.stage === filter)), db, me, open: setOpenId, showClient: false }), /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Tasks"), /* @__PURE__ */ React.createElement(ClientTasks, { db, me, client: c, openTask: setTaskId }), /* @__PURE__ */ React.createElement(SentToClient, { db, me, client: c, openTask: setTaskId, openVideo: setOpenId }), /* @__PURE__ */ React.createElement(ClientBrief, { db, client: c, canEdit: lead, mutate, setToast })) : /* @__PURE__ */ React.createElement("p", { className: "ps-empty" }, "That client no longer exists.");
+      /* The strip counts everything running for this client, tasks included -
+         most of the work here is tasks, and a strip of zeroes was just wrong. */
+      const clientTasks = (db.tasks || [])
+        .filter((t) => t.clientId === page.id && !t.done && canSeeTask(db, me, t))
+        .map((t) => ({ ...t, stage: taskStage(t), __task: true }));
+      body = c ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("h1", { className: "ps-h1" }, c.name), /* @__PURE__ */ React.createElement("div", { className: "ps-meta" }, /* @__PURE__ */ React.createElement("span", { className: `ps-chip ${clientKindOf(c).id === "personal" ? "warn" : "ok"}` }, clientKindOf(c).label)), lead && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Invoices"), /* @__PURE__ */ React.createElement("p", { className: "ps-muted" }, billingOf(c).label, " \xB7 ", billingOf(c).note, unpaidFor(db, c).length > 0 ? ` \u2014 ${unpaidFor(db, c).length} unpaid` : billingOf(c).id === "none" ? "" : " \u2014 all settled", billingOf(c).id !== "none" ? ". Click a line to mark it paid or unpaid." : ""), /* @__PURE__ */ React.createElement(InvoiceList, { db, client: c, canEdit: lead, toggle: (k) => toggleInvoice(c.id, k), addJob: (label) => addJobInvoice(c.id, label), removeJob: (k) => removeJobInvoice(c.id, k), openVideo: setOpenId })), /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Pipeline"), /* @__PURE__ */ React.createElement(FilmStrip, { videos: [...rows, ...clientTasks], filter, setFilter }), /* @__PURE__ */ rows.some((v) => !v.archived && v.stage !== "ready") ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "In production"), /* @__PURE__ */ React.createElement(VideoTable, { rows: rows.filter((v) => !v.archived && v.stage !== "ready" && (!filter || v.stage === filter)), db, me, open: setOpenId, showClient: false })) : null, /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, filter ? `Tasks \u00b7 ${stageOf(filter).name}` : "Tasks"), /* @__PURE__ */ React.createElement(ClientTasks, { db, me, client: c, openTask: setTaskId, filter }), /* @__PURE__ */ React.createElement(SentToClient, { db, me, client: c, openTask: setTaskId, openVideo: setOpenId }), /* @__PURE__ */ React.createElement(ClientBrief, { db, client: c, canEdit: lead, mutate, setToast })) : /* @__PURE__ */ React.createElement("p", { className: "ps-empty" }, "That client no longer exists.");
     } else if (page.tab === "timeoff") {
       body = /* @__PURE__ */ React.createElement(TimeOffPage, { db, me, mutate, setToast });
     } else if (page.tab === "calendar") {

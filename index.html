@@ -1322,29 +1322,45 @@
   /* What has happened lately on work this person can see, newest first.
      A step can be taken back only while it is still the last one on that item -
      once someone else moves it on, the undo is gone. */
-  function ActivityHistory({ db, me, mutate, setToast, openTask, openVideo, limit = 25 }) {
+  function ActivityHistory({ db, me, mutate, setToast, openTask, openVideo, days = 7, cap = 400 }) {
     const h = React.createElement;
+    const [q, setQ] = useState("");
+    const who = (id) => id === "system" ? "Projeclab" : (db.people.find((p) => p.id === id) || {}).name || "Someone";
     const mine = (t) => t.personId === me.id || t.reviewFrom === me.id || t.qaAuthorId === me.id || t.by === me.id || t.home === me.id;
+    /* A week back. Long enough to find the thing you half-remember doing on
+       Monday, short enough that the list is still readable. */
+    const since = Date.now() - days * 864e5;
+    const recent = (at) => at && new Date(at).getTime() >= since;
     const rows = [];
     (db.tasks || []).forEach((t) => {
       if (!canSeeTask(db, me, t) && !mine(t)) return;
       const hist = t.history || [];
-      hist.forEach((e, i) => rows.push({
-        kind: "task", id: t.id, title: t.text, at: e.at, by: e.by, text: e.text,
-        canUndo: !!e.undo && i === hist.length - 1 && e.by === me.id, idx: i
-      }));
+      hist.forEach((e, i) => {
+        if (!recent(e.at)) return;
+        rows.push({
+          kind: "task", id: t.id, title: t.text, at: e.at, by: e.by, text: e.text,
+          canUndo: !!e.undo && i === hist.length - 1 && e.by === me.id, idx: i
+        });
+      });
     });
     (db.videos || []).forEach((v) => {
       if (!visibleTo(v, me)) return;
       const hist = v.history || [];
-      hist.forEach((e, i) => rows.push({
-        kind: "video", id: v.id, title: v.title || "Untitled", at: e.at, by: e.by, text: e.text,
-        canUndo: !!e.undo && i === hist.length - 1 && e.by === me.id, idx: i
-      }));
+      hist.forEach((e, i) => {
+        if (!recent(e.at)) return;
+        rows.push({
+          kind: "video", id: v.id, title: v.title || "Untitled", at: e.at, by: e.by, text: e.text,
+          canUndo: !!e.undo && i === hist.length - 1 && e.by === me.id, idx: i
+        });
+      });
     });
     rows.sort((a, b) => String(b.at || "").localeCompare(String(a.at || "")));
-    const shown = rows.slice(0, limit);
-    if (!shown.length) return null;
+    if (!rows.length) return null;
+    const needle = q.trim().toLowerCase();
+    const found = needle
+      ? rows.filter((r) => `${r.title} ${r.text} ${who(r.by)}`.toLowerCase().includes(needle))
+      : rows;
+    const shown = found.slice(0, cap);
     const undo = (r) => mutate((n) => {
       const list = r.kind === "task" ? n.tasks : n.videos;
       const item = list.find((x) => x.id === r.id);
@@ -1360,11 +1376,15 @@
       item.history = [...hist.slice(0, -1), { at: (/* @__PURE__ */ new Date()).toISOString(), by: me.id, text: `Undid: ${last.text}` }];
       setTimeout(() => setToast("Taken back."), 0);
     });
-    const who = (id) => id === "system" ? "Projeclab" : (db.people.find((p) => p.id === id) || {}).name || "Someone";
     const when = (at) => new Date(at).toLocaleString(void 0, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
     return h("details", { className: "ps-fold ps-activity" },
       h("summary", null, "View activity history ", h("span", { className: "ps-count" }, rows.length)),
-      h("p", { className: "ps-muted ps-act-note" }, "Any step here can be undone until someone else takes the next one."),
+      h("p", { className: "ps-muted ps-act-note" }, `Everything from the last ${days} days. Any step can be undone until someone else takes the next one.`),
+      h("input", { className: "ps-act-find", type: "search", value: q, onChange: (e) => setQ(e.target.value),
+        placeholder: "Find a task, a person, or what happened\u2026", "aria-label": "Search the last week" }),
+      needle && h("p", { className: "ps-muted ps-act-note" }, found.length
+        ? `${found.length} of ${rows.length} match \u201C${q.trim()}\u201D.`
+        : `Nothing in the last ${days} days matches \u201C${q.trim()}\u201D.`),
       h("div", { className: "ps-actlist" }, shown.map((r, i) => h("div", { key: r.kind + r.id + r.idx + "-" + i, className: "ps-actrow" },
         h("span", { className: "ps-muted ps-act-at" }, when(r.at)),
         h("span", { className: "ps-act-who" }, who(r.by)),
@@ -2053,6 +2073,11 @@
     const from = t.by ? db.people.find((p) => p.id === t.by) : null;
     const mine = me.id === t.personId;
     const canEdit = lead || mine;
+    /* Anyone who hands out work can move it to someone else, even when the task
+       isn't theirs to do. They still can't work on it - only reassign it. */
+    const canAssign = !t.done && canDelegate(me.role);
+    /* A team leader moves work around the bench, not onto the Lead or HR. */
+    const benchFor = (r) => db.people.filter((p) => p.role !== "client" && (r !== "teamlead" || isEditor(p.role) || p.role === "qa"));
     const steps = t.steps || [];
     const history = t.history || [];
     const details = t.details || "";
@@ -2067,11 +2092,12 @@
     const reviewer = qa || leadPerson;
     const viaQA = !!qa;
     const canGoToReview = status === "in_progress" && reviewer && reviewer.id !== t.personId && !skipsQA(t);
-    /* Who signs work off: whoever handed it over, when they are senior enough to
-       do that, otherwise the Lead. Never the person currently holding it. */
+    /* Only the Lead and the Project Coordinator sign work off. If one of them
+       handed it out it goes back to them, otherwise to the Lead - and either of
+       them can approve it, because a task at final check shows on both plates. */
     const signOff = (() => {
       const giver = t.by ? db.people.find((p) => p.id === t.by) : null;
-      if (giver && giver.id !== t.personId && (giver.role === "lead" || giver.role === "coordinator" || giver.role === "teamlead")) return giver;
+      if (giver && giver.id !== t.personId && isManager(giver.role)) return giver;
       return leadPerson && leadPerson.id !== t.personId ? leadPerson : null;
     })();
     const canFinalCheck = viaQA && !!signOff;
@@ -2341,7 +2367,7 @@
         onChange: (e) => setStepText(e.target.value),
         onKeyDown: (e) => e.key === "Enter" && addStep()
       }
-    ), /* @__PURE__ */ React.createElement("button", { className: "ps-btn ghost small", onClick: addStep }, "Add step"))), /* @__PURE__ */ React.createElement(CommentBox, { t, db, me, comments, comment, setComment, postComment, askQuestion, answerQuestion, askBack, asker, status, mine }), canEdit ? /* @__PURE__ */ React.createElement("div", { className: "ps-actions" }, !t.done && status === "in_progress" && !qa && !skipsQA(t) && /* @__PURE__ */ React.createElement("p", { className: "ps-warn" }, "Nobody has the QA role right now, so finishing this will skip review and mark it done directly. Add someone as QA in Settings first if that's not what you want."), !t.done && status !== "todo" && steps.length > 0 && !allTicked && /* @__PURE__ */ React.createElement("p", { className: "ps-warn" }, "Tick every step before this can ", status === "in_progress" ? canGoToReview ? viaQA ? "go to QA" : "be submitted for review" : qaOwnWork ? "go for final check" : "be finished" : status === "review" ? viaQA ? "pass QA" : "be approved" : "be finished", "."), /* @__PURE__ */ React.createElement(
+    ), /* @__PURE__ */ React.createElement("button", { className: "ps-btn ghost small", onClick: addStep }, "Add step"))), !canEdit && canAssign && /* @__PURE__ */ React.createElement("div", { className: "ps-fields" }, /* @__PURE__ */ React.createElement("label", { className: "ps-field" }, /* @__PURE__ */ React.createElement("span", null, "Reassign this task"), /* @__PURE__ */ React.createElement("select", { value: t.personId, onChange: (e) => handTo(e.target.value) }, benchFor(me.role).map((p) => /* @__PURE__ */ React.createElement("option", { key: p.id, value: p.id }, p.name, isAway(p) ? " (away)" : "")))), /* @__PURE__ */ React.createElement("p", { className: "ps-muted" }, "It keeps its brief, comments and logged time \u2014 only the person changes.")), /* @__PURE__ */ React.createElement(CommentBox, { t, db, me, comments, comment, setComment, postComment, askQuestion, answerQuestion, askBack, asker, status, mine }), canEdit ? /* @__PURE__ */ React.createElement("div", { className: "ps-actions" }, !t.done && status === "in_progress" && !qa && !skipsQA(t) && /* @__PURE__ */ React.createElement("p", { className: "ps-warn" }, "Nobody has the QA role right now, so finishing this will skip review and mark it done directly. Add someone as QA in Settings first if that's not what you want."), !t.done && status !== "todo" && steps.length > 0 && !allTicked && /* @__PURE__ */ React.createElement("p", { className: "ps-warn" }, "Tick every step before this can ", status === "in_progress" ? canGoToReview ? viaQA ? "go to QA" : "be submitted for review" : qaOwnWork ? "go for final check" : "be finished" : status === "review" ? viaQA ? "pass QA" : "be approved" : "be finished", "."), /* @__PURE__ */ React.createElement(
       "textarea",
       {
         value: note,
@@ -2566,9 +2592,9 @@
     const set = (patch) => setDraft((x) => ({ ...x, ...patch }));
     const them = selfOnly ? "you" : "them";
     const target = selfOnly ? me.id : draft.delPerson || "";
-    /* Whoever would sign it off: the person giving it out if they are senior
-       enough, otherwise the Lead. */
-    const boss = (me.role === "lead" || me.role === "coordinator" || me.role === "teamlead") && me.id !== target
+    /* Whoever would sign it off: the Lead or the Project Coordinator, never a
+       team leader. */
+    const boss = isManager(me.role) && me.id !== target
       ? me
       : db.people.find((p) => p.role === "lead" && p.id !== target);
     const routeHint = !OPEN_KINDS.includes(draft.delKind || "video")
@@ -3430,6 +3456,7 @@ ${lines.join("\n")}`);
 .ps-todos{display:flex;flex-direction:column;gap:4px;margin-bottom:14px;max-width:720px}
 .ps-activity{max-width:900px}
 .ps-act-note{font-size:13px;margin:0 0 8px}
+.ps-act-find{width:100%;max-width:360px;box-sizing:border-box;margin:0 0 10px}
 .ps-actlist{display:flex;flex-direction:column}
 .ps-actrow{display:grid;grid-template-columns:132px 92px minmax(0,1.1fr) minmax(0,1.4fr) 86px;align-items:center;gap:12px;padding:7px 4px;border-bottom:1px solid var(--line);font-size:13px}
 .ps-act-at{font-size:12px;white-space:nowrap}

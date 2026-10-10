@@ -3358,6 +3358,7 @@ ${lines.join("\n")}`);
          plus a trimmed Team overview: the work, not the personnel. */
       ...!lead && me.role !== "client" ? [["pipeline", "Pipeline", mineInMotion.length || ""]] : [],
       ...!lead && me.role !== "hr" && me.role !== "client" ? [["overview", "Team overview", ""]] : [],
+      ...me.role !== "client" ? [["studio", "Studio", ""]] : [],
       ...me.role !== "client" && !isLead ? [["timeoff", "Time off", leaveStats(db, me.id).left]] : [],
       ...isLead ? [["settings", "Settings", ""]] : []
     ];
@@ -3380,6 +3381,8 @@ ${lines.join("\n")}`);
       body = c ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("h1", { className: "ps-h1" }, c.name), /* @__PURE__ */ React.createElement("div", { className: "ps-meta" }, /* @__PURE__ */ React.createElement("span", { className: `ps-chip ${clientKindOf(c).id === "personal" ? "warn" : "ok"}` }, clientKindOf(c).label)), lead && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Invoices"), /* @__PURE__ */ React.createElement("p", { className: "ps-muted" }, billingOf(c).label, " \xB7 ", billingOf(c).note, unpaidFor(db, c).length > 0 ? ` \u2014 ${unpaidFor(db, c).length} unpaid` : billingOf(c).id === "none" ? "" : " \u2014 all settled", billingOf(c).id !== "none" ? ". Click a line to mark it paid or unpaid." : ""), /* @__PURE__ */ React.createElement(InvoiceList, { db, client: c, canEdit: lead, toggle: (k) => toggleInvoice(c.id, k), addJob: (label) => addJobInvoice(c.id, label), removeJob: (k) => removeJobInvoice(c.id, k), openVideo: setOpenId })), /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Pipeline"), /* @__PURE__ */ React.createElement(FilmStrip, { videos: [...rows, ...clientTasks], filter, setFilter }), /* @__PURE__ */ rows.some((v) => !v.archived && v.stage !== "ready") ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "In production"), /* @__PURE__ */ React.createElement(VideoTable, { rows: rows.filter((v) => !v.archived && v.stage !== "ready" && (!filter || v.stage === filter)), db, me, open: setOpenId, showClient: false })) : null, /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, filter ? `Tasks \u00b7 ${stageOf(filter).name}` : "Tasks"), /* @__PURE__ */ React.createElement(ClientTasks, { db, me, client: c, openTask: setTaskId, filter }), /* @__PURE__ */ React.createElement(SentToClient, { db, me, client: c, openTask: setTaskId, openVideo: setOpenId }), /* @__PURE__ */ React.createElement(ClientBrief, { db, client: c, canEdit: lead, mutate, setToast })) : /* @__PURE__ */ React.createElement("p", { className: "ps-empty" }, "That client no longer exists.");
     } else if (page.tab === "timeoff") {
       body = /* @__PURE__ */ React.createElement(TimeOffPage, { db, me, mutate, setToast });
+    } else if (page.tab === "studio" && me.role !== "client") {
+      body = /* @__PURE__ */ React.createElement(Studio, { db, me, dark, openTask: setTaskId });
     } else if (page.tab === "calendar") {
       body = /* @__PURE__ */ React.createElement(CalendarPage, { db, me, mutate, setToast, openOn: calDay, onOpened: () => setCalDay(null) });
     } else if (page.tab === "overview") {
@@ -3510,6 +3513,422 @@ ${lines.join("\n")}`);
     } }, toast.action)) : toast));
   }
 
+
+  /* ---- Studio: a little 3D office of the team -------------------------------
+     Everyone gets a desk. The screen and the name tag say what they're doing,
+     straight from the tasks. The 3D library only loads when this tab is opened,
+     so the rest of the app pays nothing for it. */
+  var THREE_SRC = "https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js";
+  var threeLoading = null;
+  var loadThree = () => {
+    if (window.THREE) return Promise.resolve(window.THREE);
+    if (threeLoading) return threeLoading;
+    threeLoading = new Promise((ok, fail) => {
+      const s = document.createElement("script");
+      s.src = THREE_SRC;
+      s.async = true;
+      s.onload = () => window.THREE ? ok(window.THREE) : fail(new Error("no THREE"));
+      s.onerror = () => { threeLoading = null; fail(new Error("load")); };
+      document.head.appendChild(s);
+    });
+    return threeLoading;
+  };
+  var STUDIO_ORDER = ["lead", "coordinator", "hr", "teamlead", "qa", "editor", "intern"];
+  var STUDIO_STATE = {
+    working: { label: "working", color: "#22A06B" },
+    review: { label: "reviewing", color: "#0E7490" },
+    todo: { label: "has work queued", color: "#E0A100" },
+    free: { label: "free", color: "#5B8DEF" },
+    away: { label: "away today", color: "#9AA6B4" }
+  };
+  var studioHash = (s) => { let h = 0; for (const c of String(s)) h = h * 31 + c.charCodeAt(0) | 0; return Math.abs(h); };
+  var SKIN = ["#F2D2B6", "#E3B48F", "#C68E63", "#9E6B45", "#F5DCC6", "#7A4E2F"];
+  var HAIR = ["#2B1D14", "#4A3021", "#1B1B1F", "#7B4A26", "#C9A15B", "#3A2A40"];
+  var studioPeople = (db, me) => {
+    const crew = (db.people || []).filter((p) => p.role !== "client")
+      .slice().sort((a, b) => STUDIO_ORDER.indexOf(a.role) - STUDIO_ORDER.indexOf(b.role) || a.name.localeCompare(b.name));
+    return crew.map((p) => {
+      const open = (db.tasks || []).filter((t) => !t.done && t.personId === p.id);
+      const running = open.find((t) => t.startedAt) || null;
+      const active = running || open.find((t) => taskStatus(t) === "in_progress") || null;
+      const reviewing = open.filter((t) => ["review", "final_check"].includes(taskStatus(t)));
+      const away = isAway(p);
+      const state = away ? "away" : active ? "working" : reviewing.length ? "review" : open.length ? "todo" : "free";
+      const seen = (t) => t && canSeeTask(db, me, t);
+      let line = STUDIO_STATE[state].label;
+      if (state === "working") line = seen(active) ? active.text : "on a task";
+      else if (state === "review") line = `reviewing ${reviewing.length}`;
+      else if (state === "todo") line = `${open.length} queued`;
+      return { p, open, state, line, live: !!running };
+    });
+  };
+  function Studio({ db, me, dark, openTask }) {
+    const h = React.createElement;
+    const rows = useMemo(() => studioPeople(db, me), [db, me]);
+    const [sel, setSel] = useState(null);
+    const [spin, setSpin] = useState(false);
+    const [fail, setFail] = useState("");
+    const [ready, setReady] = useState(false);
+    const mount = useRef(null);
+    const tags = useRef({});
+    const world = useRef(null);
+    const spinRef = useRef(spin);
+    spinRef.current = spin;
+    const selRef = useRef(sel);
+    selRef.current = sel;
+    const layoutKey = rows.map((r) => r.p.id).join(",") + (dark ? ":d" : ":l");
+
+    /* Build the office. Only rebuilt when people join/leave or the theme flips. */
+    useEffect(() => {
+      let dead = false, raf = 0, ro = null;
+      const el = mount.current;
+      if (!el) return;
+      loadThree().then((THREE) => {
+        if (dead) return;
+        let renderer;
+        try {
+          renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, powerPreference: "low-power" });
+        } catch (e) {
+          setFail("Your browser couldn't start the 3D view.");
+          return;
+        }
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+        renderer.shadowMap.enabled = true;
+        renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+        el.appendChild(renderer.domElement);
+        const scene = new THREE.Scene();
+        const C = dark
+          ? { ground: "#24402A", floor: "#3A3F48", wall: "#4A515C", desk: "#8C6A48", trim: "#2B3038", chair: "#1E2229", leaf: "#2F6B3A", trunk: "#5A3D26" }
+          : { ground: "#7FAE57", floor: "#DDD5C4", wall: "#F6F2EA", desk: "#C79A6B", trim: "#B7AFA1", chair: "#3A3F48", leaf: "#4E9A3E", trunk: "#7A5233" };
+        const mats = {};
+        const mat = (c, extra) => {
+          const k = c + JSON.stringify(extra || {});
+          return mats[k] || (mats[k] = new THREE.MeshStandardMaterial({ color: c, roughness: 0.85, metalness: 0, ...extra || {} }));
+        };
+        const geos = [];
+        const box = (w, hh, d, c, x, y, z, parent, extra) => {
+          const g = new THREE.BoxGeometry(w, hh, d);
+          geos.push(g);
+          const m = new THREE.Mesh(g, typeof c === "string" ? mat(c, extra) : c);
+          m.position.set(x, y, z);
+          m.castShadow = true;
+          m.receiveShadow = true;
+          (parent || scene).add(m);
+          return m;
+        };
+
+        /* The real office, traced from the floor plan: 50 plan pixels = 1 unit.
+           face = the way the person looks (towards their desk and the wall). */
+        const PX = 50, OX = 520, OY = 251;
+        const u = (px, py) => [(px - OX) / PX, (py - OY) / PX];
+        const W = 930 / PX, D = 364 / PX;
+        box(70, 0.2, 70, C.ground, 0, -0.2, 0);
+        box(W, 0.3, D, C.floor, 0, 0, 0);
+        const [sx0] = u(798, 0);
+        box((985 - 798) / PX - 0.1, 0.31, D - 0.1, dark ? "#444A55" : "#E6DFCF", (sx0 + W / 2) / 2 + 0.02, 0.005, 0);
+        const wall = (x0, y0, x1, y1, hh, c) => {
+          const [a, b] = u(x0, y0), [cc, d] = u(x1, y1);
+          const w = Math.max(Math.abs(cc - a), 0.2), dd = Math.max(Math.abs(d - b), 0.2);
+          box(w, hh, dd, c || C.wall, (a + cc) / 2, 0.15 + hh / 2, (b + d) / 2);
+          box(w + 0.02, 0.06, dd + 0.02, C.trim, (a + cc) / 2, 0.15 + hh + 0.03, (b + d) / 2);
+        };
+        const WH = 0.9;
+        wall(55, 69, 985, 69, WH);
+        wall(55, 69, 55, 433, WH);
+        wall(985, 69, 985, 433, WH);
+        wall(55, 433, 179, 433, WH);
+        wall(341, 433, 985, 433, WH);
+        wall(798, 69, 798, 143, WH);
+        wall(798, 305, 798, 433, WH);
+        wall(388, 69, 388, 250, 1.5, dark ? "#2A2E36" : "#3A3F48");
+        /* door mats where the doors are */
+        const mat2 = (x0, y0, x1, y1) => { const [a, b] = u(x0, y0), [cc, d] = u(x1, y1); box(Math.abs(cc - a), 0.04, Math.abs(d - b), dark ? "#6B4E2E" : "#9C7A52", (a + cc) / 2, 0.17, (b + d) / 2); };
+        mat2(185, 410, 335, 455);
+        mat2(775, 160, 821, 288);
+        /* a few trees and plants outside, placed the same way every time */
+        const tree = (x, z, s) => {
+          box(0.3 * s, 1 * s, 0.3 * s, C.trunk, x, 0.4 * s, z);
+          const g = new THREE.IcosahedronGeometry(0.9 * s, 0);
+          geos.push(g);
+          const m = new THREE.Mesh(g, mat(C.leaf, { flatShading: true }));
+          m.position.set(x, 1.4 * s, z);
+          m.castShadow = true;
+          scene.add(m);
+        };
+        tree(W / 2 + 2.5, D / 2 + 1.5, 1);
+        tree(-W / 2 - 2, D / 2 + 2.5, 1.3);
+        tree(W / 2 + 3, -D / 2 - 1, 0.9);
+        tree(-W / 2 - 2.5, -D / 2 - 1.5, 1.1);
+        tree(-W / 2 + 1, D / 2 + 3.5, 0.8);
+        const plant = (x, z) => {
+          box(0.45, 0.45, 0.45, "#D9D3C7", x, 0.38, z);
+          const g = new THREE.IcosahedronGeometry(0.42, 0);
+          geos.push(g);
+          const m = new THREE.Mesh(g, mat(C.leaf, { flatShading: true }));
+          m.position.set(x, 0.9, z);
+          m.castShadow = true;
+          scene.add(m);
+        };
+        plant(...u(950, 100));
+        plant(...u(760, 260));
+
+        /* seats from the plan; named seats go to whoever has that first name,
+           anyone not on the plan takes a spare desk, then a hot desk mid-room */
+        const SEATS = [
+          { name: "jessie", r: [122, 75, 236, 133], face: "n" },
+          { name: null, r: [243, 75, 357, 133], face: "n" },
+          { name: "mark", r: [409, 75, 523, 133], face: "n" },
+          { name: "ira", r: [539, 75, 653, 133], face: "n" },
+          { name: "stephen", r: [664, 75, 778, 133], face: "n" },
+          { name: "clint", r: [65, 160, 125, 288], face: "w" },
+          { name: null, r: [65, 296, 125, 424], face: "w" },
+          { name: "jay", r: [351, 360, 456, 420], face: "s" },
+          { name: "claire", r: [466, 360, 571, 420], face: "s" },
+          { name: "raiza", r: [578, 360, 683, 420], face: "s" },
+          { name: "al", r: [691, 360, 796, 420], face: "s" },
+          { name: "jl", r: [834, 315, 948, 374], face: "n" }
+        ];
+        const HOT = [[470, 240], [590, 240], [710, 240], [230, 260], [470, 300], [590, 300]].map(([x, y]) => ({ name: null, r: [x - 50, y - 25, x + 50, y + 25], face: "n", hot: true }));
+        const first = (p) => String(p.name || "").trim().split(/\s+/)[0].toLowerCase();
+        const seatOf = {};
+        const taken = new Set();
+        rows.forEach((r) => {
+          const i = SEATS.findIndex((s, k) => s.name && !taken.has(k) && (s.name === first(r.p) || s.name === String(r.p.name || "").trim().toLowerCase()));
+          if (i >= 0) { taken.add(i); seatOf[r.p.id] = SEATS[i]; }
+        });
+        const spare = [...SEATS.filter((s, k) => !s.name && !taken.has(k)), ...HOT];
+        rows.forEach((r) => { if (!seatOf[r.p.id] && spare.length) seatOf[r.p.id] = spare.shift(); });
+        const used = new Set(Object.values(seatOf));
+        const ROT = { n: 0, s: Math.PI, w: Math.PI / 2, e: -Math.PI / 2 };
+        const STEP = { n: [0, 1], s: [0, -1], w: [1, 0], e: [-1, 0] };
+
+        const desks = {};
+        const pickables = [];
+        const buildSeat = (seat, r) => {
+          const [a, b] = u(seat.r[0], seat.r[1]), [cc, d] = u(seat.r[2], seat.r[3]);
+          const [dx, dz] = STEP[seat.face];
+          const cx = (a + cc) / 2 + dx * 0.9, cz = (b + d) / 2 + dz * 0.9;
+          const g = new THREE.Group();
+          g.position.set(cx, 0.15, cz);
+          g.rotation.y = ROT[seat.face];
+          scene.add(g);
+          /* desk */
+          box(2.1, 0.1, 1, C.desk, 0, 0.75, -0.9, g);
+          box(0.08, 0.7, 0.08, C.trim, -0.95, 0.38, -1.3, g);
+          box(0.08, 0.7, 0.08, C.trim, 0.95, 0.38, -1.3, g);
+          box(0.08, 0.7, 0.08, C.trim, -0.95, 0.38, -0.5, g);
+          box(0.08, 0.7, 0.08, C.trim, 0.95, 0.38, -0.5, g);
+          /* monitor - the screen glows in the person's status colour, dark when empty */
+          box(0.9, 0.55, 0.06, "#1A1D22", 0, 1.18, -1.15, g);
+          box(0.1, 0.25, 0.1, "#1A1D22", 0, 0.9, -1.15, g);
+          const screen = box(0.8, 0.45, 0.02, new THREE.MeshStandardMaterial({ color: "#000", emissive: r ? STUDIO_STATE[r.state].color : "#2A2F38", emissiveIntensity: r ? 0.9 : 0.3 }), 0, 1.18, -1.11, g);
+          screen.castShadow = false;
+          box(0.6, 0.03, 0.22, "#E7E3DA", 0, 0.82, -0.62, g);
+          /* chair */
+          box(0.6, 0.1, 0.6, C.chair, 0, 0.5, 0.05, g);
+          box(0.6, 0.6, 0.1, C.chair, 0, 0.85, 0.35, g);
+          box(0.08, 0.45, 0.08, C.trim, 0, 0.25, 0.05, g);
+          if (!r) { screen.userData.empty = true; return; }
+          /* the person: a plain blocky figure in their role colour */
+          const role = ROLES[r.p.role] || ROLES.editor;
+          const hs = studioHash(r.p.id);
+          const fig = new THREE.Group();
+          fig.position.set(0, 0, 0.05);
+          g.add(fig);
+          box(0.55, 0.62, 0.36, role.color, 0, 0.88, 0, fig);
+          box(0.42, 0.42, 0.42, SKIN[hs % SKIN.length], 0, 1.45, -0.02, fig);
+          box(0.46, 0.14, 0.46, HAIR[(hs >> 3) % HAIR.length], 0, 1.68, 0.0, fig);
+          box(0.46, 0.3, 0.1, HAIR[(hs >> 3) % HAIR.length], 0, 1.5, 0.2, fig);
+          const armL = box(0.14, 0.14, 0.5, role.color, -0.33, 0.95, -0.25, fig);
+          const armR = box(0.14, 0.14, 0.5, role.color, 0.33, 0.95, -0.25, fig);
+          g.traverse((o) => { if (o.isMesh) { o.userData.pid = r.p.id; pickables.push(o); } });
+          desks[r.p.id] = { g, fig, screen, armL, armR, phase: (hs % 100) / 16, anchor: new THREE.Vector3(cx, 2.35, cz) };
+        };
+        rows.forEach((r) => { if (seatOf[r.p.id]) buildSeat(seatOf[r.p.id], r); });
+        SEATS.forEach((s) => { if (!used.has(s)) buildSeat(s, null); });
+
+        scene.add(new THREE.HemisphereLight(dark ? "#9FB4D0" : "#FFFFFF", dark ? "#1B2A1E" : "#8EA66A", dark ? 0.55 : 0.5));
+        const sun = new THREE.DirectionalLight("#FFF4E0", dark ? 0.6 : 0.8);
+        sun.position.set(12, 20, 8);
+        sun.castShadow = true;
+        sun.shadow.mapSize.set(1024, 1024);
+        const span = Math.max(W, D) / 2 + 6;
+        Object.assign(sun.shadow.camera, { left: -span, right: span, top: span, bottom: -span, near: 1, far: 60 });
+        sun.shadow.bias = -0.0008;
+        scene.add(sun);
+
+        const cam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 200);
+        const view = { az: 0.3, el: 0.8, zoom: 1, fit: W * 0.36 + 0.6 };
+        const place = () => {
+          const r2 = 50;
+          cam.position.set(Math.sin(view.az) * Math.cos(view.el) * r2, Math.sin(view.el) * r2, Math.cos(view.az) * Math.cos(view.el) * r2);
+          cam.lookAt(0, 0.6, 0);
+        };
+        const size = () => {
+          const w = el.clientWidth || 600, hh = el.clientHeight || 400;
+          renderer.setSize(w, hh, false);
+          renderer.domElement.style.width = "100%";
+          renderer.domElement.style.height = "100%";
+          const a = w / hh, f = view.fit;
+          Object.assign(cam, a >= 1 ? { left: -f * a, right: f * a, top: f, bottom: -f } : { left: -f, right: f, top: f / a, bottom: -f / a });
+          cam.zoom = view.zoom;
+          cam.updateProjectionMatrix();
+        };
+        size();
+        place();
+        ro = new ResizeObserver(size);
+        ro.observe(el);
+
+        /* drag to turn, wheel / pinch to zoom, click someone to see their work */
+        const cv = renderer.domElement;
+        const ptrs = new Map();
+        let moved = 0, pinch = 0;
+        const down = (e) => { ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY }); moved = 0; cv.setPointerCapture(e.pointerId); };
+        const move = (e) => {
+          const p0 = ptrs.get(e.pointerId);
+          if (!p0) return;
+          const dx = e.clientX - p0.x, dy = e.clientY - p0.y;
+          ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
+          if (ptrs.size === 2) {
+            const [a, b] = [...ptrs.values()];
+            const d = Math.hypot(a.x - b.x, a.y - b.y);
+            if (pinch) { view.zoom = Math.min(3, Math.max(0.6, view.zoom * d / pinch)); size(); }
+            pinch = d;
+            moved += 10;
+            return;
+          }
+          moved += Math.abs(dx) + Math.abs(dy);
+          view.az -= dx * 0.008;
+          view.el = Math.min(1.25, Math.max(0.3, view.el + dy * 0.005));
+          place();
+        };
+        const up = (e) => {
+          ptrs.delete(e.pointerId);
+          if (ptrs.size < 2) pinch = 0;
+          if (moved > 6) return;
+          const rect = cv.getBoundingClientRect();
+          const ray = new THREE.Raycaster();
+          ray.setFromCamera({ x: (e.clientX - rect.left) / rect.width * 2 - 1, y: -((e.clientY - rect.top) / rect.height) * 2 + 1 }, cam);
+          const hit = ray.intersectObjects(pickables, false)[0];
+          setSel(hit ? hit.object.userData.pid : null);
+        };
+        const wheel = (e) => { e.preventDefault(); view.zoom = Math.min(3, Math.max(0.6, view.zoom * (e.deltaY > 0 ? 0.9 : 1.1))); size(); };
+        cv.addEventListener("pointerdown", down);
+        cv.addEventListener("pointermove", move);
+        cv.addEventListener("pointerup", up);
+        cv.addEventListener("pointercancel", up);
+        cv.addEventListener("wheel", wheel, { passive: false });
+        cv.style.touchAction = "none";
+        cv.style.cursor = "grab";
+
+        const calm = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+        const v3 = new THREE.Vector3();
+        let last = 0;
+        const frame = (now) => {
+          raf = requestAnimationFrame(frame);
+          if (now - last < 33) return; // ~30 fps is plenty for a desk scene
+          const dt = Math.min(0.1, (now - (last || now)) / 1000);
+          last = now;
+          if (spinRef.current && !ptrs.size) { view.az += dt * 0.25; place(); }
+          const t = now / 1000;
+          const w = el.clientWidth, hh = el.clientHeight;
+          Object.entries(desks).forEach(([pid, d]) => {
+            const row = world.current && world.current.rows.find((r) => r.p.id === pid);
+            const st = row ? row.state : "free";
+            d.fig.visible = st !== "away";
+            if (!calm && st === "working") {
+              d.armL.position.y = 0.95 + Math.max(0, Math.sin(t * 9 + d.phase)) * 0.04;
+              d.armR.position.y = 0.95 + Math.max(0, Math.sin(t * 9 + d.phase + 1.7)) * 0.04;
+              d.fig.position.y = Math.sin(t * 2 + d.phase) * 0.012;
+            } else if (!calm) {
+              d.fig.rotation.y = Math.sin(t * 0.6 + d.phase) * 0.12;
+            }
+            const tag = tags.current[pid];
+            if (tag) {
+              v3.copy(d.anchor).project(cam);
+              tag.style.transform = `translate(${(v3.x + 1) / 2 * w}px, ${(1 - v3.y) / 2 * hh}px) translate(-50%, -100%)`;
+              tag.style.zIndex = String(1000 - Math.round(v3.z * 500));
+            }
+          });
+          renderer.render(scene, cam);
+        };
+        world.current = { rows, desks, THREE };
+        raf = requestAnimationFrame(frame);
+        setReady(true);
+        world.current.cleanup = () => {
+          cancelAnimationFrame(raf);
+          cv.removeEventListener("pointerdown", down);
+          cv.removeEventListener("pointermove", move);
+          cv.removeEventListener("pointerup", up);
+          cv.removeEventListener("pointercancel", up);
+          cv.removeEventListener("wheel", wheel);
+          geos.forEach((g) => g.dispose());
+          Object.values(mats).forEach((m) => m.dispose());
+          scene.traverse((o) => { if (o.isMesh && o.material && !Object.values(mats).includes(o.material)) o.material.dispose(); });
+          renderer.dispose();
+          cv.remove();
+        };
+      }).catch(() => { if (!dead) setFail("The 3D view couldn't load. Check your connection and open this tab again."); });
+      return () => {
+        dead = true;
+        if (ro) ro.disconnect();
+        if (world.current && world.current.cleanup) world.current.cleanup();
+        world.current = null;
+        setReady(false);
+      };
+    }, [layoutKey]);
+
+    /* Live status changes just recolour screens - no rebuild. */
+    useEffect(() => {
+      const w = world.current;
+      if (!w) return;
+      w.rows = rows;
+      rows.forEach((r) => {
+        const d = w.desks[r.p.id];
+        if (d) d.screen.material.emissive.set(STUDIO_STATE[r.state].color);
+      });
+    }, [rows, ready]);
+
+    const count = (s) => rows.filter((r) => r.state === s).length;
+    const openAll = (db.tasks || []).filter((t) => !t.done);
+    const weekAgo = Date.now() - 7 * DAY;
+    const doneWeek = (db.tasks || []).filter((t) => t.done && t.doneAt && new Date(t.doneAt).getTime() > weekAgo).length;
+    const picked = rows.find((r) => r.p.id === sel) || null;
+    const pickedTasks = picked ? picked.open.filter((t) => canSeeTask(db, me, t)) : [];
+    const hiddenCount = picked ? picked.open.length - pickedTasks.length : 0;
+    const stat = (n, label) => h("span", { className: "ps-st-stat" }, h("b", null, n), h("span", null, label));
+
+    return h(React.Fragment, null,
+      h("div", { className: "ps-ovhead" }, h("span", { className: "ps-ovicon", "aria-hidden": "true" }, "\u{1F3E2}"), h("h1", { className: "ps-h1" }, "Studio")),
+      h("p", { className: "ps-lede" }, "Everyone at their desk, live from the task list. Drag to look around, scroll to zoom, click someone to see their work."),
+      h("div", { className: "ps-st" },
+        h("div", { className: "ps-st-stage" },
+          h("div", { className: "ps-st-canvas", ref: mount }),
+          h("div", { className: "ps-st-tags", "aria-hidden": !ready }, ready && rows.map((r) => h("button", {
+            key: r.p.id,
+            ref: (n) => { if (n) tags.current[r.p.id] = n; else delete tags.current[r.p.id]; },
+            className: `ps-st-tag ${sel === r.p.id ? "on" : ""} ${r.state}`,
+            onClick: () => setSel(sel === r.p.id ? null : r.p.id)
+          }, h("span", { className: "ps-st-name" }, h("i", { style: { background: STUDIO_STATE[r.state].color } }), r.p.name.split(/\s+/)[0]), h("span", { className: "ps-st-line" }, r.line)))),
+          !ready && !fail && h("div", { className: "ps-st-msg" }, "Setting up the studio…"),
+          fail && h("div", { className: "ps-st-msg" }, fail),
+          h("div", { className: "ps-st-tools" },
+            h("button", { className: `ps-st-btn ${spin ? "on" : ""}`, onClick: () => setSpin(!spin) }, spin ? "Stop" : "Walk around")),
+          h("div", { className: "ps-st-stats" }, stat(count("working"), "working"), stat(openAll.length, "open tasks"), stat(openAll.filter((t) => taskStatus(t) === "review").length, "with QA"), stat(doneWeek, "done this week"))),
+        h("aside", { className: "ps-st-side" },
+          picked ? h(React.Fragment, null,
+            h("button", { className: "ps-st-back", onClick: () => setSel(null) }, "← Everyone"),
+            h("div", { className: "ps-st-who" }, h(Avatar, { person: picked.p, size: 40 }), h("div", null, h("b", null, picked.p.name), h("span", { className: "ps-muted" }, (ROLES[picked.p.role] || {}).label, " \xB7 ", STUDIO_STATE[picked.state].label))),
+            pickedTasks.length ? pickedTasks.map((t) => h("button", { key: t.id, className: "ps-st-task", onClick: () => openTask(t.id) },
+              h("span", null, t.text || "Untitled task"),
+              h("span", { className: "ps-muted" }, taskStatusMeta(t).label, t.startedAt ? " \xB7 timer running" : ""))) : h("p", { className: "ps-muted" }, picked.open.length ? "" : "Nothing open right now."),
+            hiddenCount > 0 && h("p", { className: "ps-muted" }, hiddenCount, " private task", hiddenCount === 1 ? "" : "s", " not shown.")
+          ) : h(React.Fragment, null,
+            h("div", { className: "ps-st-head" }, "Team ", h("span", { className: "ps-muted" }, rows.length - count("away"), " in today")),
+            rows.map((r) => h("button", { key: r.p.id, className: "ps-st-person", onClick: () => setSel(r.p.id) },
+              h("i", { style: { background: STUDIO_STATE[r.state].color } }),
+              h("span", { className: "ps-st-pmain" }, h("b", null, r.p.name), h("span", { className: "ps-muted" }, (ROLES[r.p.role] || {}).label, " \xB7 ", STUDIO_STATE[r.state].label))))))));
+  }
   /* MLBB tournament dressing around the logo. The logo itself is untouched;
      this only adds pixel art beside it, and it switches itself off after the
      tournament day (Manila time). Animations are transform/opacity only. */
@@ -3579,6 +3998,40 @@ ${lines.join("\n")}`);
 .t-shine{animation:t-shine 3.2s ease-in-out infinite}
 @keyframes t-shine{0%,55%{transform:translateX(-2px)}85%,100%{transform:translateX(13px)}}
 @media (prefers-reduced-motion:reduce){.t-spark,.t-gem,.t-glint,.t-trophy,.t-shine{animation:none}.t-spark{opacity:.8}}
+/* ---- Studio (3D office) ---- */
+.ps-st{display:grid;grid-template-columns:minmax(0,1fr) 290px;gap:16px;align-items:start}
+.ps-st-stage{position:relative;height:clamp(380px,62vh,620px);border-radius:14px;overflow:hidden;border:1px solid var(--line);background:linear-gradient(180deg,#DCEBC9,#B9D592)}
+.ps-root.dark .ps-st-stage{background:linear-gradient(180deg,#1A2A22,#13201A)}
+.ps-st-canvas{position:absolute;inset:0}
+.ps-st-canvas canvas{display:block}
+.ps-st-tags{position:absolute;inset:0;pointer-events:none;overflow:hidden}
+.ps-root .ps-st-tag{position:absolute;left:0;top:0;pointer-events:auto;display:flex;flex-direction:column;align-items:flex-start;gap:1px;max-width:170px;padding:5px 9px;border-radius:8px;border:1px solid rgba(26,34,48,.12);background:rgba(255,255,255,.94);color:#1A2230;box-shadow:0 2px 8px rgba(0,0,0,.12);cursor:pointer;text-align:left;will-change:transform;font-size:12px;line-height:1.25}
+.ps-root .ps-st-tag:hover,.ps-root .ps-st-tag.on{border-color:var(--accent);box-shadow:0 0 0 2px var(--accent)}
+.ps-st-tag.away{opacity:.7}
+.ps-st-name{display:flex;align-items:center;gap:6px;font-weight:800;text-transform:uppercase;letter-spacing:.06em;font-size:11px}
+.ps-st-name i,.ps-st-person i{width:8px;height:8px;border-radius:50%;flex:0 0 auto;display:inline-block}
+.ps-st-line{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:10.5px;color:#5B6676;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:150px}
+.ps-st-msg{position:absolute;inset:0;display:grid;place-items:center;color:var(--muted);font-size:14px;padding:20px;text-align:center}
+.ps-st-tools{position:absolute;top:12px;right:12px;display:flex;gap:8px}
+.ps-root .ps-st-btn{border:1px solid rgba(26,34,48,.15);background:rgba(255,255,255,.94);color:#1A2230;border-radius:999px;padding:6px 14px;font-size:13px;cursor:pointer}
+.ps-root .ps-st-btn.on{background:var(--accent);color:#fff;border-color:transparent}
+.ps-st-stats{position:absolute;left:12px;bottom:12px;display:flex;gap:6px;flex-wrap:wrap;pointer-events:none}
+.ps-st-stat{display:flex;flex-direction:column;align-items:center;min-width:64px;padding:6px 10px;border-radius:10px;background:rgba(255,255,255,.94);color:#1A2230;border:1px solid rgba(26,34,48,.1)}
+.ps-st-stat b{font-size:18px;line-height:1.1}
+.ps-st-stat span{font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:#5B6676}
+.ps-st-side{border:1px solid var(--line);border-radius:14px;background:var(--card);padding:12px;display:flex;flex-direction:column;gap:6px;max-height:clamp(380px,62vh,620px);overflow:auto}
+.ps-st-head{font-weight:700;padding:2px 4px 6px;display:flex;justify-content:space-between}
+.ps-st-person,.ps-st-task{display:flex;align-items:center;gap:10px;width:100%;text-align:left;background:none;border:1px solid transparent;border-radius:10px;padding:8px;cursor:pointer}
+.ps-st-person:hover,.ps-st-task:hover{background:var(--paper);border-color:var(--line)}
+.ps-st-pmain{display:flex;flex-direction:column;min-width:0}
+.ps-st-pmain .ps-muted{font-size:12px}
+.ps-st-task{flex-direction:column;align-items:flex-start;gap:2px;border-color:var(--line)}
+.ps-st-task .ps-muted{font-size:12px}
+.ps-st-back{align-self:flex-start;background:none;border:0;color:var(--accent);cursor:pointer;padding:2px 4px}
+.ps-st-who{display:flex;gap:10px;align-items:center;padding:4px 4px 8px}
+.ps-st-who div{display:flex;flex-direction:column}
+.ps-st-who .ps-muted{font-size:12px}
+@media (max-width:860px){.ps-st{grid-template-columns:1fr}.ps-st-stage{height:420px}.ps-st-side{max-height:none}.ps-st-stat{min-width:54px;padding:5px 8px}.ps-st-stat b{font-size:15px}}
 .ps-spacer{flex:1}
 .ps-viewas{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:13px}
 .ps-root select,.ps-root input,.ps-root textarea{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:7px 10px}

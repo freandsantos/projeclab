@@ -3533,6 +3533,7 @@ ${lines.join("\n")}`);
     });
     return threeLoading;
   };
+  var STUDIO_SKIP = ["jose", "admin"];
   var STUDIO_ORDER = ["lead", "coordinator", "hr", "teamlead", "qa", "editor", "intern"];
   var STUDIO_STATE = {
     working: { label: "working", color: "#22A06B" },
@@ -3545,7 +3546,8 @@ ${lines.join("\n")}`);
   var SKIN = ["#F2D2B6", "#E3B48F", "#C68E63", "#9E6B45", "#F5DCC6", "#7A4E2F"];
   var HAIR = ["#2B1D14", "#4A3021", "#1B1B1F", "#7B4A26", "#C9A15B", "#3A2A40"];
   var studioPeople = (db, me) => {
-    const crew = (db.people || []).filter((p) => p.role !== "client")
+    /* Not in the office, so not in the Studio. */
+    const crew = (db.people || []).filter((p) => p.role !== "client" && !STUDIO_SKIP.includes(String(p.name || "").trim().split(/\s+/)[0].toLowerCase()))
       .slice().sort((a, b) => STUDIO_ORDER.indexOf(a.role) - STUDIO_ORDER.indexOf(b.role) || a.name.localeCompare(b.name));
     return crew.map((p) => {
       const open = (db.tasks || []).filter((t) => !t.done && t.personId === p.id);
@@ -3569,6 +3571,7 @@ ${lines.join("\n")}`);
     const [spin, setSpin] = useState(false);
     const [fail, setFail] = useState("");
     const [ready, setReady] = useState(false);
+    const [unseated, setUnseated] = useState([]);
     const mount = useRef(null);
     const tags = useRef({});
     const world = useRef(null);
@@ -3681,23 +3684,41 @@ ${lines.join("\n")}`);
           { name: "ira", r: [539, 75, 653, 133], face: "n" },
           { name: "stephen", r: [664, 75, 778, 133], face: "n" },
           { name: "clint", r: [65, 160, 125, 288], face: "w" },
-          { name: null, r: [65, 296, 125, 424], face: "w" },
+          { name: "ady", r: [65, 296, 125, 424], face: "w" },
           { name: "jay", r: [351, 360, 456, 420], face: "s" },
           { name: "claire", r: [466, 360, 571, 420], face: "s" },
           { name: "raiza", r: [578, 360, 683, 420], face: "s" },
           { name: "al", r: [691, 360, 796, 420], face: "s" },
           { name: "jl", r: [834, 315, 948, 374], face: "n" }
         ];
-        const HOT = [[470, 240], [590, 240], [710, 240], [230, 260], [470, 300], [590, 300]].map(([x, y]) => ({ name: null, r: [x - 50, y - 25, x + 50, y + 25], face: "n", hot: true }));
-        const first = (p) => String(p.name || "").trim().split(/\s+/)[0].toLowerCase();
+        /* Names are matched loosely ("Raizza" sits at "Raiza"), and only the two
+           spare desks on the plan are handed out - the middle of the room stays
+           empty, like the real one. Anyone left over is listed but has no desk. */
+        const norm = (x) => String(x || "").toLowerCase().replace(/[^a-z]/g, "");
+        const near = (a, b) => {
+          if (a === b) return true;
+          if (Math.min(a.length, b.length) < 4 || Math.abs(a.length - b.length) > 1) return false;
+          let i = 0, j = 0, miss = 0;
+          while (i < a.length && j < b.length) {
+            if (a[i] === b[j]) { i++; j++; continue; }
+            if (++miss > 1) return false;
+            if (a.length > b.length) i++; else if (b.length > a.length) j++; else { i++; j++; }
+          }
+          return miss + (a.length - i) + (b.length - j) <= 1;
+        };
+        const first = (p) => norm(String(p.name || "").trim().split(/\s+/)[0]);
         const seatOf = {};
         const taken = new Set();
-        rows.forEach((r) => {
-          const i = SEATS.findIndex((s, k) => s.name && !taken.has(k) && (s.name === first(r.p) || s.name === String(r.p.name || "").trim().toLowerCase()));
-          if (i >= 0) { taken.add(i); seatOf[r.p.id] = SEATS[i]; }
+        [(s2, r) => s2.name === first(r.p) || s2.name === norm(r.p.name), (s2, r) => near(s2.name, first(r.p))].forEach((test) => {
+          rows.forEach((r) => {
+            if (seatOf[r.p.id]) return;
+            const i = SEATS.findIndex((s2, k) => s2.name && !taken.has(k) && test(s2, r));
+            if (i >= 0) { taken.add(i); seatOf[r.p.id] = SEATS[i]; }
+          });
         });
-        const spare = [...SEATS.filter((s, k) => !s.name && !taken.has(k)), ...HOT];
-        rows.forEach((r) => { if (!seatOf[r.p.id] && spare.length) seatOf[r.p.id] = spare.shift(); });
+        const spare = SEATS.filter((s2, k) => !s2.name && !taken.has(k));
+        rows.forEach((r) => { if (!seatOf[r.p.id] && !/^admin/.test(first(r.p)) && spare.length) seatOf[r.p.id] = spare.shift(); });
+        setUnseated(rows.filter((r) => !seatOf[r.p.id]).map((r) => r.p.id));
         const used = new Set(Object.values(seatOf));
         const ROT = { n: 0, s: Math.PI, w: Math.PI / 2, e: -Math.PI / 2 };
         const STEP = { n: [0, 1], s: [0, -1], w: [1, 0], e: [-1, 0] };
@@ -3758,7 +3779,7 @@ ${lines.join("\n")}`);
         scene.add(sun);
 
         const cam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 200);
-        const view = { az: 0.3, el: 0.8, zoom: 1, fit: W * 0.36 + 0.6 };
+        const view = { az: 0.3, el: 0.8, zoom: 1, fit: W * 0.42 + 0.6 };
         const place = () => {
           const r2 = 50;
           cam.position.set(Math.sin(view.az) * Math.cos(view.el) * r2, Math.sin(view.el) * r2, Math.cos(view.az) * Math.cos(view.el) * r2);
@@ -3862,7 +3883,7 @@ ${lines.join("\n")}`);
             if (!tg.__w || frameNo % 20 === 0 || tg.__sel !== isSel) { tg.__sel = isSel; tg.dataset.fit = ""; tg.__w = tg.offsetWidth; tg.__h = tg.offsetHeight; }
             const tw = tg.__w, th = tg.__h;
             let spot = null;
-            for (const [ox, oy] of [[0, 0], [0, -1], [-0.6, -0.5], [0.6, -0.5], [-0.6, 0.5], [0.6, 0.5], [0, -2]]) {
+            for (const [ox, oy] of [[0, 0], [0, -1], [0, -2]]) {
               const r = { x: s2.x - tw / 2 + ox * tw, y: s2.y - th + oy * (th + 3), w: tw, h: th };
               if (!hits(r)) { spot = r; break; }
             }
@@ -3929,7 +3950,7 @@ ${lines.join("\n")}`);
       h("div", { className: "ps-st" },
         h("div", { className: "ps-st-stage" },
           h("div", { className: "ps-st-canvas", ref: mount }),
-          h("div", { className: "ps-st-tags", "aria-hidden": !ready }, ready && rows.map((r) => h("button", {
+          h("div", { className: "ps-st-tags", "aria-hidden": !ready }, ready && rows.filter((r) => !unseated.includes(r.p.id)).map((r) => h("button", {
             key: r.p.id,
             ref: (n) => { if (n) tags.current[r.p.id] = n; else delete tags.current[r.p.id]; },
             className: `ps-st-tag ${sel === r.p.id ? "on" : ""} ${r.state}`,
@@ -3953,7 +3974,7 @@ ${lines.join("\n")}`);
             h("div", { className: "ps-st-head" }, "Team ", h("span", { className: "ps-muted" }, rows.length - count("away"), " in today")),
             rows.map((r) => h("button", { key: r.p.id, className: "ps-st-person", onClick: () => setSel(r.p.id) },
               h("i", { style: { background: STUDIO_STATE[r.state].color } }),
-              h("span", { className: "ps-st-pmain" }, h("b", null, r.p.name), h("span", { className: "ps-muted" }, (ROLES[r.p.role] || {}).label, " \xB7 ", STUDIO_STATE[r.state].label))))))));
+              h("span", { className: "ps-st-pmain" }, h("b", null, r.p.name), h("span", { className: "ps-muted" }, (ROLES[r.p.role] || {}).label, " \xB7 ", STUDIO_STATE[r.state].label, unseated.includes(r.p.id) ? " \xB7 no desk on the plan" : ""))))))));
   }
   /* MLBB tournament dressing around the logo. The logo itself is untouched;
      this only adds pixel art beside it, and it switches itself off after the

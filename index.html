@@ -3528,9 +3528,10 @@ ${lines.join("\n")}`);
     const sp = (cls) => tourArt(TOUR_ART.spark, "t-sp " + cls);
     return React.createElement("div", { className: "t-wrap" },
       React.createElement("span", { className: "t-left", "aria-hidden": "true" }, tourArt(TOUR_ART.gem, "t-gem-at"), tourArt(TOUR_ART.sword, "t-sword-at"), sp("s1"), sp("s2")),
-      React.createElement("span", { className: "t-logo" }, logo,
-        React.createElement("span", { className: "t-right", "aria-hidden": "true" }, tourArt(TOUR_ART.trophy, "t-trophy-at"), sp("s3"), sp("s4"), sp("s5"))),
-      React.createElement("span", { className: "t-sub" }, sp("s6 inline"), React.createElement("span", null, "MLBB Tournament \u00b7 Oct 16"), sp("s7 inline")));
+      React.createElement("span", { className: "t-logo" },
+        React.createElement("span", { className: "t-col" }, logo,
+          React.createElement("span", { className: "t-sub" }, sp("s6 inline"), React.createElement("span", null, "MLBB Tournament \u00b7 Oct 16"), sp("s7 inline"))),
+        React.createElement("span", { className: "t-right", "aria-hidden": "true" }, tourArt(TOUR_ART.trophy, "t-trophy-at"), sp("s3"), sp("s4"), sp("s5"))));
   }
   var CSS = `
 @import url('https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,600;12..96,800&family=Silkscreen&display=swap');
@@ -3552,7 +3553,8 @@ ${lines.join("\n")}`);
 .ps-top .ps-logo-sub{font-weight:400;font-size:23px;margin-left:.28em}
 /* ---- MLBB tournament dressing: sits around the logo, never inside it ---- */
 .t-wrap{position:relative;display:inline-grid;padding-left:34px}
-.t-logo{position:relative;display:inline-flex;align-items:center}
+.t-logo{position:relative;display:inline-flex;align-items:flex-start}
+.t-col{display:inline-flex;flex-direction:column;align-items:center}
 .t-left{position:absolute;left:-2px;top:-6px;width:32px;height:36px;pointer-events:none}
 .t-right{position:relative;display:inline-block;width:46px;height:28px;margin-left:8px;pointer-events:none}
 .t-art{position:absolute;display:block;line-height:0}
@@ -3561,7 +3563,7 @@ ${lines.join("\n")}`);
 .t-sword-at{left:8px;top:10px}
 .t-trophy-at{left:0;top:2px}
 .t-sp.s1{left:22px;top:-2px}.t-sp.s2{left:-4px;top:26px}.t-sp.s3{left:26px;top:-4px}.t-sp.s4{left:32px;top:12px}.t-sp.s5{left:22px;top:24px}
-.t-sub{display:flex;align-items:center;gap:7px;margin:4px 0 0 35px;font-family:'Silkscreen',ui-monospace,monospace;font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);line-height:1;white-space:nowrap}
+.t-sub{display:flex;align-items:center;gap:7px;margin:4px 0 0;font-family:'Silkscreen',ui-monospace,monospace;font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);line-height:1;white-space:nowrap}
 .t-sp.inline{position:static;display:inline-block}
 .ps-root:not(.dark) .t-spark rect[fill="#f6c343"]{fill:#E0A100}
 .ps-root:not(.dark) .t-sword rect[fill="#ffffff"]{fill:#9AA6B4}

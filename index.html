@@ -3823,7 +3823,8 @@ ${lines.join("\n")}`);
 
         const calm = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
         const v3 = new THREE.Vector3();
-        let last = 0;
+        let last = 0, frameNo = 0;
+        const spots = [];
         const frame = (now) => {
           raf = requestAnimationFrame(frame);
           if (now - last < 33) return; // ~30 fps is plenty for a desk scene
@@ -3846,10 +3847,34 @@ ${lines.join("\n")}`);
             const tag = tags.current[pid];
             if (tag) {
               v3.copy(d.anchor).project(cam);
-              tag.style.transform = `translate(${(v3.x + 1) / 2 * w}px, ${(1 - v3.y) / 2 * hh}px) translate(-50%, -100%)`;
-              tag.style.zIndex = String(1000 - Math.round(v3.z * 500));
+              spots.push({ tag, pid, st, x: (v3.x + 1) / 2 * w, y: (1 - v3.y) / 2 * hh, z: v3.z });
             }
           });
+          /* Name tags never pile up: the picked person and anyone working get
+             first claim on space, everyone else slides aside or shrinks to a dot. */
+          const rank = (s2) => (s2.pid === selRef.current ? 0 : s2.st === "working" ? 1 : s2.st === "away" ? 3 : 2);
+          spots.sort((a, b) => rank(a) - rank(b) || a.z - b.z);
+          const placed = [];
+          const hits = (r) => placed.some((q) => r.x < q.x + q.w + 3 && q.x < r.x + r.w + 3 && r.y < q.y + q.h + 3 && q.y < r.y + r.h + 3);
+          spots.forEach((s2, i) => {
+            const tg = s2.tag;
+            const isSel = s2.pid === selRef.current;
+            if (!tg.__w || frameNo % 20 === 0 || tg.__sel !== isSel) { tg.__sel = isSel; tg.dataset.fit = ""; tg.__w = tg.offsetWidth; tg.__h = tg.offsetHeight; }
+            const tw = tg.__w, th = tg.__h;
+            let spot = null;
+            for (const [ox, oy] of [[0, 0], [0, -1], [-0.6, -0.5], [0.6, -0.5], [-0.6, 0.5], [0.6, 0.5], [0, -2]]) {
+              const r = { x: s2.x - tw / 2 + ox * tw, y: s2.y - th + oy * (th + 3), w: tw, h: th };
+              if (!hits(r)) { spot = r; break; }
+            }
+            let fit = "";
+            if (!spot) { fit = "dot"; spot = { x: s2.x - 7, y: s2.y - 14, w: 14, h: 14 }; }
+            placed.push(spot);
+            if (tg.dataset.fit !== fit) tg.dataset.fit = fit;
+            tg.style.transform = `translate(${spot.x}px, ${spot.y}px)`;
+            tg.style.zIndex = String(100 - i);
+          });
+          spots.length = 0;
+          frameNo++;
           renderer.render(scene, cam);
         };
         world.current = { rows, desks, THREE };
@@ -3908,8 +3933,9 @@ ${lines.join("\n")}`);
             key: r.p.id,
             ref: (n) => { if (n) tags.current[r.p.id] = n; else delete tags.current[r.p.id]; },
             className: `ps-st-tag ${sel === r.p.id ? "on" : ""} ${r.state}`,
-            onClick: () => setSel(sel === r.p.id ? null : r.p.id)
-          }, h("span", { className: "ps-st-name" }, h("i", { style: { background: STUDIO_STATE[r.state].color } }), r.p.name.split(/\s+/)[0]), h("span", { className: "ps-st-line" }, r.line)))),
+            onClick: () => setSel(sel === r.p.id ? null : r.p.id),
+            title: `${r.p.name} \u2014 ${r.line}`
+          }, h("span", { className: "ps-st-name" }, h("i", { style: { background: STUDIO_STATE[r.state].color } }), h("span", { className: "ps-st-nm" }, r.p.name.split(/\s+/)[0])), sel === r.p.id && h("span", { className: "ps-st-line" }, r.line)))),
           !ready && !fail && h("div", { className: "ps-st-msg" }, "Setting up the studio…"),
           fail && h("div", { className: "ps-st-msg" }, fail),
           h("div", { className: "ps-st-tools" },
@@ -4005,12 +4031,15 @@ ${lines.join("\n")}`);
 .ps-st-canvas{position:absolute;inset:0}
 .ps-st-canvas canvas{display:block}
 .ps-st-tags{position:absolute;inset:0;pointer-events:none;overflow:hidden}
-.ps-root .ps-st-tag{position:absolute;left:0;top:0;pointer-events:auto;display:flex;flex-direction:column;align-items:flex-start;gap:1px;max-width:170px;padding:5px 9px;border-radius:8px;border:1px solid rgba(26,34,48,.12);background:rgba(255,255,255,.94);color:#1A2230;box-shadow:0 2px 8px rgba(0,0,0,.12);cursor:pointer;text-align:left;will-change:transform;font-size:12px;line-height:1.25}
+.ps-root .ps-st-tag{position:absolute;left:0;top:0;pointer-events:auto;display:flex;flex-direction:column;align-items:flex-start;gap:1px;max-width:200px;padding:3px 7px;border-radius:999px;border:1px solid rgba(26,34,48,.12);background:rgba(255,255,255,.94);color:#1A2230;box-shadow:0 2px 8px rgba(0,0,0,.12);cursor:pointer;text-align:left;will-change:transform;font-size:11px;line-height:1.2;transition:transform .12s linear}
 .ps-root .ps-st-tag:hover,.ps-root .ps-st-tag.on{border-color:var(--accent);box-shadow:0 0 0 2px var(--accent)}
 .ps-st-tag.away{opacity:.7}
-.ps-st-name{display:flex;align-items:center;gap:6px;font-weight:800;text-transform:uppercase;letter-spacing:.06em;font-size:11px}
-.ps-st-name i,.ps-st-person i{width:8px;height:8px;border-radius:50%;flex:0 0 auto;display:inline-block}
-.ps-st-line{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:10.5px;color:#5B6676;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:150px}
+.ps-st-name{display:flex;align-items:center;gap:5px;font-weight:700;font-size:11px;white-space:nowrap}
+.ps-root .ps-st-tag.on{border-radius:8px;padding:5px 9px}
+.ps-root .ps-st-tag[data-fit="dot"]{padding:3px;opacity:.85}
+.ps-st-tag[data-fit="dot"] .ps-st-nm,.ps-st-tag[data-fit="dot"] .ps-st-line{display:none}
+.ps-st-name i,.ps-st-person i{width:7px;height:7px;border-radius:50%;flex:0 0 auto;display:inline-block}
+.ps-st-line{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:10.5px;color:#5B6676;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:180px}
 .ps-st-msg{position:absolute;inset:0;display:grid;place-items:center;color:var(--muted);font-size:14px;padding:20px;text-align:center}
 .ps-st-tools{position:absolute;top:12px;right:12px;display:flex;gap:8px}
 .ps-root .ps-st-btn{border:1px solid rgba(26,34,48,.15);background:rgba(255,255,255,.94);color:#1A2230;border-radius:999px;padding:6px 14px;font-size:13px;cursor:pointer}

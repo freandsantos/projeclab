@@ -19,6 +19,26 @@
 (() => {
   // app.jsx
   var { useState, useEffect, useMemo, useRef } = React;
+  /* Task links: <site>#task=<id>. The id is remembered for this tab straight
+     away, so it survives the sign-in page and opens once the app is ready. */
+  var LINK_KEY = "ps-open-task";
+  try {
+    const m = /(?:^#|&)task=([\w-]+)/.exec(window.location.hash || "");
+    if (m) sessionStorage.setItem(LINK_KEY, m[1]);
+  } catch (e) {}
+  var taskLink = (id) => `${window.location.origin}${window.location.pathname}#task=${id}`;
+  var canLink = () => /^https?:$/.test(window.location.protocol);
+  var copyText = async (text) => {
+    try { await navigator.clipboard.writeText(text); return true; } catch (e) {}
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = text; ta.setAttribute("readonly", ""); ta.style.position = "fixed"; ta.style.opacity = "0";
+      document.body.appendChild(ta); ta.select();
+      const ok = document.execCommand("copy");
+      ta.remove();
+      return ok;
+    } catch (e) { return false; }
+  };
   var STAGES = [
     { id: "todo", name: "To do", owner: "editor", days: 2 },
     { id: "in_progress", name: "On hold", owner: "editor", days: 4 },
@@ -719,7 +739,8 @@
   var slackTaskLine = (db, t, by, line) => {
     const who = ((db.people || []).find((p) => p.id === by) || {}).name || "Someone";
     const c = t.clientId ? (db.clients || []).find((x) => x.id === t.clientId) : null;
-    return `*${who}* \u2014 ${line}\n_${t.text || "Untitled task"}_${c ? ` \u00b7 ${c.name}` : ""}`;
+    const link = canLink() && t.id ? ` \u00b7 <${taskLink(t.id)}|Open task>` : "";
+    return `*${who}* \u2014 ${line}\n_${t.text || "Untitled task"}_${c ? ` \u00b7 ${c.name}` : ""}${link}`;
   };
   var overdueLines = (db) => {
     const today = isoDay(/* @__PURE__ */ new Date());
@@ -2484,7 +2505,10 @@
     /* Ctrl+V anywhere in this window attaches the picture to the comment being
        written - the same reflex as dropping a screenshot into a chat. */
     const onPaste = pasteInto((rows) => setShots((x) => [...x, ...rows]), setToast);
-    return /* @__PURE__ */ React.createElement("div", { className: "ps-overlay", onClick: (e) => e.target === e.currentTarget && close() }, /* @__PURE__ */ React.createElement("div", { className: "ps-modal", role: "dialog", "aria-modal": "true", onPaste }, /* @__PURE__ */ React.createElement("button", { className: "ps-x", onClick: close, "aria-label": "Close" }, "\xD7"), /* @__PURE__ */ React.createElement("p", { className: "ps-muted" }, "Task", from ? ` \xB7 from ${from.id === me.id ? "you" : from.name}` : "", t.at ? ` \xB7 ${shortDate(t.at)}` : ""), canShape ? /* @__PURE__ */ React.createElement("input", { className: "ps-title-in", value: t.text, onChange: (e) => updateTask(t.id, { text: e.target.value }) }) : /* @__PURE__ */ React.createElement("h2", { className: "ps-h2" }, t.text), /* @__PURE__ */ React.createElement("div", { className: "ps-meta" }, /* @__PURE__ */ React.createElement("span", { className: "ps-chip" }, (kindOf(t.kind) || { label: "Task" }).label), taskClient && /* @__PURE__ */ React.createElement("span", { className: "ps-chip" }, taskClient.name), person && ((canEdit || canShape || canAssign) && !t.done ? /* @__PURE__ */ React.createElement("label", { className: "ps-who ps-who-chip", title: "Click to give this task to someone else" }, /* @__PURE__ */ React.createElement(Avatar, { person, size: 24 }), person.name, /* @__PURE__ */ React.createElement("span", { className: "ps-who-caret", "aria-hidden": "true" }, "\u25BE"), /* @__PURE__ */ React.createElement("select", { className: "ps-who-select", "aria-label": `Assigned to ${person.name} - choose someone else`, value: t.personId, onChange: (e) => handTo(e.target.value) }, (me.role === "teamlead" && !lead ? benchFor("teamlead") : db.people.filter((p) => p.role !== "client")).map((p) => /* @__PURE__ */ React.createElement("option", { key: p.id, value: p.id }, p.name, isAway(p) ? " (away)" : "")))) : /* @__PURE__ */ React.createElement("span", { className: "ps-who" }, /* @__PURE__ */ React.createElement(Avatar, { person, size: 24 }), person.name)), t.done ? /* @__PURE__ */ React.createElement("span", { className: "ps-chip ok" }, "Done", t.doneAt ? ` ${shortDate(t.doneAt)}` : "") : t.due ? /* @__PURE__ */ React.createElement(TaskDue, { due: t.due }) : /* @__PURE__ */ React.createElement("span", { className: "ps-muted" }, "no date"), !t.done && /* @__PURE__ */ React.createElement("span", { className: "ps-chip", style: taskStatusMeta(t).color ? { background: taskStatusMeta(t).soft, color: taskStatusMeta(t).color } : void 0 }, taskStatusMeta(t).label), running ? /* @__PURE__ */ React.createElement("span", { className: "ps-clock", title: "Working time" }, /* @__PURE__ */ React.createElement("span", { className: "ps-dot", "aria-hidden": "true" }), /* @__PURE__ */ React.createElement(Elapsed, { from: t.startedAt, interval: 1e3, seconds: true })) : bankedMs > 0 ? /* @__PURE__ */ React.createElement("span", { className: "ps-muted" }, hms(bankedMs), " of work") : null, steps.length > 0 && !t.done && /* @__PURE__ */ React.createElement("span", { className: "ps-muted" }, steps.filter((x) => x.done).length, " of ", steps.length, " steps")), (details || canShape) && /* @__PURE__ */ React.createElement("div", { className: "ps-notebox" }, /* @__PURE__ */ React.createElement("b", null, "The brief", canShape && briefDraft === null && /* @__PURE__ */ React.createElement("button", { className: "ps-btn ghost small ps-brief-edit-btn", onClick: () => setBriefDraft(details) }, details ? "Edit" : "Write one")), briefDraft === null ? details ? /* @__PURE__ */ React.createElement("p", null, details) : /* @__PURE__ */ React.createElement("p", { className: "ps-muted" }, "No brief was written when this went out.") : /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("textarea", { className: "ps-brief-in", autoFocus: true, maxLength: DETAIL_MAX, value: briefDraft, onChange: (e) => setBriefDraft(e.target.value.slice(0, DETAIL_MAX)), placeholder: "Anything they need to know: links, references, what done looks like." }), /* @__PURE__ */ React.createElement("div", { className: "ps-btnrow" }, /* @__PURE__ */ React.createElement("span", { className: `ps-counter ${briefDraft.length >= DETAIL_MAX ? "full" : ""}` }, briefDraft.length, " / ", DETAIL_MAX), /* @__PURE__ */ React.createElement("button", { className: "ps-btn ghost small", onClick: () => setBriefDraft(null) }, "Cancel"), /* @__PURE__ */ React.createElement("button", { className: "ps-btn small", onClick: () => {
+    return /* @__PURE__ */ React.createElement("div", { className: "ps-overlay", onClick: (e) => e.target === e.currentTarget && close() }, /* @__PURE__ */ React.createElement("div", { className: "ps-modal", role: "dialog", "aria-modal": "true", onPaste }, /* @__PURE__ */ React.createElement("button", { className: "ps-x", onClick: close, "aria-label": "Close" }, "\xD7"), /* @__PURE__ */ React.createElement("div", { className: "ps-task-top" }, /* @__PURE__ */ React.createElement("p", { className: "ps-muted" }, "Task", from ? ` \xB7 from ${from.id === me.id ? "you" : from.name}` : "", t.at ? ` \xB7 ${shortDate(t.at)}` : ""), /* @__PURE__ */ React.createElement("button", { className: "ps-linkbtn", title: "Copy a link that opens this task", onClick: async () => {
+      const ok = await copyText(taskLink(t.id));
+      setToast(ok ? "Link copied \u2014 paste it in Slack or a chat. It opens this task for anyone who can see it." : "Couldn't copy. Your browser blocked it.");
+    } }, "\u{1F517} Copy link")), canShape ? /* @__PURE__ */ React.createElement("input", { className: "ps-title-in", value: t.text, onChange: (e) => updateTask(t.id, { text: e.target.value }) }) : /* @__PURE__ */ React.createElement("h2", { className: "ps-h2" }, t.text), /* @__PURE__ */ React.createElement("div", { className: "ps-meta" }, /* @__PURE__ */ React.createElement("span", { className: "ps-chip" }, (kindOf(t.kind) || { label: "Task" }).label), taskClient && /* @__PURE__ */ React.createElement("span", { className: "ps-chip" }, taskClient.name), person && ((canEdit || canShape || canAssign) && !t.done ? /* @__PURE__ */ React.createElement("label", { className: "ps-who ps-who-chip", title: "Click to give this task to someone else" }, /* @__PURE__ */ React.createElement(Avatar, { person, size: 24 }), person.name, /* @__PURE__ */ React.createElement("span", { className: "ps-who-caret", "aria-hidden": "true" }, "\u25BE"), /* @__PURE__ */ React.createElement("select", { className: "ps-who-select", "aria-label": `Assigned to ${person.name} - choose someone else`, value: t.personId, onChange: (e) => handTo(e.target.value) }, (me.role === "teamlead" && !lead ? benchFor("teamlead") : db.people.filter((p) => p.role !== "client")).map((p) => /* @__PURE__ */ React.createElement("option", { key: p.id, value: p.id }, p.name, isAway(p) ? " (away)" : "")))) : /* @__PURE__ */ React.createElement("span", { className: "ps-who" }, /* @__PURE__ */ React.createElement(Avatar, { person, size: 24 }), person.name)), t.done ? /* @__PURE__ */ React.createElement("span", { className: "ps-chip ok" }, "Done", t.doneAt ? ` ${shortDate(t.doneAt)}` : "") : t.due ? /* @__PURE__ */ React.createElement(TaskDue, { due: t.due }) : /* @__PURE__ */ React.createElement("span", { className: "ps-muted" }, "no date"), !t.done && /* @__PURE__ */ React.createElement("span", { className: "ps-chip", style: taskStatusMeta(t).color ? { background: taskStatusMeta(t).soft, color: taskStatusMeta(t).color } : void 0 }, taskStatusMeta(t).label), running ? /* @__PURE__ */ React.createElement("span", { className: "ps-clock", title: "Working time" }, /* @__PURE__ */ React.createElement("span", { className: "ps-dot", "aria-hidden": "true" }), /* @__PURE__ */ React.createElement(Elapsed, { from: t.startedAt, interval: 1e3, seconds: true })) : bankedMs > 0 ? /* @__PURE__ */ React.createElement("span", { className: "ps-muted" }, hms(bankedMs), " of work") : null, steps.length > 0 && !t.done && /* @__PURE__ */ React.createElement("span", { className: "ps-muted" }, steps.filter((x) => x.done).length, " of ", steps.length, " steps")), (details || canShape) && /* @__PURE__ */ React.createElement("div", { className: "ps-notebox" }, /* @__PURE__ */ React.createElement("b", null, "The brief", canShape && briefDraft === null && /* @__PURE__ */ React.createElement("button", { className: "ps-btn ghost small ps-brief-edit-btn", onClick: () => setBriefDraft(details) }, details ? "Edit" : "Write one")), briefDraft === null ? details ? /* @__PURE__ */ React.createElement("p", null, details) : /* @__PURE__ */ React.createElement("p", { className: "ps-muted" }, "No brief was written when this went out.") : /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("textarea", { className: "ps-brief-in", autoFocus: true, maxLength: DETAIL_MAX, value: briefDraft, onChange: (e) => setBriefDraft(e.target.value.slice(0, DETAIL_MAX)), placeholder: "Anything they need to know: links, references, what done looks like." }), /* @__PURE__ */ React.createElement("div", { className: "ps-btnrow" }, /* @__PURE__ */ React.createElement("span", { className: `ps-counter ${briefDraft.length >= DETAIL_MAX ? "full" : ""}` }, briefDraft.length, " / ", DETAIL_MAX), /* @__PURE__ */ React.createElement("button", { className: "ps-btn ghost small", onClick: () => setBriefDraft(null) }, "Cancel"), /* @__PURE__ */ React.createElement("button", { className: "ps-btn small", onClick: () => {
       const next = briefDraft.trim().slice(0, DETAIL_MAX);
       if (next !== details) updateTask(t.id, { details: next, ...log(details ? "Rewrote the brief" : "Wrote the brief") });
       setBriefDraft(null);
@@ -3055,6 +3079,25 @@ ${lines.join("\n")}`);
       slackOnce(db, `n${t.id}:${line}:${Math.floor(Date.now() / 1e3)}`, "activity", slackTaskLine(db, t, me.id, line));
     };
     const visible = useMemo(() => db && me ? db.videos.filter((v) => visibleTo(v, me)) : [], [db, me]);
+    /* Opening a shared task link. Waits for the data and the signed-in person. */
+    useEffect(() => {
+      if (!db || !me) return;
+      const open = () => {
+        let id = null;
+        const m = /(?:^#|&)task=([\w-]+)/.exec(window.location.hash || "");
+        if (m) id = m[1];
+        try { id = id || sessionStorage.getItem(LINK_KEY); sessionStorage.removeItem(LINK_KEY); } catch (e) {}
+        if (!id) return;
+        try { history.replaceState(null, "", window.location.pathname + window.location.search); } catch (e) {}
+        const t = (db.tasks || []).find((x) => x.id === id);
+        if (!t) return setToast("That task link doesn't match a task any more \u2014 it may have been deleted.");
+        if (!canSeeTask(db, me, t)) return setToast("That task is private, so it won't open for you.");
+        setTaskId(id);
+      };
+      open();
+      window.addEventListener("hashchange", open);
+      return () => window.removeEventListener("hashchange", open);
+    }, [!!db, me && me.id]);
     if (loadError) return /* @__PURE__ */ React.createElement("div", { className: "ps-root" }, /* @__PURE__ */ React.createElement("style", null, CSS), /* @__PURE__ */ React.createElement("div", { className: "ps-loading" }, /* @__PURE__ */ React.createElement("p", null, /* @__PURE__ */ React.createElement("b", null, "Couldn't load your team's data.")), /* @__PURE__ */ React.createElement("p", null, "Nothing was changed. Check your internet connection, then try again."), /* @__PURE__ */ React.createElement("button", { className: "ps-btn", onClick: () => window.location.reload() }, "Try again")));
     if (!db || !me) return /* @__PURE__ */ React.createElement("div", { className: "ps-root" }, /* @__PURE__ */ React.createElement("style", null, CSS), /* @__PURE__ */ React.createElement("p", { className: "ps-loading" }, "Loading your pipeline\u2026"));
     const lead = isManager(me.role);
@@ -4082,6 +4125,10 @@ ${lines.join("\n")}`);
 .ps-st-who div{display:flex;flex-direction:column}
 .ps-st-who .ps-muted{font-size:12px}
 @media (max-width:860px){.ps-st{grid-template-columns:1fr}.ps-st-stage{height:420px}.ps-st-side{max-height:none}.ps-st-stat{min-width:54px;padding:5px 8px}.ps-st-stat b{font-size:15px}}
+.ps-task-top{display:flex;align-items:center;justify-content:space-between;gap:10px;padding-right:34px}
+.ps-task-top .ps-muted{margin:0}
+.ps-root .ps-linkbtn{background:none;border:1px solid var(--line);border-radius:999px;padding:3px 10px;font-size:12px;cursor:pointer;color:var(--muted);white-space:nowrap}
+.ps-root .ps-linkbtn:hover{color:var(--accent);border-color:var(--accent)}
 .ps-spacer{flex:1}
 .ps-viewas{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:13px}
 .ps-root select,.ps-root input,.ps-root textarea{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:7px 10px}

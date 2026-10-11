@@ -95,6 +95,7 @@
   var TASK_KINDS = [
     { id: "video", label: "Video" },
     { id: "design", label: "Graphic design" },
+    { id: "report", label: "Report" },
     { id: "onboarding", label: "Onboarding" },
     { id: "hrdoc", label: "HR document" },
     { id: "other", label: "Other" }
@@ -2211,7 +2212,7 @@
     const taskClient = t.clientId ? db.clients.find((c) => c.id === t.clientId) : null;
     const from = t.by ? db.people.find((p) => p.id === t.by) : null;
     const mine = me.id === t.personId;
-    const canEdit = lead || mine;
+    const canEdit = (lead || mine) && !(t.kind === "report" && taskStatus(t) === "final_check" && !mine && me.role !== "lead");
     /* Whoever set the work can still change what it asks for after handing it
        over - a brief with the wrong link in it is worse than no brief. They
        still can't do the work: the action buttons stay with canEdit. */
@@ -2257,6 +2258,8 @@
        handed it out it goes back to them, otherwise to the Lead - and either of
        them can approve it, because a task at final check shows on both plates. */
     const signOff = (() => {
+      /* Reports skip QA and only the Lead signs them off. */
+      if (t.kind === "report") return leadPerson && leadPerson.id !== t.personId ? leadPerson : null;
       const giver = t.by ? db.people.find((p) => p.id === t.by) : null;
       if (giver && giver.id !== t.personId && isManager(giver.role)) return giver;
       return leadPerson && leadPerson.id !== t.personId ? leadPerson : null;
@@ -2265,6 +2268,7 @@
     /* QA cannot review their own work, so their reviewed work goes up for a
        final check instead of being marked done on the spot. */
     const qaOwnWork = status === "in_progress" && !skipsQA(t) && !!qa && qa.id === t.personId && !!signOff;
+    const reportUp = status === "in_progress" && t.kind === "report" && !!signOff;
     const workMs = t.workMs || 0;
     const running = !!t.startedAt && !t.done;
     const runMs = running ? Date.now() - new Date(t.startedAt).getTime() : 0;
@@ -2328,8 +2332,8 @@
         workMs: bankedMs,
         ...session(),
         ...t.reviewFrom ? {} : { reviewFrom: t.personId },
-        qaPassedAt: (/* @__PURE__ */ new Date()).toISOString(),
-        ...log(qaOwnWork
+        ...t.kind === "report" ? {} : { qaPassedAt: (/* @__PURE__ */ new Date()).toISOString() },
+        ...log(qaOwnWork || reportUp
           ? `Sent to ${signOff.name} for final check`
           : `QA passed \xB7 sent to ${signOff.name} for final check`)
       });
@@ -2554,7 +2558,7 @@
         onChange: (e) => setNote(e.target.value),
         placeholder: atReview || atFinal ? "Notes for them (required to send back)" : mine ? "A note back to the lead" : "A note for them"
       }
-    ), /* @__PURE__ */ React.createElement("div", { className: "ps-btnrow" }, atReview || atFinal ? /* @__PURE__ */ React.createElement("button", { className: "ps-btn ghost", disabled: !note.trim(), onClick: sendBack }, "Send back to ", backTo ? backTo.name : "them") : /* @__PURE__ */ React.createElement("button", { className: "ps-btn ghost", disabled: !note.trim(), onClick: addNote }, "Add note"), t.done ? /* @__PURE__ */ React.createElement("button", { className: "ps-btn", onClick: reopen }, "Reopen") : status === "todo" ? /* @__PURE__ */ React.createElement("button", { className: "ps-btn", onClick: start }, "Start task") : status === "in_progress" ? canGoToReview ? /* @__PURE__ */ React.createElement("button", { className: "ps-btn", disabled: !allTicked, onClick: sendToReview }, viaQA ? "Go to QA" : "Submit for review") : qaOwnWork ? /* @__PURE__ */ React.createElement("button", { className: "ps-btn", disabled: !allTicked, onClick: passToLead }, "Send to ", signOff.name, " for final check") : /* @__PURE__ */ React.createElement("button", { className: "ps-btn", disabled: !allTicked, onClick: finish }, "Mark done") : status === "review" ? /* @__PURE__ */ React.createElement("button", { className: "ps-btn", disabled: !allTicked, onClick: canFinalCheck ? passToLead : finish }, viaQA ? "Pass QA" : "Approve") : /* @__PURE__ */ React.createElement("button", { className: "ps-btn", disabled: !allTicked, onClick: finish }, "Mark done")), lead && /* @__PURE__ */ React.createElement("button", { className: "ps-btn ghost small ps-del-task", onClick: remove }, "Delete task")) : /* @__PURE__ */ React.createElement("p", { className: "ps-muted", style: { marginTop: 16 } }, "Only ", person ? person.name : "the owner", " or the lead can work on this."), history.length > 0 && /* @__PURE__ */ React.createElement("details", { className: "ps-history" }, /* @__PURE__ */ React.createElement("summary", null, "History (", history.length, ")"), /* @__PURE__ */ React.createElement("ul", null, history.slice().reverse().map((h, i) => /* @__PURE__ */ React.createElement("li", { key: i }, /* @__PURE__ */ React.createElement("span", { className: "ps-muted" }, new Date(h.at).toLocaleString(void 0, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })), " ", who(h.by), ": ", h.text))))));
+    ), /* @__PURE__ */ React.createElement("div", { className: "ps-btnrow" }, atReview || atFinal ? /* @__PURE__ */ React.createElement("button", { className: "ps-btn ghost", disabled: !note.trim(), onClick: sendBack }, "Send back to ", backTo ? backTo.name : "them") : /* @__PURE__ */ React.createElement("button", { className: "ps-btn ghost", disabled: !note.trim(), onClick: addNote }, "Add note"), t.done ? /* @__PURE__ */ React.createElement("button", { className: "ps-btn", onClick: reopen }, "Reopen") : status === "todo" ? /* @__PURE__ */ React.createElement("button", { className: "ps-btn", onClick: start }, "Start task") : status === "in_progress" ? canGoToReview ? /* @__PURE__ */ React.createElement("button", { className: "ps-btn", disabled: !allTicked, onClick: sendToReview }, viaQA ? "Go to QA" : "Submit for review") : qaOwnWork || reportUp ? /* @__PURE__ */ React.createElement("button", { className: "ps-btn", disabled: !allTicked, onClick: passToLead }, "Send to ", signOff.name, " for final check") : /* @__PURE__ */ React.createElement("button", { className: "ps-btn", disabled: !allTicked, onClick: finish }, "Mark done") : status === "review" ? /* @__PURE__ */ React.createElement("button", { className: "ps-btn", disabled: !allTicked, onClick: canFinalCheck ? passToLead : finish }, viaQA ? "Pass QA" : "Approve") : /* @__PURE__ */ React.createElement("button", { className: "ps-btn", disabled: !allTicked, onClick: finish }, "Mark done")), lead && /* @__PURE__ */ React.createElement("button", { className: "ps-btn ghost small ps-del-task", onClick: remove }, "Delete task")) : /* @__PURE__ */ React.createElement("p", { className: "ps-muted", style: { marginTop: 16 } }, "Only ", person ? person.name : "the owner", " or the lead can work on this."), history.length > 0 && /* @__PURE__ */ React.createElement("details", { className: "ps-history" }, /* @__PURE__ */ React.createElement("summary", null, "History (", history.length, ")"), /* @__PURE__ */ React.createElement("ul", null, history.slice().reverse().map((h, i) => /* @__PURE__ */ React.createElement("li", { key: i }, /* @__PURE__ */ React.createElement("span", { className: "ps-muted" }, new Date(h.at).toLocaleString(void 0, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })), " ", who(h.by), ": ", h.text))))));
   }
   function TodoList({ person, tasks, clients, canAdd, canToggle, mutate, openTask, shareFinalCheck = false, notify, confirm }) {
     const [shut, setShut] = useState({ done: true });
@@ -2594,7 +2598,7 @@
       });
       setRemoved(null);
     };
-    const list = tasks.filter((t) => t.personId === person.id || shareFinalCheck && !t.done && taskStatus(t) === "final_check").sort((a, b) => {
+    const list = tasks.filter((t) => t.personId === person.id || shareFinalCheck && !t.done && taskStatus(t) === "final_check" && (t.kind !== "report" || person.role === "lead")).sort((a, b) => {
       if (a.done !== b.done) return a.done ? 1 : -1;
       const x = a.due || "9999", y = b.due || "9999";
       return x < y ? -1 : x > y ? 1 : 0;
@@ -2610,9 +2614,9 @@
       {
         type: "checkbox",
         checked: t.done,
-        disabled: !canToggle || (t.steps || []).length > 0,
+        disabled: !canToggle || (t.steps || []).length > 0 || t.kind === "report" && !t.done && person.role !== "lead",
         onChange: () => setDone(t.id, !t.done),
-        title: (t.steps || []).length > 0 ? "Open the task to work through its steps" : void 0,
+        title: (t.steps || []).length > 0 ? "Open the task to work through its steps" : t.kind === "report" && !t.done && person.role !== "lead" ? "Open the report to send it for the final check" : void 0,
         "aria-label": t.done ? `Reopen ${t.text}` : `Mark ${t.text} done`
       }
     ), /* @__PURE__ */ React.createElement("button", { className: "ps-todo-open", onClick: () => openTask && openTask(t.id) }, /* @__PURE__ */ React.createElement("span", { className: "ps-todo-text" }, t.clientId && /* @__PURE__ */ React.createElement("span", { className: "ps-client-tag" }, (clients.find((c) => c.id === t.clientId) || {}).name || "\u2014"), t.kind && /* @__PURE__ */ React.createElement("span", { className: "ps-kind" }, (kindOf(t.kind) || {}).label), t.text), t.details && /* @__PURE__ */ React.createElement("span", { className: "ps-item-note" }, t.details)), !t.done && /* @__PURE__ */ React.createElement("span", { className: "ps-chip", style: taskStatusMeta(t).color ? { background: taskStatusMeta(t).soft, color: taskStatusMeta(t).color } : void 0 }, taskStatusMeta(t).label), t.startedAt && !t.done && /* @__PURE__ */ React.createElement("span", { className: "ps-clock", title: "Working time" }, /* @__PURE__ */ React.createElement("span", { className: "ps-dot", "aria-hidden": "true" }), /* @__PURE__ */ React.createElement(Elapsed, { from: t.startedAt })), t.due && !t.done && /* @__PURE__ */ React.createElement(TaskDue, { due: t.due }), t.done && canToggle && (t.steps || []).length === 0 && /* @__PURE__ */ React.createElement("button", { className: "ps-undo", onClick: () => setDone(t.id, false) }, "Undo"), canAdd && /* @__PURE__ */ React.createElement("button", { className: "ps-x-small", "aria-label": "Delete task", onClick: () => remove(t) }, "\xD7"));
@@ -2777,7 +2781,12 @@
     const boss = isManager(me.role) && me.id !== target
       ? me
       : db.people.find((p) => p.role === "lead" && p.id !== target);
-    const routeHint = !OPEN_KINDS.includes(draft.delKind || "video")
+    const theLead = db.people.find((p) => p.role === "lead");
+    const routeHint = draft.delKind === "report"
+      ? theLead && theLead.id !== target
+        ? `A report \u2014 skips QA and goes to ${theLead.id === me.id ? "you" : theLead.name} for the final check.`
+        : "A report \u2014 skips QA and is marked done directly."
+      : !OPEN_KINDS.includes(draft.delKind || "video")
       ? (NO_QA_KINDS.includes(draft.delKind)
         ? `People paperwork \u2014 goes straight to ${them}, no QA review.`
         : `A to-do \u2014 goes straight to ${them}, no QA review.`)
@@ -3462,7 +3471,7 @@ ${lines.join("\n")}`);
     } else {
       const client = me.role === "client" ? db.clients.find((c) => c.id === me.clientId) : null;
       const waiting = client ? active.filter((v) => !isMine(v, me)) : [];
-      const openTaskCount = db.tasks.filter((t) => !t.done && (t.personId === me.id || lead && taskStatus(t) === "final_check")).length;
+      const openTaskCount = db.tasks.filter((t) => !t.done && (t.personId === me.id || lead && taskStatus(t) === "final_check" && (t.kind !== "report" || me.role === "lead"))).length;
       const approvalCount = canApproveTimeoff(db, me) ? pendingTimeoff(db).filter((r) => {
         if (r.personId === me.id) return false;
         const a = approverFor(db, r.personId);

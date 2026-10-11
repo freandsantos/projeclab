@@ -3088,6 +3088,25 @@ ${lines.join("\n")}`);
       slackOnce(db, `n${t.id}:${line}:${Math.floor(Date.now() / 1e3)}`, "activity", slackTaskLine(db, t, me.id, line));
     };
     const visible = useMemo(() => db && me ? db.videos.filter((v) => visibleTo(v, me)) : [], [db, me]);
+    /* Who's online right now, and when everyone else was last around. Only a
+       real sign-in counts - "viewing as" someone never marks them online. */
+    const [online, setOnline] = useState([]);
+    const [seen, setSeen] = useState({});
+    useEffect(() => {
+      const P = typeof window !== "undefined" && window.psPresence;
+      if (!P || !authLock) return;
+      let prev = [];
+      const stop = P.join(authLock, (ids) => {
+        const gone = prev.filter((id) => !ids.includes(id));
+        if (gone.length) setSeen((m) => { const n = { ...m }; gone.forEach((id) => { n[id] = new Date().toISOString(); }); return n; });
+        prev = ids;
+        setOnline(ids);
+      });
+      const pull = () => P.lastSeen().then((m) => { if (m) setSeen((cur) => { const n = { ...cur }; Object.entries(m).forEach(([id, at]) => { if (!n[id] || n[id] < at) n[id] = at; }); return n; }); }).catch(() => {});
+      pull();
+      const t = setInterval(pull, 2 * 60 * 1000);
+      return () => { stop(); clearInterval(t); };
+    }, [authLock]);
     /* Opening a shared task link. Waits for the data and the signed-in person. */
     useEffect(() => {
       if (!db || !me) return;
@@ -3434,7 +3453,7 @@ ${lines.join("\n")}`);
     } else if (page.tab === "timeoff") {
       body = /* @__PURE__ */ React.createElement(TimeOffPage, { db, me, mutate, setToast });
     } else if (page.tab === "studio" && me.role !== "client") {
-      body = /* @__PURE__ */ React.createElement(Studio, { db, me, dark, openTask: setTaskId });
+      body = /* @__PURE__ */ React.createElement(Studio, { db, me, dark, openTask: setTaskId, online, seen, live: !!(typeof window !== "undefined" && window.psPresence && authLock) });
     } else if (page.tab === "calendar") {
       body = /* @__PURE__ */ React.createElement(CalendarPage, { db, me, mutate, setToast, openOn: calDay, onOpened: () => setCalDay(null) });
     } else if (page.tab === "overview") {
@@ -3616,7 +3635,17 @@ ${lines.join("\n")}`);
       return { p, open, state, line, live: !!running };
     });
   };
-  function Studio({ db, me, dark, openTask }) {
+  var activeLabel = (isOn, at) => {
+    if (isOn) return "Active now";
+    if (!at) return "Offline";
+    const m = Math.max(1, Math.round((Date.now() - new Date(at).getTime()) / 6e4));
+    if (m < 60) return `Active ${m}m ago`;
+    const h = Math.round(m / 60);
+    if (h < 24) return `Active ${h}h ago`;
+    const d = Math.round(h / 24);
+    return d < 7 ? `Active ${d}d ago` : "Offline";
+  };
+  function Studio({ db, me, dark, openTask, online = [], seen = {}, live = false }) {
     const h = React.createElement;
     const rows = useMemo(() => studioPeople(db, me), [db, me]);
     const [sel, setSel] = useState(null);
@@ -4017,16 +4046,21 @@ ${lines.join("\n")}`);
         h("aside", { className: "ps-st-side" },
           picked ? h(React.Fragment, null,
             h("button", { className: "ps-st-back", onClick: () => setSel(null) }, "← Everyone"),
-            h("div", { className: "ps-st-who" }, h(Avatar, { person: picked.p, size: 40 }), h("div", null, h("b", null, picked.p.name), h("span", { className: "ps-muted" }, (ROLES[picked.p.role] || {}).label, " \xB7 ", STUDIO_STATE[picked.state].label))),
+            h("div", { className: "ps-st-who" }, h(Avatar, { person: picked.p, size: 40 }), h("div", null, h("b", null, picked.p.name), h("span", { className: "ps-muted" }, (ROLES[picked.p.role] || {}).label, " \xB7 ", STUDIO_STATE[picked.state].label), live && h("span", { className: `ps-st-when ${online.includes(picked.p.id) ? "on" : ""}` }, activeLabel(online.includes(picked.p.id), seen[picked.p.id])))),
             pickedTasks.length ? pickedTasks.map((t) => h("button", { key: t.id, className: "ps-st-task", onClick: () => openTask(t.id) },
               h("span", null, t.text || "Untitled task"),
               h("span", { className: "ps-muted" }, taskStatusMeta(t).label, t.startedAt ? " \xB7 timer running" : ""))) : h("p", { className: "ps-muted" }, picked.open.length ? "" : "Nothing open right now."),
             hiddenCount > 0 && h("p", { className: "ps-muted" }, hiddenCount, " private task", hiddenCount === 1 ? "" : "s", " not shown.")
           ) : h(React.Fragment, null,
-            h("div", { className: "ps-st-head" }, "Team ", h("span", { className: "ps-muted" }, rows.length - count("away"), " in today")),
-            rows.map((r) => h("button", { key: r.p.id, className: "ps-st-person", onClick: () => setSel(r.p.id) },
-              h("i", { style: { background: STUDIO_STATE[r.state].color } }),
-              h("span", { className: "ps-st-pmain" }, h("b", null, r.p.name), h("span", { className: "ps-muted" }, (ROLES[r.p.role] || {}).label, " \xB7 ", STUDIO_STATE[r.state].label, unseated.includes(r.p.id) ? " \xB7 no desk on the plan" : ""))))))));
+            h("div", { className: "ps-st-head" }, "Team ", h("span", { className: "ps-muted" }, live ? `${rows.filter((r) => online.includes(r.p.id)).length} online` : `${rows.length - count("away")} in today`)),
+            rows.slice().sort((a, b) => live ? (online.includes(b.p.id) - online.includes(a.p.id)) || String(seen[b.p.id] || "").localeCompare(String(seen[a.p.id] || "")) : 0).map((r) => {
+              const on = online.includes(r.p.id);
+              return h("button", { key: r.p.id, className: "ps-st-person", onClick: () => setSel(r.p.id) },
+                h("span", { className: "ps-st-av" }, h(Avatar, { person: r.p, size: 34 }), live && h("i", { className: `ps-st-live ${on ? "on" : ""}`, title: activeLabel(on, seen[r.p.id]) })),
+                h("span", { className: "ps-st-pmain" }, h("b", null, r.p.name),
+                  h("span", { className: "ps-muted" }, h("i", { className: "ps-st-sdot", style: { background: STUDIO_STATE[r.state].color } }), (ROLES[r.p.role] || {}).label, " \xB7 ", STUDIO_STATE[r.state].label, unseated.includes(r.p.id) ? " \xB7 no desk" : ""),
+                  live && h("span", { className: `ps-st-when ${on ? "on" : ""}` }, activeLabel(on, seen[r.p.id]))));
+            })))));
   }
   /* MLBB tournament dressing around the logo. The logo itself is untouched;
      this only adds pixel art beside it, and it switches itself off after the
@@ -4111,7 +4145,7 @@ ${lines.join("\n")}`);
 .ps-root .ps-st-tag.on{border-radius:8px;padding:5px 9px}
 .ps-root .ps-st-tag[data-fit="dot"]{padding:3px;opacity:.85}
 .ps-st-tag[data-fit="dot"] .ps-st-nm,.ps-st-tag[data-fit="dot"] .ps-st-line{display:none}
-.ps-st-name i,.ps-st-person i{width:7px;height:7px;border-radius:50%;flex:0 0 auto;display:inline-block}
+.ps-st-name i{width:7px;height:7px;border-radius:50%;flex:0 0 auto;display:inline-block}
 .ps-st-line{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:10.5px;color:#5B6676;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:180px}
 .ps-st-msg{position:absolute;inset:0;display:grid;place-items:center;color:var(--muted);font-size:14px;padding:20px;text-align:center}
 .ps-st-tools{position:absolute;top:12px;right:12px;display:flex;gap:8px}
@@ -4122,6 +4156,12 @@ ${lines.join("\n")}`);
 .ps-st-stat b{font-size:18px;line-height:1.1}
 .ps-st-stat span{font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:#5B6676}
 .ps-st-side{border:1px solid var(--line);border-radius:14px;background:var(--card);padding:12px;display:flex;flex-direction:column;gap:6px;max-height:clamp(380px,62vh,620px);overflow:auto}
+.ps-st-av{position:relative;flex:0 0 auto;display:inline-flex}
+.ps-st-live{position:absolute;right:-1px;bottom:-1px;width:12px;height:12px;border-radius:50%;background:#9AA6B4;border:2px solid var(--card)}
+.ps-st-live.on{background:#31A24C}
+.ps-st-sdot{display:inline-block;width:6px;height:6px;border-radius:50%;margin-right:5px;vertical-align:middle}
+.ps-st-when{font-size:11.5px;color:var(--muted)}
+.ps-st-when.on{color:#31A24C;font-weight:600}
 .ps-st-head{font-weight:700;padding:2px 4px 6px;display:flex;justify-content:space-between}
 .ps-st-person,.ps-st-task{display:flex;align-items:center;gap:10px;width:100%;text-align:left;background:none;border:1px solid transparent;border-radius:10px;padding:8px;cursor:pointer}
 .ps-st-person:hover,.ps-st-task:hover{background:var(--paper);border-color:var(--line)}
@@ -4797,6 +4837,44 @@ if (sb) {
       await sb.functions.invoke("slack", { body: { text: String(text).slice(0, 500) } });
     } catch (e) {
       console.error("Slack message not sent", e);
+    }
+  };
+}
+
+/* Who's online. "Online now" rides on the live connection (Realtime Presence),
+   so it writes nothing to the database. "Active 20m ago" reads one tiny row per
+   person in last_seen, refreshed at most every 5 minutes per open app. */
+if (sb) {
+  window.psPresence = {
+    join: (personId, onSync) => {
+      const ch = sb.channel("ps-presence", { config: { presence: { key: personId } } });
+      let tracked = false, idle = null, beat = null;
+      const touch = () => {
+        sb.from("last_seen").upsert({ person_id: personId, seen_at: new Date().toISOString() })
+          .then(({ error }) => { if (error) console.warn("last_seen:", error.message); });
+      };
+      const on = () => {
+        clearTimeout(idle);
+        if (!tracked) { tracked = true; ch.track({ at: Date.now() }); touch(); }
+        if (!beat) beat = setInterval(touch, 5 * 60 * 1000);
+      };
+      const off = () => { if (tracked) { tracked = false; ch.untrack(); touch(); } clearInterval(beat); beat = null; };
+      /* A tab left in the background for 5 minutes counts as gone. */
+      const vis = () => {
+        if (document.visibilityState === "visible") on();
+        else { clearTimeout(idle); idle = setTimeout(off, 5 * 60 * 1000); }
+      };
+      ch.on("presence", { event: "sync" }, () => onSync(Object.keys(ch.presenceState())))
+        .subscribe((st) => { if (st === "SUBSCRIBED") { if (document.visibilityState === "visible") on(); else vis(); } });
+      document.addEventListener("visibilitychange", vis);
+      return () => { document.removeEventListener("visibilitychange", vis); clearTimeout(idle); off(); sb.removeChannel(ch); };
+    },
+    lastSeen: async () => {
+      const { data, error } = await sb.from("last_seen").select("person_id, seen_at");
+      if (error) return null;
+      const out = {};
+      (data || []).forEach((r) => { out[r.person_id] = r.seen_at; });
+      return out;
     }
   };
 }

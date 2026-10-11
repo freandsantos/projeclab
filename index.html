@@ -3654,6 +3654,21 @@ ${lines.join("\n")}`);
     const [ready, setReady] = useState(false);
     const [unseated, setUnseated] = useState([]);
     const mount = useRef(null);
+    const wrap = useRef(null);
+    const [full, setFull] = useState(false);
+    const canFull = typeof document !== "undefined" && !!(document.fullscreenEnabled || document.webkitFullscreenEnabled);
+    useEffect(() => {
+      const on = () => setFull(!!(document.fullscreenElement || document.webkitFullscreenElement));
+      document.addEventListener("fullscreenchange", on);
+      document.addEventListener("webkitfullscreenchange", on);
+      return () => { document.removeEventListener("fullscreenchange", on); document.removeEventListener("webkitfullscreenchange", on); };
+    }, []);
+    const toggleFull = () => {
+      const el = wrap.current;
+      if (!el) return;
+      if (document.fullscreenElement || document.webkitFullscreenElement) (document.exitFullscreen || document.webkitExitFullscreen).call(document);
+      else (el.requestFullscreen || el.webkitRequestFullscreen).call(el);
+    };
     const tags = useRef({});
     const world = useRef(null);
     const spinRef = useRef(spin);
@@ -3871,8 +3886,15 @@ ${lines.join("\n")}`);
           renderer.setSize(w, hh, false);
           renderer.domElement.style.width = "100%";
           renderer.domElement.style.height = "100%";
-          const a = w / hh, f = view.fit;
-          Object.assign(cam, a >= 1 ? { left: -f * a, right: f * a, top: f, bottom: -f } : { left: -f, right: f, top: f / a, bottom: -f / a });
+          /* The team panel floats over the left of the scene on wide screens, so
+             the office is centred in the space to its right and sized to fit it. */
+          const wrapEl = el.closest(".ps-st");
+          const side = wrapEl && wrapEl.querySelector(".ps-st-side");
+          const pw = side && getComputedStyle(side).position === "absolute" ? side.offsetWidth + 24 : 0;
+          const a = w / hh, a2 = Math.max(0.5, (w - pw) / hh);
+          const f = a >= 1 ? Math.max(W * 0.58 / a2, D * 0.85 + 1.2) : W * 0.52;
+          const shift = pw / 2 * (2 * f * a / w);
+          Object.assign(cam, a >= 1 ? { left: -f * a - shift, right: f * a - shift, top: f, bottom: -f } : { left: -f, right: f, top: f / a, bottom: -f / a });
           cam.zoom = view.zoom;
           cam.updateProjectionMatrix();
         };
@@ -4028,7 +4050,7 @@ ${lines.join("\n")}`);
     return h(React.Fragment, null,
       h("div", { className: "ps-ovhead" }, h("span", { className: "ps-ovicon", "aria-hidden": "true" }, "\u{1F3E2}"), h("h1", { className: "ps-h1" }, "Studio")),
       h("p", { className: "ps-lede" }, "Everyone at their desk, live from the task list. Drag to look around, scroll to zoom, click someone to see their work."),
-      h("div", { className: "ps-st" },
+      h("div", { className: "ps-st", ref: wrap },
         h("div", { className: "ps-st-stage" },
           h("div", { className: "ps-st-canvas", ref: mount }),
           h("div", { className: "ps-st-tags", "aria-hidden": !ready }, ready && rows.filter((r) => !unseated.includes(r.p.id)).map((r) => h("button", {
@@ -4041,7 +4063,8 @@ ${lines.join("\n")}`);
           !ready && !fail && h("div", { className: "ps-st-msg" }, "Setting up the studio…"),
           fail && h("div", { className: "ps-st-msg" }, fail),
           h("div", { className: "ps-st-tools" },
-            h("button", { className: `ps-st-btn ${spin ? "on" : ""}`, onClick: () => setSpin(!spin) }, spin ? "Stop" : "Walk around")),
+            h("button", { className: `ps-st-btn ${spin ? "on" : ""}`, onClick: () => setSpin(!spin) }, spin ? "Stop" : "Walk around"),
+            canFull && h("button", { className: "ps-st-btn", onClick: toggleFull }, full ? "Exit full screen" : "\u26F6 Full screen")),
           h("div", { className: "ps-st-stats" }, stat(count("working"), "working"), stat(openAll.length, "open tasks"), stat(openAll.filter((t) => taskStatus(t) === "review").length, "with QA"), stat(doneWeek, "done this week"))),
         h("aside", { className: "ps-st-side" },
           picked ? h(React.Fragment, null,
@@ -4132,8 +4155,10 @@ ${lines.join("\n")}`);
 @keyframes t-shine{0%,55%{transform:translateX(-2px)}85%,100%{transform:translateX(13px)}}
 @media (prefers-reduced-motion:reduce){.t-spark,.t-gem,.t-glint,.t-trophy,.t-shine{animation:none}.t-spark{opacity:.8}}
 /* ---- Studio (3D office) ---- */
-.ps-st{display:grid;grid-template-columns:minmax(0,1fr) 290px;gap:16px;align-items:start}
-.ps-st-stage{position:relative;height:clamp(380px,62vh,620px);border-radius:14px;overflow:hidden;border:1px solid var(--line);background:linear-gradient(180deg,#DCEBC9,#B9D592)}
+.ps-st{position:relative;height:max(520px,calc(100vh - 230px));border-radius:16px;overflow:hidden;border:1px solid var(--line)}
+.ps-st:fullscreen{height:100vh;border-radius:0;border:0;background:var(--paper)}
+.ps-st:fullscreen .ps-st-stage{border-radius:0}
+.ps-st-stage{position:absolute;inset:0;overflow:hidden;background:linear-gradient(180deg,#DCEBC9,#B9D592)}
 .ps-root.dark .ps-st-stage{background:linear-gradient(180deg,#1A2A22,#13201A)}
 .ps-st-canvas{position:absolute;inset:0}
 .ps-st-canvas canvas{display:block}
@@ -4151,11 +4176,11 @@ ${lines.join("\n")}`);
 .ps-st-tools{position:absolute;top:12px;right:12px;display:flex;gap:8px}
 .ps-root .ps-st-btn{border:1px solid rgba(26,34,48,.15);background:rgba(255,255,255,.94);color:#1A2230;border-radius:999px;padding:6px 14px;font-size:13px;cursor:pointer}
 .ps-root .ps-st-btn.on{background:var(--accent);color:#fff;border-color:transparent}
-.ps-st-stats{position:absolute;left:12px;bottom:12px;display:flex;gap:6px;flex-wrap:wrap;pointer-events:none}
+.ps-st-stats{position:absolute;right:12px;bottom:12px;justify-content:flex-end;display:flex;gap:6px;flex-wrap:wrap;pointer-events:none}
 .ps-st-stat{display:flex;flex-direction:column;align-items:center;min-width:64px;padding:6px 10px;border-radius:10px;background:rgba(255,255,255,.94);color:#1A2230;border:1px solid rgba(26,34,48,.1)}
 .ps-st-stat b{font-size:18px;line-height:1.1}
 .ps-st-stat span{font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:#5B6676}
-.ps-st-side{border:1px solid var(--line);border-radius:14px;background:var(--card);padding:12px;display:flex;flex-direction:column;gap:6px;max-height:clamp(380px,62vh,620px);overflow:auto}
+.ps-st-side{position:absolute;top:14px;left:14px;bottom:14px;width:300px;z-index:3;border:1px solid var(--line);border-radius:14px;background:color-mix(in srgb,var(--card) 92%,transparent);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);box-shadow:0 8px 28px rgba(0,0,0,.18);padding:12px;display:flex;flex-direction:column;gap:6px;overflow:auto}
 .ps-st-av{position:relative;flex:0 0 auto;display:inline-flex}
 .ps-st-live{position:absolute;right:-1px;bottom:-1px;width:12px;height:12px;border-radius:50%;background:#9AA6B4;border:2px solid var(--card)}
 .ps-st-live.on{background:#31A24C}
@@ -4173,7 +4198,7 @@ ${lines.join("\n")}`);
 .ps-st-who{display:flex;gap:10px;align-items:center;padding:4px 4px 8px}
 .ps-st-who div{display:flex;flex-direction:column}
 .ps-st-who .ps-muted{font-size:12px}
-@media (max-width:860px){.ps-st{grid-template-columns:1fr}.ps-st-stage{height:420px}.ps-st-side{max-height:none}.ps-st-stat{min-width:54px;padding:5px 8px}.ps-st-stat b{font-size:15px}}
+@media (max-width:860px){.ps-st{height:auto;overflow:visible;border:0;border-radius:0}.ps-st-stage{position:relative;height:420px;border-radius:14px;border:1px solid var(--line)}.ps-st-side{position:static;width:auto;margin-top:14px;backdrop-filter:none;box-shadow:none;background:var(--card)}.ps-st-stat{min-width:54px;padding:5px 8px}.ps-st-stat b{font-size:15px}}
 .ps-task-top{display:flex;align-items:center;justify-content:space-between;gap:10px;padding-right:34px}
 .ps-task-top .ps-muted{margin:0}
 .ps-root .ps-linkbtn{background:none;border:1px solid var(--line);border-radius:999px;padding:3px 10px;font-size:12px;cursor:pointer;color:var(--muted);white-space:nowrap}

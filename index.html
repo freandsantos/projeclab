@@ -4155,7 +4155,7 @@ ${lines.join("\n")}`);
 @keyframes t-shine{0%,55%{transform:translateX(-2px)}85%,100%{transform:translateX(13px)}}
 @media (prefers-reduced-motion:reduce){.t-spark,.t-gem,.t-glint,.t-trophy,.t-shine{animation:none}.t-spark{opacity:.8}}
 /* ---- Studio (3D office) ---- */
-.ps-st{position:relative;height:max(520px,calc(100vh - 230px));border-radius:16px;overflow:hidden;border:1px solid var(--line)}
+.ps-st{position:relative;isolation:isolate;z-index:0;height:max(520px,calc(100vh - 230px));border-radius:16px;overflow:hidden;border:1px solid var(--line)}
 .ps-st:fullscreen{height:100vh;border-radius:0;border:0;background:var(--paper)}
 .ps-st:fullscreen .ps-st-stage{border-radius:0}
 .ps-st-stage{position:absolute;inset:0;overflow:hidden;background:linear-gradient(180deg,#DCEBC9,#B9D592)}

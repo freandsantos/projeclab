@@ -2212,6 +2212,55 @@
             ? h("button", { className: "ps-btn ghost small", disabled: !comment.trim(), onClick: askQuestion }, "Ask ", askBack.name)
             : null));
   }
+  /* ---- Popup announcement -----------------------------------------------
+     The Lead puts up one picture. Everyone on the team sees it the next time
+     they open the app, closes it, and never sees that one again. */
+  function AnnouncePopup({ a, close }) {
+    const h = React.createElement;
+    useEffect(() => {
+      const k = (e) => { if (e.key === "Escape") close(); };
+      window.addEventListener("keydown", k);
+      return () => window.removeEventListener("keydown", k);
+    }, []);
+    return h("div", { className: "ps-overlay ps-ann-overlay", onClick: (e) => e.target === e.currentTarget && close() },
+      h("div", { className: "ps-ann", role: "dialog", "aria-modal": "true", "aria-label": "Announcement" },
+        h("button", { className: "ps-ann-x", onClick: close, "aria-label": "Close" }, "\xD7"),
+        h("img", { className: "ps-ann-img", src: a.url, alt: a.text || "Announcement" }),
+        a.text && h("p", { className: "ps-ann-text" }, a.text),
+        h("button", { className: "ps-btn ps-ann-ok", onClick: close }, "Got it")));
+  }
+  function AnnounceSettings({ db, me, mutate, setToast }) {
+    const h = React.createElement;
+    const a = db.announce && db.announce.url ? db.announce : null;
+    const [draft, setDraft] = useState({ url: "", text: "" });
+    const crew = db.people.filter((p) => p.role !== "client" && (!a || p.id !== a.by));
+    const seenBy = a ? crew.filter((p) => p.seenAnnounce === a.id) : [];
+    const publish = () => {
+      if (!draft.url) return;
+      const id = uid("an");
+      mutate((n) => {
+        n.announce = { id, url: draft.url, text: draft.text.trim().slice(0, 300), by: me.id, at: (/* @__PURE__ */ new Date()).toISOString() };
+      });
+      setDraft({ url: "", text: "" });
+      setToast("Popup is live. Everyone sees it the next time they open the app.");
+    };
+    return h(React.Fragment, null,
+      h("h3", { className: "ps-h3" }, "Popup announcement"),
+      h("p", { className: "ps-muted", style: { marginBottom: 10 } }, "One picture that pops up for the whole team when they open the app. Once someone closes it, they never see it again. Clients don't see it."),
+      a && h("div", { className: "ps-ann-current" },
+        h("img", { src: a.url, alt: "" }),
+        h("div", null,
+          h("b", null, "Showing now"),
+          a.text && h("p", null, a.text),
+          h("p", { className: "ps-muted" }, `Seen and closed by ${seenBy.length} of ${crew.length}`, seenBy.length ? ` — ${seenBy.map((p) => p.name.split(/\s+/)[0]).join(", ")}` : ""),
+          h("button", { className: "ps-btn ghost small", onClick: () => { mutate((n) => { n.announce = null; }); setToast("Popup taken down."); } }, "Take it down"))),
+      h("div", { className: "ps-ann-new" },
+        draft.url && h("img", { className: "ps-ann-thumb", src: draft.url, alt: "" }),
+        h("div", { className: "ps-ann-fields" },
+          h(PhotoPicker, { label: draft.url ? "Choose a different image" : "Choose an image", setToast, onAdd: (rows) => rows[0] && setDraft((d) => ({ ...d, url: rows[0].url })) }),
+          h("input", { placeholder: "Optional message under the picture", maxLength: 300, value: draft.text, onChange: (e) => setDraft({ ...draft, text: e.target.value }) }),
+          h("button", { className: "ps-btn", disabled: !draft.url, onClick: publish }, a ? "Replace the current popup" : "Show to everyone"))));
+  }
   function TaskModal({ t, db, me, lead, updateTask, mutate, setToast, close, confirm }) {
     const [note, setNote] = useState("");
     const [comment, setComment] = useState("");
@@ -3105,6 +3154,9 @@ ${lines.join("\n")}`);
       slackOnce(db, `n${t.id}:${line}:${Math.floor(Date.now() / 1e3)}`, "activity", slackTaskLine(db, t, me.id, line));
     };
     const visible = useMemo(() => db && me ? db.videos.filter((v) => visibleTo(v, me)) : [], [db, me]);
+    /* Popup announcement: closed popups are remembered on the person (so it
+       stays closed on every device) and in this browser as a fallback. */
+    const [annLocal, setAnnLocal] = useState(() => { try { return localStorage.getItem("ps-ann-seen") || ""; } catch (e) { return ""; } });
     /* Who's online right now, and when everyone else was last around. Only a
        real sign-in counts - "viewing as" someone never marks them online. */
     const [online, setOnline] = useState([]);
@@ -3434,6 +3486,17 @@ ${lines.join("\n")}`);
         }
       });
     };
+    const annNow = db.announce && db.announce.url ? db.announce : null;
+    const showAnn = !!annNow && me.role !== "client" && annNow.by !== me.id && me.seenAnnounce !== annNow.id && annLocal !== annNow.id;
+    const closeAnn = () => {
+      if (!annNow) return;
+      setAnnLocal(annNow.id);
+      try { localStorage.setItem("ps-ann-seen", annNow.id); } catch (e) {}
+      /* Only the real, signed-in person marks it closed for good - the Lead
+         "viewing as" someone shouldn't close it on their behalf. */
+      const signedIn = typeof window !== "undefined" && window.cutlineAuth;
+      if (!signedIn || authLock === me.id) mutate((n) => { const p = n.people.find((x) => x.id === me.id); if (p) p.seenAnnounce = annNow.id; });
+    };
     const nav = [
       ["queue", me.role === "client" ? "Your videos" : "My tasks", mine.length + (canApproveTimeoff(db, me) ? pendingTimeoff(db).filter((r) => r.personId !== me.id && ((approverFor(db, r.personId) || {}).id === me.id || (!approverFor(db, r.personId) && me.role === "lead"))).length : 0)],
       ...lead ? [
@@ -3503,7 +3566,7 @@ ${lines.join("\n")}`);
       if (typeof window === "undefined" || typeof window.notifySlack !== "function") return setToast("Slack only works on your own site, not in this preview.");
       window.notifySlack(`✅ Test message from Projeclab Studios — sent by ${me.name}.`);
       setToast("Test sent. Have a look at your Slack channel.");
-    } }, "Send a test message"), /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Backups"), /* @__PURE__ */ React.createElement("p", { className: "ps-muted", style: { marginBottom: 10 } }, "Every change saves automatically for the whole team. Download a copy now and then so you have one outside the system."), /* @__PURE__ */ React.createElement("div", { className: "ps-form" }, /* @__PURE__ */ React.createElement("button", { className: "ps-btn", onClick: downloadBackup }, "Download a backup"), /* @__PURE__ */ React.createElement("label", { className: "ps-btn ghost ps-filebtn" }, "Restore from a backup", /* @__PURE__ */ React.createElement("input", { type: "file", accept: "application/json,.json", hidden: true, onChange: (e) => { const f = e.target.files && e.target.files[0]; e.target.value = ""; restoreBackup(f); } }))), /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Data"), /* @__PURE__ */ React.createElement("p", { className: "ps-muted", style: { marginBottom: 8 } }, "Replaces everything with the sample studio. Only for testing."), /* @__PURE__ */ React.createElement("button", { className: "ps-btn ghost", onClick: reset }, "Restore demo data"));
+    } }, "Send a test message"), /* @__PURE__ */ React.createElement(AnnounceSettings, { db, me, mutate, setToast }), /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Backups"), /* @__PURE__ */ React.createElement("p", { className: "ps-muted", style: { marginBottom: 10 } }, "Every change saves automatically for the whole team. Download a copy now and then so you have one outside the system."), /* @__PURE__ */ React.createElement("div", { className: "ps-form" }, /* @__PURE__ */ React.createElement("button", { className: "ps-btn", onClick: downloadBackup }, "Download a backup"), /* @__PURE__ */ React.createElement("label", { className: "ps-btn ghost ps-filebtn" }, "Restore from a backup", /* @__PURE__ */ React.createElement("input", { type: "file", accept: "application/json,.json", hidden: true, onChange: (e) => { const f = e.target.files && e.target.files[0]; e.target.value = ""; restoreBackup(f); } }))), /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Data"), /* @__PURE__ */ React.createElement("p", { className: "ps-muted", style: { marginBottom: 8 } }, "Replaces everything with the sample studio. Only for testing."), /* @__PURE__ */ React.createElement("button", { className: "ps-btn ghost", onClick: reset }, "Restore demo data"));
     } else {
       const client = me.role === "client" ? db.clients.find((c) => c.id === me.clientId) : null;
       const waiting = client ? active.filter((v) => !isMine(v, me)) : [];
@@ -3591,7 +3654,7 @@ ${lines.join("\n")}`);
         mutate,
         close: () => setOpenId(null)
       }
-    ), openTaskRow && /* @__PURE__ */ React.createElement(TaskModal, { t: openTaskRow, db, me, lead, updateTask, mutate, setToast, close: () => setTaskId(null), confirm: setConfirming }), personId && db.people.find((p) => p.id === personId) && /* @__PURE__ */ React.createElement(PersonModal, { person: db.people.find((p) => p.id === personId), db, me, mutate, picker, close: () => setPersonId(null) }), confirming && /* @__PURE__ */ React.createElement("div", { className: "ps-overlay", onClick: (e) => e.target === e.currentTarget && setConfirming(null) }, /* @__PURE__ */ React.createElement("div", { className: "ps-modal ps-confirm", role: "dialog", "aria-modal": "true" }, /* @__PURE__ */ React.createElement("h2", { className: "ps-h2" }, confirming.title), (confirming.lines || []).map((l, i) => /* @__PURE__ */ React.createElement("p", { key: i, className: "ps-muted ps-confirm-line" }, l)), confirming.pick && /* @__PURE__ */ React.createElement("label", { className: "ps-field ps-confirm-pick" }, /* @__PURE__ */ React.createElement("span", null, confirming.pick.label), /* @__PURE__ */ React.createElement("select", { value: handover, onChange: (e) => setHandover(e.target.value) }, confirming.pick.options.map((o) => /* @__PURE__ */ React.createElement("option", { key: o.value || "none", value: o.value }, o.label)))), /* @__PURE__ */ React.createElement("div", { className: "ps-confirm-btns" }, /* @__PURE__ */ React.createElement("button", { className: "ps-btn ghost", onClick: () => setConfirming(null) }, "Cancel"), /* @__PURE__ */ React.createElement("button", { className: "ps-btn danger", onClick: () => {
+    ), showAnn && /* @__PURE__ */ React.createElement(AnnouncePopup, { a: db.announce, close: closeAnn }), openTaskRow && /* @__PURE__ */ React.createElement(TaskModal, { t: openTaskRow, db, me, lead, updateTask, mutate, setToast, close: () => setTaskId(null), confirm: setConfirming }), personId && db.people.find((p) => p.id === personId) && /* @__PURE__ */ React.createElement(PersonModal, { person: db.people.find((p) => p.id === personId), db, me, mutate, picker, close: () => setPersonId(null) }), confirming && /* @__PURE__ */ React.createElement("div", { className: "ps-overlay", onClick: (e) => e.target === e.currentTarget && setConfirming(null) }, /* @__PURE__ */ React.createElement("div", { className: "ps-modal ps-confirm", role: "dialog", "aria-modal": "true" }, /* @__PURE__ */ React.createElement("h2", { className: "ps-h2" }, confirming.title), (confirming.lines || []).map((l, i) => /* @__PURE__ */ React.createElement("p", { key: i, className: "ps-muted ps-confirm-line" }, l)), confirming.pick && /* @__PURE__ */ React.createElement("label", { className: "ps-field ps-confirm-pick" }, /* @__PURE__ */ React.createElement("span", null, confirming.pick.label), /* @__PURE__ */ React.createElement("select", { value: handover, onChange: (e) => setHandover(e.target.value) }, confirming.pick.options.map((o) => /* @__PURE__ */ React.createElement("option", { key: o.value || "none", value: o.value }, o.label)))), /* @__PURE__ */ React.createElement("div", { className: "ps-confirm-btns" }, /* @__PURE__ */ React.createElement("button", { className: "ps-btn ghost", onClick: () => setConfirming(null) }, "Cancel"), /* @__PURE__ */ React.createElement("button", { className: "ps-btn danger", onClick: () => {
       const f = confirming.onYes;
       setConfirming(null);
       f();
@@ -4220,6 +4283,20 @@ ${lines.join("\n")}`);
 .ps-task-top .ps-muted{margin:0}
 .ps-root .ps-linkbtn{background:none;border:1px solid var(--line);border-radius:999px;padding:3px 10px;font-size:12px;cursor:pointer;color:var(--muted);white-space:nowrap}
 .ps-root .ps-linkbtn:hover{color:var(--accent);border-color:var(--accent)}
+.ps-ann-overlay{align-items:center;z-index:40}
+.ps-ann{position:relative;max-width:min(720px,94vw);max-height:92vh;display:flex;flex-direction:column;align-items:center;gap:12px;background:var(--card);border-radius:16px;padding:14px;box-shadow:0 20px 60px rgba(0,0,0,.35);animation:ps-ann-in .25s ease-out}
+@keyframes ps-ann-in{from{opacity:0;transform:translateY(12px) scale(.98)}to{opacity:1;transform:none}}
+.ps-ann-img{display:block;max-width:100%;max-height:calc(92vh - 130px);border-radius:10px;object-fit:contain}
+.ps-ann-text{margin:0;text-align:center;font-size:15px;max-width:60ch}
+.ps-root .ps-ann-x{position:absolute;top:-12px;right:-12px;width:34px;height:34px;border-radius:50%;border:1px solid var(--line);background:var(--card);font-size:20px;line-height:1;cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,.2)}
+.ps-ann-ok{min-width:140px}
+.ps-ann-current{display:flex;gap:14px;align-items:flex-start;border:1px solid var(--line);border-radius:12px;padding:12px;margin-bottom:12px;background:var(--card)}
+.ps-ann-current img,.ps-ann-thumb{width:140px;max-height:140px;object-fit:cover;border-radius:8px;flex:0 0 auto}
+.ps-ann-current p{margin:4px 0 8px}
+.ps-ann-new{display:flex;gap:14px;align-items:flex-start;margin-bottom:8px;flex-wrap:wrap}
+.ps-ann-fields{display:flex;flex-direction:column;gap:8px;flex:1;min-width:240px;align-items:flex-start}
+.ps-ann-fields input{width:100%}
+@media (prefers-reduced-motion:reduce){.ps-ann{animation:none}}
 .ps-spacer{flex:1}
 .ps-viewas{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:13px}
 .ps-root select,.ps-root input,.ps-root textarea{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:7px 10px}

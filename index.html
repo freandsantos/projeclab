@@ -347,6 +347,7 @@
     if (!me) return false;
     if (isManager(me.role) || me.role === "hr") return true;
     if (t.personId === me.id || t.reviewFrom === me.id || t.qaAuthorId === me.id) return true;
+    if ((t.helpers || []).includes(me.id)) return true;
     if (NO_QA_KINDS.includes(t.kind)) return false;
     if (OPEN_KINDS.includes(t.kind)) return true;
     const owner = db.people.find((p) => p.id === (t.reviewFrom || t.qaAuthorId || t.personId));
@@ -1606,7 +1607,7 @@
       out.push({ key, at, by, text, what, id, title });
     };
     (db.tasks || []).forEach((t) => {
-      const mine = t.personId === me.id || t.reviewFrom === me.id || t.qaAuthorId === me.id || t.by === me.id || t.home === me.id;
+      const mine = t.personId === me.id || t.reviewFrom === me.id || t.qaAuthorId === me.id || t.by === me.id || t.home === me.id || (t.helpers || []).includes(me.id);
       /* Being tagged counts even when the task isn't yours - that is the point of it. */
       const tagged = /* @__PURE__ */ new Set();
       (t.comments || []).forEach((c) => {
@@ -2310,7 +2311,7 @@
           h("input", { placeholder: "Optional message under the picture", maxLength: 300, value: draft.text, onChange: (e) => setDraft({ ...draft, text: e.target.value }) }),
           h("button", { className: "ps-btn", disabled: !draft.url, onClick: publish }, a ? "Replace the current popup" : "Show to everyone"))));
   }
-  function TaskModal({ t, db, me, lead, updateTask, mutate, setToast, close, confirm }) {
+  function TaskModal({ t, db, me, lead, updateTask, mutate, setToast, close, confirm, openTask }) {
     const [note, setNote] = useState("");
     const [comment, setComment] = useState("");
     const [stepText, setStepText] = useState("");
@@ -2318,6 +2319,8 @@
     const [shots, setShots] = useState([]);
     /* The brief, while it is being rewritten. null means "not editing". */
     const [briefDraft, setBriefDraft] = useState(null);
+    /* Duplicate: a fresh copy to turn into a variation of this task. */
+    const [dup, setDup] = useState(null);
     /* Brief and Revisions fold away; open by default. */
     const [briefOpen, setBriefOpen] = useState(true);
     const [revOpen, setRevOpen] = useState(true);
@@ -2335,6 +2338,58 @@
     /* Who writes revisions: the reviewer when it's with them for QA or final
        check (that's how it goes back), and the Lead or whoever gave the work. */
     const canRevise = !t.done && (canEdit && (taskStatus(t) === "review" || taskStatus(t) === "final_check") || canShape && t.personId !== me.id);
+    /* Who can duplicate: anyone who can hand out work (copy goes to whoever
+       they pick), and editors/QA for their own tasks (copy stays with them). */
+    /* Helpers: extra people on the task. One owner still moves it through QA;
+       helpers see it, hear about it, comment and tick steps. */
+    const helpers = (t.helpers || []).filter((id) => id !== t.personId);
+    const isHelper = helpers.includes(me.id);
+    const canHelpers = !t.done && me.role !== "client" && (lead || canShape || mine || t.reviewFrom === me.id);
+    const helperOptions = db.people.filter((p) => p.role !== "client" && p.id !== t.personId && !helpers.includes(p.id));
+    const addHelper = (id) => {
+      const p = db.people.find((x) => x.id === id);
+      if (!p) return;
+      updateTask(t.id, { helpers: [...helpers, id], ...log(`Added ${p.name} as a helper`) });
+    };
+    const dropHelper = (id) => {
+      const p = db.people.find((x) => x.id === id);
+      updateTask(t.id, { helpers: helpers.filter((x) => x !== id), ...log(`${id === me.id ? "Left the task" : `Removed ${p ? p.name : "a helper"}`} as helper`) });
+    };
+    const dupSelfOnly = !canDelegate(me.role);
+    const canDup = me.role !== "client" && (canDelegate(me.role) || canSelfAssign(me.role) && (t.personId === me.id || t.reviewFrom === me.id || t.by === me.id));
+    const familyId = t.variantOf || t.id;
+    const family = (db.tasks || []).filter((x) => x.id !== t.id && (x.id === familyId || x.variantOf === familyId));
+    const startDup = () => {
+      const n = (db.tasks || []).filter((x) => x.variantOf === familyId).length + 2;
+      const root = (db.tasks || []).find((x) => x.id === familyId) || t;
+      setDup({ text: `${root.text} \u2014 variation ${n}`, personId: dupSelfOnly ? me.id : (t.reviewFrom || t.personId), brief: true, steps: true, photos: true });
+    };
+    const makeDup = () => {
+      if (!dup || !dup.text.trim()) return;
+      const now = (/* @__PURE__ */ new Date()).toISOString();
+      const copy = {
+        ...t,
+        id: uid("t"),
+        text: dup.text.trim(),
+        personId: dupSelfOnly ? me.id : dup.personId,
+        by: me.id,
+        home: null,
+        variantOf: familyId,
+        done: false, doneAt: null, status: "todo", startedAt: null, workMs: 0, sessions: [],
+        reviewFrom: null, qaFrom: null, qaPassedAt: null, qaBounces: 0, qaAuthorId: null, askFrom: null, askPrev: null,
+        comments: [], revisions: [], notes: "", repeat: "none", helpers: [],
+        details: dup.brief ? t.details || "" : "",
+        photos: dup.photos ? (t.photos || []).slice() : [],
+        steps: dup.steps ? (t.steps || []).map((x) => ({ ...x, done: false })) : [],
+        at: now,
+        history: [{ at: now, by: me.id, text: `Duplicated from \u201C${t.text}\u201D` }]
+      };
+      mutate((n2) => { n2.tasks.push(copy); });
+      const who = (db.people.find((p) => p.id === copy.personId) || {}).name;
+      setDup(null);
+      setToast(`Copy made${who ? ` for ${copy.personId === me.id ? "you" : who}` : ""}. You're looking at it now.`);
+      if (openTask) setTimeout(() => openTask(copy.id), 0);
+    };
     const photos = t.photos || [];
     /* Anyone who can open the task can pin a reference to it - a picture is just
        another way of saying something, like a comment. */
@@ -2647,7 +2702,11 @@
     return /* @__PURE__ */ React.createElement("div", { className: "ps-overlay", onClick: (e) => e.target === e.currentTarget && close() }, /* @__PURE__ */ React.createElement("div", { className: "ps-modal", role: "dialog", "aria-modal": "true", onPaste }, /* @__PURE__ */ React.createElement("button", { className: "ps-x", onClick: close, "aria-label": "Close" }, "\xD7"), /* @__PURE__ */ React.createElement("div", { className: "ps-task-top" }, /* @__PURE__ */ React.createElement("p", { className: "ps-muted" }, "Task", from ? ` \xB7 from ${from.id === me.id ? "you" : from.name}` : "", t.at ? ` \xB7 ${shortDate(t.at)}` : ""), /* @__PURE__ */ React.createElement("button", { className: "ps-linkbtn", title: "Copy a link that opens this task", onClick: async () => {
       const ok = await copyText(taskLink(t.id));
       setToast(ok ? "Link copied \u2014 paste it in Slack or a chat. It opens this task for anyone who can see it." : "Couldn't copy. Your browser blocked it.");
-    } }, "\u{1F517} Copy link")), canShape ? /* @__PURE__ */ React.createElement("input", { className: "ps-title-in", value: t.text, onChange: (e) => updateTask(t.id, { text: e.target.value }) }) : /* @__PURE__ */ React.createElement("h2", { className: "ps-h2" }, t.text), /* @__PURE__ */ React.createElement("div", { className: "ps-meta" }, /* @__PURE__ */ React.createElement("span", { className: "ps-chip" }, (kindOf(t.kind) || { label: "Task" }).label), taskClient && /* @__PURE__ */ React.createElement("span", { className: "ps-chip" }, taskClient.name), person && ((canEdit || canShape || canAssign) && !t.done ? /* @__PURE__ */ React.createElement("label", { className: "ps-who ps-who-chip", title: "Click to give this task to someone else" }, /* @__PURE__ */ React.createElement(Avatar, { person, size: 24 }), person.name, /* @__PURE__ */ React.createElement("span", { className: "ps-who-caret", "aria-hidden": "true" }, "\u25BE"), /* @__PURE__ */ React.createElement("select", { className: "ps-who-select", "aria-label": `Assigned to ${person.name} - choose someone else`, value: t.personId, onChange: (e) => handTo(e.target.value) }, (me.role === "teamlead" && !lead ? benchFor("teamlead") : db.people.filter((p) => p.role !== "client")).map((p) => /* @__PURE__ */ React.createElement("option", { key: p.id, value: p.id }, p.name, isAway(p) ? " (away)" : "")))) : /* @__PURE__ */ React.createElement("span", { className: "ps-who" }, /* @__PURE__ */ React.createElement(Avatar, { person, size: 24 }), person.name)), t.done ? /* @__PURE__ */ React.createElement("span", { className: "ps-chip ok" }, "Done", t.doneAt ? ` ${shortDate(t.doneAt)}` : "") : t.due ? /* @__PURE__ */ React.createElement(TaskDue, { due: t.due }) : /* @__PURE__ */ React.createElement("span", { className: "ps-muted" }, "no date"), !t.done && /* @__PURE__ */ React.createElement("span", { className: "ps-chip", style: taskStatusMeta(t).color ? { background: taskStatusMeta(t).soft, color: taskStatusMeta(t).color } : void 0 }, taskStatusMeta(t).label), running ? /* @__PURE__ */ React.createElement("span", { className: "ps-clock", title: "Working time" }, /* @__PURE__ */ React.createElement("span", { className: "ps-dot", "aria-hidden": "true" }), /* @__PURE__ */ React.createElement(Elapsed, { from: t.startedAt, interval: 1e3, seconds: true })) : bankedMs > 0 ? /* @__PURE__ */ React.createElement("span", { className: "ps-muted" }, hms(bankedMs), " of work") : null, steps.length > 0 && !t.done && /* @__PURE__ */ React.createElement("span", { className: "ps-muted" }, steps.filter((x) => x.done).length, " of ", steps.length, " steps")), (details || canBrief) && /* @__PURE__ */ React.createElement("div", { className: `ps-notebox ps-brief ${briefOpen || briefDraft !== null ? "open" : "shut"}` }, /* @__PURE__ */ React.createElement("div", { className: "ps-brief-head" }, /* @__PURE__ */ React.createElement("button", { className: "ps-fold-h", "aria-expanded": briefOpen, onClick: () => setBriefOpen(!briefOpen) }, /* @__PURE__ */ React.createElement("span", { className: "ps-fold-car", "aria-hidden": "true" }, briefOpen || briefDraft !== null ? "\u25BE" : "\u25B8"), "The brief"), canBrief && briefDraft === null && /* @__PURE__ */ React.createElement("button", { className: "ps-btn ghost small ps-brief-edit-btn", onClick: () => { setBriefOpen(true); setBriefDraft(details); } }, details ? "Edit" : "Write one")), !briefOpen && briefDraft === null ? null : briefDraft === null ? details ? /* @__PURE__ */ React.createElement("p", null, details) : /* @__PURE__ */ React.createElement("p", { className: "ps-muted" }, "No brief was written when this went out.") : /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("textarea", { className: "ps-brief-in", autoFocus: true, maxLength: DETAIL_MAX, value: briefDraft, onChange: (e) => setBriefDraft(e.target.value.slice(0, DETAIL_MAX)), placeholder: "Anything they need to know: links, references, what done looks like." }), /* @__PURE__ */ React.createElement("div", { className: "ps-btnrow" }, /* @__PURE__ */ React.createElement("span", { className: `ps-counter ${briefDraft.length >= DETAIL_MAX ? "full" : ""}` }, briefDraft.length, " / ", DETAIL_MAX), /* @__PURE__ */ React.createElement("button", { className: "ps-btn ghost small", onClick: () => setBriefDraft(null) }, "Cancel"), /* @__PURE__ */ React.createElement("button", { className: "ps-btn small", onClick: () => {
+    } }, "\u{1F517} Copy link"), canDup && /* @__PURE__ */ React.createElement("button", { className: "ps-linkbtn", title: "Make a copy to turn into a variation", onClick: () => dup ? setDup(null) : startDup() }, "\u29C9 Duplicate")), dup && /* @__PURE__ */ React.createElement("div", { className: "ps-dup" }, /* @__PURE__ */ React.createElement("b", null, "Duplicate as a variation"), /* @__PURE__ */ React.createElement("input", { className: "ps-dup-title", autoFocus: true, value: dup.text, onChange: (e) => setDup({ ...dup, text: e.target.value }), onKeyDown: (e) => { if (e.key === "Enter") makeDup(); if (e.key === "Escape") setDup(null); } }), /* @__PURE__ */ React.createElement("div", { className: "ps-dup-row" }, !dupSelfOnly && /* @__PURE__ */ React.createElement("label", { className: "ps-dup-who" }, /* @__PURE__ */ React.createElement("span", null, "Give it to"), /* @__PURE__ */ React.createElement("select", { value: dup.personId || "", onChange: (e) => setDup({ ...dup, personId: e.target.value }) }, db.people.filter((p) => p.role !== "client").map((p) => /* @__PURE__ */ React.createElement("option", { key: p.id, value: p.id }, p.name, isAway(p) ? " (away)" : "")))), [["brief", "Brief"], ["steps", "Steps"], ["photos", "Photos"]].map(([k, l]) => /* @__PURE__ */ React.createElement("label", { key: k, className: "ps-dup-check" }, /* @__PURE__ */ React.createElement("input", { type: "checkbox", checked: !!dup[k], onChange: (e) => setDup({ ...dup, [k]: e.target.checked }) }), " Copy ", l.toLowerCase()))), /* @__PURE__ */ React.createElement("p", { className: "ps-muted ps-dup-note" }, "Starts fresh: To do, no comments, revisions or logged time. Kind, client and due date carry over."), /* @__PURE__ */ React.createElement("div", { className: "ps-btnrow" }, /* @__PURE__ */ React.createElement("button", { className: "ps-btn ghost small", onClick: () => setDup(null) }, "Cancel"), /* @__PURE__ */ React.createElement("button", { className: "ps-btn small", disabled: !dup.text.trim(), onClick: makeDup }, "Create copy"))), family.length > 0 && /* @__PURE__ */ React.createElement("div", { className: "ps-family" }, /* @__PURE__ */ React.createElement("span", { className: "ps-muted" }, t.variantOf ? "Variation of / alongside:" : "Variations:"), family.map((x) => /* @__PURE__ */ React.createElement("button", { key: x.id, className: `ps-family-chip ${x.done ? "done" : ""}`, onClick: () => openTask && openTask(x.id), title: canSeeTask(db, me, x) ? x.text : "Private task" }, x.id === familyId ? "Original" : (x.text || "").replace(/^.*\u2014\s*/, "") || "Variation", " \xB7 ", (db.people.find((p) => p.id === x.personId) || {}).name || "", x.done ? " \u2713" : ""))), canShape ? /* @__PURE__ */ React.createElement("input", { className: "ps-title-in", value: t.text, onChange: (e) => updateTask(t.id, { text: e.target.value }) }) : /* @__PURE__ */ React.createElement("h2", { className: "ps-h2" }, t.text), /* @__PURE__ */ React.createElement("div", { className: "ps-meta" }, /* @__PURE__ */ React.createElement("span", { className: "ps-chip" }, (kindOf(t.kind) || { label: "Task" }).label), taskClient && /* @__PURE__ */ React.createElement("span", { className: "ps-chip" }, taskClient.name), person && ((canEdit || canShape || canAssign) && !t.done ? /* @__PURE__ */ React.createElement("label", { className: "ps-who ps-who-chip", title: "Click to give this task to someone else" }, /* @__PURE__ */ React.createElement(Avatar, { person, size: 24 }), person.name, /* @__PURE__ */ React.createElement("span", { className: "ps-who-caret", "aria-hidden": "true" }, "\u25BE"), /* @__PURE__ */ React.createElement("select", { className: "ps-who-select", "aria-label": `Assigned to ${person.name} - choose someone else`, value: t.personId, onChange: (e) => handTo(e.target.value) }, (me.role === "teamlead" && !lead ? benchFor("teamlead") : db.people.filter((p) => p.role !== "client")).map((p) => /* @__PURE__ */ React.createElement("option", { key: p.id, value: p.id }, p.name, isAway(p) ? " (away)" : "")))) : /* @__PURE__ */ React.createElement("span", { className: "ps-who" }, /* @__PURE__ */ React.createElement(Avatar, { person, size: 24 }), person.name)), t.done ? /* @__PURE__ */ React.createElement("span", { className: "ps-chip ok" }, "Done", t.doneAt ? ` ${shortDate(t.doneAt)}` : "") : t.due ? /* @__PURE__ */ React.createElement(TaskDue, { due: t.due }) : /* @__PURE__ */ React.createElement("span", { className: "ps-muted" }, "no date"), !t.done && /* @__PURE__ */ React.createElement("span", { className: "ps-chip", style: taskStatusMeta(t).color ? { background: taskStatusMeta(t).soft, color: taskStatusMeta(t).color } : void 0 }, taskStatusMeta(t).label), running ? /* @__PURE__ */ React.createElement("span", { className: "ps-clock", title: "Working time" }, /* @__PURE__ */ React.createElement("span", { className: "ps-dot", "aria-hidden": "true" }), /* @__PURE__ */ React.createElement(Elapsed, { from: t.startedAt, interval: 1e3, seconds: true })) : bankedMs > 0 ? /* @__PURE__ */ React.createElement("span", { className: "ps-muted" }, hms(bankedMs), " of work") : null, steps.length > 0 && !t.done && /* @__PURE__ */ React.createElement("span", { className: "ps-muted" }, steps.filter((x) => x.done).length, " of ", steps.length, " steps")), (helpers.length > 0 || canHelpers) && /* @__PURE__ */ React.createElement("div", { className: "ps-helpers" }, /* @__PURE__ */ React.createElement("span", { className: "ps-muted ps-helpers-l" }, "Helpers"), helpers.map((id) => {
+      const p = db.people.find((x) => x.id === id);
+      if (!p) return null;
+      return /* @__PURE__ */ React.createElement("span", { key: id, className: "ps-helper" }, /* @__PURE__ */ React.createElement(Avatar, { person: p, size: 20 }), p.name, (canHelpers || id === me.id) && /* @__PURE__ */ React.createElement("button", { className: "ps-helper-x", "aria-label": `Remove ${p.name}`, title: id === me.id ? "Leave this task" : "Remove helper", onClick: () => dropHelper(id) }, "\xD7"));
+    }), canHelpers && helperOptions.length > 0 && /* @__PURE__ */ React.createElement("label", { className: "ps-helper-add" }, "+ Add helper", /* @__PURE__ */ React.createElement("select", { value: "", "aria-label": "Add a helper", onChange: (e) => { if (e.target.value) addHelper(e.target.value); } }, /* @__PURE__ */ React.createElement("option", { value: "" }, "Add helper\u2026"), helperOptions.map((p) => /* @__PURE__ */ React.createElement("option", { key: p.id, value: p.id }, p.name, isAway(p) ? " (away)" : "")))), helpers.length > 0 && /* @__PURE__ */ React.createElement("span", { className: "ps-muted ps-helpers-note" }, person ? `${person.id === me.id ? "You" : person.name} ${person.id === me.id ? "own" : "owns"} it and sends it on` : "")), (details || canBrief) && /* @__PURE__ */ React.createElement("div", { className: `ps-notebox ps-brief ${briefOpen || briefDraft !== null ? "open" : "shut"}` }, /* @__PURE__ */ React.createElement("div", { className: "ps-brief-head" }, /* @__PURE__ */ React.createElement("button", { className: "ps-fold-h", "aria-expanded": briefOpen, onClick: () => setBriefOpen(!briefOpen) }, /* @__PURE__ */ React.createElement("span", { className: "ps-fold-car", "aria-hidden": "true" }, briefOpen || briefDraft !== null ? "\u25BE" : "\u25B8"), "The brief"), canBrief && briefDraft === null && /* @__PURE__ */ React.createElement("button", { className: "ps-btn ghost small ps-brief-edit-btn", onClick: () => { setBriefOpen(true); setBriefDraft(details); } }, details ? "Edit" : "Write one")), !briefOpen && briefDraft === null ? null : briefDraft === null ? details ? /* @__PURE__ */ React.createElement("p", null, details) : /* @__PURE__ */ React.createElement("p", { className: "ps-muted" }, "No brief was written when this went out.") : /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("textarea", { className: "ps-brief-in", autoFocus: true, maxLength: DETAIL_MAX, value: briefDraft, onChange: (e) => setBriefDraft(e.target.value.slice(0, DETAIL_MAX)), placeholder: "Anything they need to know: links, references, what done looks like." }), /* @__PURE__ */ React.createElement("div", { className: "ps-btnrow" }, /* @__PURE__ */ React.createElement("span", { className: `ps-counter ${briefDraft.length >= DETAIL_MAX ? "full" : ""}` }, briefDraft.length, " / ", DETAIL_MAX), /* @__PURE__ */ React.createElement("button", { className: "ps-btn ghost small", onClick: () => setBriefDraft(null) }, "Cancel"), /* @__PURE__ */ React.createElement("button", { className: "ps-btn small", onClick: () => {
       const next = briefDraft.trim().slice(0, DETAIL_MAX);
       if (next !== details) updateTask(t.id, { details: next, ...log(details ? "Rewrote the brief" : "Wrote the brief") });
       setBriefDraft(null);
@@ -2678,7 +2737,7 @@
         disabled: !t.due || !lead,
         onChange: (e) => updateTask(t.id, { due: combineDue(dueDatePart(t.due), e.target.value) })
       }
-    )))), /* @__PURE__ */ React.createElement("div", { className: "ps-fields" }, url("link", "Reference link", lead), url("deliverable", "Google Drive link", canEdit)), status === "todo" ? steps.length > 0 && /* @__PURE__ */ React.createElement("p", { className: "ps-checkhint" }, steps.length, " check", steps.length === 1 ? "" : "s", " to work through \u2014 they appear once the task is started.") : (steps.length > 0 || lead) && /* @__PURE__ */ React.createElement("fieldset", { className: "ps-checks" }, /* @__PURE__ */ React.createElement("legend", null, steps.length ? "Tick every item before finishing" : "Break it into steps (optional)"), steps.map((x, i) => /* @__PURE__ */ React.createElement("label", { key: i }, /* @__PURE__ */ React.createElement("input", { type: "checkbox", checked: x.done, disabled: !canEdit || t.done, onChange: () => toggleStep(i) }), /* @__PURE__ */ React.createElement("span", { className: x.done ? "ps-step-done" : "" }, x.text), lead && /* @__PURE__ */ React.createElement("button", { className: "ps-x-small", "aria-label": "Remove step", onClick: (e) => {
+    )))), /* @__PURE__ */ React.createElement("div", { className: "ps-fields" }, url("link", "Reference link", lead), url("deliverable", "Google Drive link", canEdit)), status === "todo" ? steps.length > 0 && /* @__PURE__ */ React.createElement("p", { className: "ps-checkhint" }, steps.length, " check", steps.length === 1 ? "" : "s", " to work through \u2014 they appear once the task is started.") : (steps.length > 0 || lead) && /* @__PURE__ */ React.createElement("fieldset", { className: "ps-checks" }, /* @__PURE__ */ React.createElement("legend", null, steps.length ? "Tick every item before finishing" : "Break it into steps (optional)"), steps.map((x, i) => /* @__PURE__ */ React.createElement("label", { key: i }, /* @__PURE__ */ React.createElement("input", { type: "checkbox", checked: x.done, disabled: !(canEdit || isHelper) || t.done, onChange: () => toggleStep(i) }), /* @__PURE__ */ React.createElement("span", { className: x.done ? "ps-step-done" : "" }, x.text), lead && /* @__PURE__ */ React.createElement("button", { className: "ps-x-small", "aria-label": "Remove step", onClick: (e) => {
       e.preventDefault();
       removeStep(i);
     } }, "\xD7"))), lead && /* @__PURE__ */ React.createElement("div", { className: "ps-del-row" }, /* @__PURE__ */ React.createElement(
@@ -3612,6 +3671,7 @@ ${lines.join("\n")}`);
         }
       });
     };
+    const helping = (db.tasks || []).filter((t) => !t.done && t.personId !== me.id && (t.helpers || []).includes(me.id));
     const annNow = db.announce && db.announce.url ? db.announce : null;
     const showAnn = !!annNow && me.role !== "client" && annNow.by !== me.id && me.seenAnnounce !== annNow.id && annLocal !== annNow.id;
     const closeAnn = () => {
@@ -3718,7 +3778,10 @@ ${lines.join("\n")}`);
       body = /* @__PURE__ */ React.createElement(React.Fragment, null, me.role !== "client" ? /* @__PURE__ */ React.createElement("div", { className: "ps-profile" }, picker(me, 72), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("h1", { className: "ps-h1" }, "My tasks"), /* @__PURE__ */ React.createElement("p", { className: "ps-muted" }, me.name, " \xB7 ", ROLES[me.role].label))) : /* @__PURE__ */ React.createElement("h1", { className: "ps-h1" }, "Hi, ", me.name), me.role !== "client" && /* @__PURE__ */ React.createElement(PinnedNotice, { db, me, mutate, canEdit: lead || me.role === "hr" }), /* @__PURE__ */ React.createElement("p", { className: "ps-lede" }, waitingLine, lead && late.length ? ` ${late.length} past due across the studio.` : ""), client && billingOf(client).id !== "none" && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Your invoices"), /* @__PURE__ */ React.createElement(InvoiceList, { db, client, canEdit: false, toggle: () => {
     }, addJob: () => {
     }, removeJob: () => {
-    }, openVideo: setOpenId })), me.role !== "hr" && mine.length > 0 && /* @__PURE__ */ React.createElement(React.Fragment, null, me.role !== "client" && /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Videos"), /* @__PURE__ */ React.createElement(VideoTable, { rows: mine, db, me, open: setOpenId, showClient: me.role !== "client" })), me.role !== "client" && canApproveTimeoff(db, me) && /* @__PURE__ */ React.createElement(TimeOffPanel, { db, me, mutate, setToast, queueOnly: true }), me.role !== "client" && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Tasks"), /* @__PURE__ */ React.createElement(TodoList, { person: me, tasks: db.tasks, clients: db.clients, canAdd: false, canToggle: canEditPerson(me), mutate, openTask: setTaskId, shareFinalCheck: lead, notify: notifyTask, confirm: setConfirming })), (canDelegate(me.role) || canSelfAssign(me.role)) && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, canDelegate(me.role) ? "Delegate" : "Add a task"), /* @__PURE__ */ React.createElement(Delegate, { db, me, draft, setDraft, addTodo: delegateTodo, setToast })), client && waiting.length > 0 && /* @__PURE__ */ React.createElement("details", { className: "ps-fold" }, /* @__PURE__ */ React.createElement("summary", null, waiting.length, " with someone else"), /* @__PURE__ */ React.createElement(VideoTable, { rows: waiting, db, me, open: setOpenId, showClient: false })), me.role !== "client" && /* @__PURE__ */ React.createElement(ActivityHistory, { db, me, mutate, setToast, openTask: setTaskId, openVideo: setOpenId }), !client && recentlyFinished.length > 0 && /* @__PURE__ */ React.createElement("details", { className: "ps-fold" }, /* @__PURE__ */ React.createElement("summary", null, "Recently finished (", recentlyFinished.length, ")"), /* @__PURE__ */ React.createElement("div", { className: "ps-table" }, recentlyFinished.map((f) => /* @__PURE__ */ React.createElement(
+    }, openVideo: setOpenId })), me.role !== "hr" && mine.length > 0 && /* @__PURE__ */ React.createElement(React.Fragment, null, me.role !== "client" && /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Videos"), /* @__PURE__ */ React.createElement(VideoTable, { rows: mine, db, me, open: setOpenId, showClient: me.role !== "client" })), me.role !== "client" && canApproveTimeoff(db, me) && /* @__PURE__ */ React.createElement(TimeOffPanel, { db, me, mutate, setToast, queueOnly: true }), me.role !== "client" && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Tasks"), /* @__PURE__ */ React.createElement(TodoList, { person: me, tasks: db.tasks, clients: db.clients, canAdd: false, canToggle: canEditPerson(me), mutate, openTask: setTaskId, shareFinalCheck: lead, notify: notifyTask, confirm: setConfirming }), helping.length > 0 && /* @__PURE__ */ React.createElement("div", { className: "ps-helping" }, /* @__PURE__ */ React.createElement("h4", { className: "ps-h4" }, "Helping on (", helping.length, ")"), helping.map((t) => {
+        const owner = db.people.find((p) => p.id === t.personId);
+        return /* @__PURE__ */ React.createElement("button", { key: t.id, className: "ps-helping-row", onClick: () => setTaskId(t.id) }, /* @__PURE__ */ React.createElement("span", { className: "ps-helping-t" }, t.text || "Untitled task"), /* @__PURE__ */ React.createElement("span", { className: "ps-muted" }, owner ? `${owner.name}'s task` : "", " \xB7 ", taskStatusMeta(t).label, t.due ? ` \xB7 ${taskDueText(t.due).text}` : ""));
+      }))), (canDelegate(me.role) || canSelfAssign(me.role)) && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, canDelegate(me.role) ? "Delegate" : "Add a task"), /* @__PURE__ */ React.createElement(Delegate, { db, me, draft, setDraft, addTodo: delegateTodo, setToast })), client && waiting.length > 0 && /* @__PURE__ */ React.createElement("details", { className: "ps-fold" }, /* @__PURE__ */ React.createElement("summary", null, waiting.length, " with someone else"), /* @__PURE__ */ React.createElement(VideoTable, { rows: waiting, db, me, open: setOpenId, showClient: false })), me.role !== "client" && /* @__PURE__ */ React.createElement(ActivityHistory, { db, me, mutate, setToast, openTask: setTaskId, openVideo: setOpenId }), !client && recentlyFinished.length > 0 && /* @__PURE__ */ React.createElement("details", { className: "ps-fold" }, /* @__PURE__ */ React.createElement("summary", null, "Recently finished (", recentlyFinished.length, ")"), /* @__PURE__ */ React.createElement("div", { className: "ps-table" }, recentlyFinished.map((f) => /* @__PURE__ */ React.createElement(
         "button",
         {
           key: `${f.kind}-${f.id}`,
@@ -3780,7 +3843,7 @@ ${lines.join("\n")}`);
         mutate,
         close: () => setOpenId(null)
       }
-    ), showAnn && /* @__PURE__ */ React.createElement(AnnouncePopup, { a: db.announce, close: closeAnn }), openTaskRow && /* @__PURE__ */ React.createElement(TaskModal, { t: openTaskRow, db, me, lead, updateTask, mutate, setToast, close: () => setTaskId(null), confirm: setConfirming }), personId && db.people.find((p) => p.id === personId) && /* @__PURE__ */ React.createElement(PersonModal, { person: db.people.find((p) => p.id === personId), db, me, mutate, picker, close: () => setPersonId(null) }), confirming && /* @__PURE__ */ React.createElement("div", { className: "ps-overlay", onClick: (e) => e.target === e.currentTarget && setConfirming(null) }, /* @__PURE__ */ React.createElement("div", { className: "ps-modal ps-confirm", role: "dialog", "aria-modal": "true" }, /* @__PURE__ */ React.createElement("h2", { className: "ps-h2" }, confirming.title), (confirming.lines || []).map((l, i) => /* @__PURE__ */ React.createElement("p", { key: i, className: "ps-muted ps-confirm-line" }, l)), confirming.pick && /* @__PURE__ */ React.createElement("label", { className: "ps-field ps-confirm-pick" }, /* @__PURE__ */ React.createElement("span", null, confirming.pick.label), /* @__PURE__ */ React.createElement("select", { value: handover, onChange: (e) => setHandover(e.target.value) }, confirming.pick.options.map((o) => /* @__PURE__ */ React.createElement("option", { key: o.value || "none", value: o.value }, o.label)))), /* @__PURE__ */ React.createElement("div", { className: "ps-confirm-btns" }, /* @__PURE__ */ React.createElement("button", { className: "ps-btn ghost", onClick: () => setConfirming(null) }, "Cancel"), /* @__PURE__ */ React.createElement("button", { className: "ps-btn danger", onClick: () => {
+    ), showAnn && /* @__PURE__ */ React.createElement(AnnouncePopup, { a: db.announce, close: closeAnn }), openTaskRow && /* @__PURE__ */ React.createElement(TaskModal, { t: openTaskRow, db, me, lead, updateTask, mutate, setToast, close: () => setTaskId(null), confirm: setConfirming, openTask: setTaskId }), personId && db.people.find((p) => p.id === personId) && /* @__PURE__ */ React.createElement(PersonModal, { person: db.people.find((p) => p.id === personId), db, me, mutate, picker, close: () => setPersonId(null) }), confirming && /* @__PURE__ */ React.createElement("div", { className: "ps-overlay", onClick: (e) => e.target === e.currentTarget && setConfirming(null) }, /* @__PURE__ */ React.createElement("div", { className: "ps-modal ps-confirm", role: "dialog", "aria-modal": "true" }, /* @__PURE__ */ React.createElement("h2", { className: "ps-h2" }, confirming.title), (confirming.lines || []).map((l, i) => /* @__PURE__ */ React.createElement("p", { key: i, className: "ps-muted ps-confirm-line" }, l)), confirming.pick && /* @__PURE__ */ React.createElement("label", { className: "ps-field ps-confirm-pick" }, /* @__PURE__ */ React.createElement("span", null, confirming.pick.label), /* @__PURE__ */ React.createElement("select", { value: handover, onChange: (e) => setHandover(e.target.value) }, confirming.pick.options.map((o) => /* @__PURE__ */ React.createElement("option", { key: o.value || "none", value: o.value }, o.label)))), /* @__PURE__ */ React.createElement("div", { className: "ps-confirm-btns" }, /* @__PURE__ */ React.createElement("button", { className: "ps-btn ghost", onClick: () => setConfirming(null) }, "Cancel"), /* @__PURE__ */ React.createElement("button", { className: "ps-btn danger", onClick: () => {
       const f = confirming.onYes;
       setConfirming(null);
       f();
@@ -4406,7 +4469,7 @@ ${lines.join("\n")}`);
 .ps-st-who .ps-muted{font-size:12px}
 @media (max-width:860px){.ps-st{height:auto;overflow:visible;border:0;border-radius:0}.ps-st-stage{position:relative;height:420px;border-radius:14px;border:1px solid var(--line)}.ps-st-side{position:static;width:auto;margin-top:14px;backdrop-filter:none;box-shadow:none;background:var(--card)}.ps-st-stat{min-width:54px;padding:5px 8px}.ps-st-stat b{font-size:15px}}
 .ps-task-top{display:flex;align-items:center;justify-content:space-between;gap:10px;padding-right:34px}
-.ps-task-top .ps-muted{margin:0}
+.ps-task-top .ps-muted{margin:0 auto 0 0}
 .ps-root .ps-linkbtn{background:none;border:1px solid var(--line);border-radius:999px;padding:3px 10px;font-size:12px;cursor:pointer;color:var(--muted);white-space:nowrap}
 .ps-root .ps-linkbtn:hover{color:var(--accent);border-color:var(--accent)}
 .ps-ann-overlay{align-items:center;z-index:40}
@@ -4448,6 +4511,32 @@ ${lines.join("\n")}`);
 .ps-plate-toggle:hover b{color:var(--accent)}
 .ps-teamtasks-h{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}
 .ps-teamtasks-btns{display:flex;gap:6px}
+.ps-task-top .ps-linkbtn + .ps-linkbtn{margin-left:6px}
+.ps-dup{border:1px dashed var(--accent);border-radius:10px;padding:10px 12px;margin:10px 0;display:flex;flex-direction:column;gap:8px;background:color-mix(in srgb,var(--accent) 5%,var(--card))}
+.ps-root .ps-dup-title{width:100%;font-weight:600}
+.ps-dup-row{display:flex;flex-wrap:wrap;gap:8px 16px;align-items:center}
+.ps-dup-who{display:flex;align-items:center;gap:8px}
+.ps-dup-check{display:flex;align-items:center;gap:4px;font-size:14px}
+.ps-dup-note{margin:0;font-size:12.5px}
+.ps-dup .ps-btnrow{justify-content:flex-end}
+.ps-family{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin:8px 0 2px;font-size:13px}
+.ps-root .ps-family-chip{border:1px solid var(--line);background:var(--paper);border-radius:999px;padding:3px 10px;font-size:12.5px;cursor:pointer}
+.ps-root .ps-family-chip:hover{border-color:var(--accent);color:var(--accent)}
+.ps-root .ps-family-chip.done{opacity:.6}
+.ps-helpers{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin:10px 0 2px}
+.ps-helpers-l{font-size:13px;font-weight:600;margin-right:2px}
+.ps-helper{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line);border-radius:999px;padding:2px 4px 2px 3px;font-size:13px;background:var(--paper)}
+.ps-root .ps-helper-x{background:none;border:0;cursor:pointer;color:var(--muted);font-size:15px;line-height:1;padding:0 4px}
+.ps-root .ps-helper-x:hover{color:var(--late)}
+.ps-helper-add{position:relative;display:inline-flex;align-items:center;border:1px dashed var(--line);border-radius:999px;padding:3px 10px;font-size:13px;color:var(--muted);cursor:pointer}
+.ps-helper-add:hover{border-color:var(--accent);color:var(--accent)}
+.ps-root .ps-helper-add select{position:absolute;inset:0;opacity:0;cursor:pointer;width:100%}
+.ps-helpers-note{font-size:12px}
+.ps-helping{margin-top:14px}
+.ps-root .ps-helping-row{display:flex;flex-direction:column;align-items:flex-start;gap:2px;width:100%;text-align:left;background:var(--card);border:1px solid var(--line);border-left:3px solid var(--accent);border-radius:8px;padding:8px 12px;margin-bottom:6px;cursor:pointer}
+.ps-root .ps-helping-row:hover{border-color:var(--accent)}
+.ps-helping-t{font-weight:600}
+.ps-helping-row .ps-muted{font-size:12.5px}
 .ps-spacer{flex:1}
 .ps-viewas{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:13px}
 .ps-root select,.ps-root input,.ps-root textarea{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:7px 10px}

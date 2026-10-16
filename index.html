@@ -3832,7 +3832,7 @@ ${lines.join("\n")}`);
           setFilter(null);
         }
       }
-    )), /* @__PURE__ */ React.createElement("main", { className: "ps-main" }, typeof window !== "undefined" && window.cutlineAuth && !authLock && /* @__PURE__ */ React.createElement("p", { className: "ps-authwarn" }, /* @__PURE__ */ React.createElement("b", null, "Signed in as ", window.cutlineAuth.email, "."), " That email isn't linked to a teammate yet, so you can view as anyone. Add it in Settings beside their name to lock this login to one person."), body)), openVideo && /* @__PURE__ */ React.createElement(
+    )), /* @__PURE__ */ React.createElement("main", { className: `ps-main ${page.tab === "studio" ? "wide" : ""}` }, typeof window !== "undefined" && window.cutlineAuth && !authLock && /* @__PURE__ */ React.createElement("p", { className: "ps-authwarn" }, /* @__PURE__ */ React.createElement("b", null, "Signed in as ", window.cutlineAuth.email, "."), " That email isn't linked to a teammate yet, so you can view as anyone. Add it in Settings beside their name to lock this login to one person."), body)), openVideo && /* @__PURE__ */ React.createElement(
       VideoModal,
       {
         key: openVideo.id + openVideo.stage,
@@ -3974,6 +3974,7 @@ ${lines.join("\n")}`);
           return mats[k] || (mats[k] = new THREE.MeshStandardMaterial({ color: c, roughness: 0.85, metalness: 0, ...extra || {} }));
         };
         const geos = [];
+        const texs = [], extraMats = [];
         const box = (w, hh, d, c, x, y, z, parent, extra) => {
           const g = new THREE.BoxGeometry(w, hh, d);
           geos.push(g);
@@ -4122,9 +4123,23 @@ ${lines.join("\n")}`);
           fig.position.set(0, 0, 0.05);
           g.add(fig);
           box(0.55, 0.62, 0.36, role.color, 0, 0.88, 0, fig);
-          box(0.42, 0.42, 0.42, SKIN[hs % SKIN.length], 0, 1.45, -0.02, fig);
-          box(0.46, 0.14, 0.46, HAIR[(hs >> 3) % HAIR.length], 0, 1.68, 0.0, fig);
-          box(0.46, 0.3, 0.1, HAIR[(hs >> 3) % HAIR.length], 0, 1.5, 0.2, fig);
+          /* Their profile photo goes on the head - on the face and on the back,
+             so it shows from the usual camera angle too. */
+          const head = box(0.42, 0.42, 0.42, SKIN[hs % SKIN.length], 0, 1.45, -0.02, fig);
+          if (!r.p.avatar) box(0.46, 0.14, 0.46, HAIR[(hs >> 3) % HAIR.length], 0, 1.68, 0.0, fig);
+          if (r.p.avatar) {
+            const skin = mat(SKIN[hs % SKIN.length]);
+            const photo = new THREE.MeshStandardMaterial({ color: "#ffffff", roughness: 0.9 });
+            const tl = new THREE.TextureLoader();
+            tl.setCrossOrigin("anonymous");
+            tl.load(r.p.avatar, (tex) => { if (dead) { tex.dispose(); return; } texs.push(tex); photo.map = tex; photo.needsUpdate = true; }, undefined, () => {});
+            extraMats.push(photo);
+            head.material = [skin, skin, photo, skin, photo, photo];
+            head.scale.set(1.25, 1.25, 1.25);
+            head.position.y = 1.5;
+          } else {
+            box(0.46, 0.3, 0.1, HAIR[(hs >> 3) % HAIR.length], 0, 1.5, 0.2, fig);
+          }
           const armL = box(0.14, 0.14, 0.5, role.color, -0.33, 0.95, -0.25, fig);
           const armR = box(0.14, 0.14, 0.5, role.color, 0.33, 0.95, -0.25, fig);
           g.traverse((o) => { if (o.isMesh) { o.userData.pid = r.p.id; pickables.push(o); } });
@@ -4155,16 +4170,30 @@ ${lines.join("\n")}`);
           renderer.setSize(w, hh, false);
           renderer.domElement.style.width = "100%";
           renderer.domElement.style.height = "100%";
-          /* The team panel floats over the left of the scene on wide screens, so
-             the office is centred in the space to its right and sized to fit it. */
+          /* Fit the whole office into the part of the scene you can actually see:
+             right of the floating team panel, under the buttons, above the
+             counters. Done by projecting the office's corners, so it holds at
+             any screen size or angle. Zoom scales around that same centre. */
           const wrapEl = el.closest(".ps-st");
           const side = wrapEl && wrapEl.querySelector(".ps-st-side");
-          const pw = side && getComputedStyle(side).position === "absolute" ? side.offsetWidth + 24 : 0;
-          const a = w / hh, a2 = Math.max(0.5, (w - pw) / hh);
-          const f = a >= 1 ? Math.max(W * 0.58 / a2, D * 0.85 + 1.2) : W * 0.52;
-          const shift = pw / 2 * (2 * f * a / w);
-          Object.assign(cam, a >= 1 ? { left: -f * a - shift, right: f * a - shift, top: f, bottom: -f } : { left: -f, right: f, top: f / a, bottom: -f / a });
-          cam.zoom = view.zoom;
+          const pw = side && getComputedStyle(side).position === "absolute" ? side.offsetWidth + 20 : 0;
+          place();
+          cam.updateMatrixWorld();
+          const inv = cam.matrixWorldInverse;
+          let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+          const v = new THREE.Vector3();
+          for (const x of [-W / 2 - 0.6, W / 2 + 0.6]) for (const z of [-D / 2 - 0.6, D / 2 + 0.6]) for (const y of [0, 2.6]) {
+            v.set(x, y, z).applyMatrix4(inv);
+            x0 = Math.min(x0, v.x); x1 = Math.max(x1, v.x); y0 = Math.min(y0, v.y); y1 = Math.max(y1, v.y);
+          }
+          const topPad = 58, botPad = w > 700 ? 66 : 96, sidePad = 14;
+          const availW = Math.max(160, w - pw - sidePad * 2), availH = Math.max(160, hh - topPad - botPad);
+          const sc = Math.max((x1 - x0) / availW, (y1 - y0) / availH) / view.zoom;
+          const cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
+          const X0 = pw + sidePad + availW / 2, Y0 = topPad + availH / 2;
+          cam.left = cx - X0 * sc; cam.right = cam.left + w * sc;
+          cam.top = cy + Y0 * sc; cam.bottom = cam.top - hh * sc;
+          cam.zoom = 1;
           cam.updateProjectionMatrix();
         };
         size();
@@ -4282,7 +4311,9 @@ ${lines.join("\n")}`);
           cv.removeEventListener("wheel", wheel);
           geos.forEach((g) => g.dispose());
           Object.values(mats).forEach((m) => m.dispose());
-          scene.traverse((o) => { if (o.isMesh && o.material && !Object.values(mats).includes(o.material)) o.material.dispose(); });
+          scene.traverse((o) => { if (o.isMesh && o.material && !Array.isArray(o.material) && !Object.values(mats).includes(o.material)) o.material.dispose(); });
+          texs.forEach((x) => x.dispose());
+          extraMats.forEach((m) => m.dispose());
           renderer.dispose();
           cv.remove();
         };
@@ -4537,6 +4568,14 @@ ${lines.join("\n")}`);
 .ps-root .ps-helping-row:hover{border-color:var(--accent)}
 .ps-helping-t{font-weight:600}
 .ps-helping-row .ps-muted{font-size:12.5px}
+.ps-main.wide{max-width:none;padding:20px 22px 22px}
+@media (min-width:861px){@media (min-width:861px){.ps-main.wide .ps-st{height:max(520px,calc(100vh - 196px))}}}
+.ps-st-stage{z-index:0}
+.ps-st-tagav{position:relative;display:inline-flex;flex:0 0 auto}
+.ps-st-tagav .ps-av{width:18px;height:18px;font-size:8px;border:1.5px solid #fff;box-shadow:0 0 0 1px rgba(0,0,0,.08)}
+.ps-root .ps-st-tag .ps-st-tagav i{position:absolute;right:-2px;bottom:-2px;width:7px;height:7px;border-radius:50%;border:1.5px solid #fff}
+.ps-st-tag[data-fit="dot"] .ps-st-tagav .ps-av{display:none}
+.ps-st-tag[data-fit="dot"] .ps-st-tagav i{position:static;width:8px;height:8px}
 .ps-spacer{flex:1}
 .ps-viewas{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:13px}
 .ps-root select,.ps-root input,.ps-root textarea{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:7px 10px}

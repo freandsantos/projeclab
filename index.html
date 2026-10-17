@@ -704,7 +704,28 @@
   var STORE_KEY = "cutline-state-v2";
   /* Every list in the saved file. Each row carries an id, which is how two
      people's edits are reconciled instead of one flattening the other. */
-  var COLLECTIONS = ["clients", "people", "videos", "invoices", "tasks", "meetings", "timeoff", "templates"];
+  var COLLECTIONS = ["clients", "people", "videos", "invoices", "tasks", "meetings", "timeoff", "templates", "archive", "trash"];
+  /* Archive and Trash. A task moves out of `tasks` into one of these, so every
+     list, count, notification and the Studio leave it out without being told.
+     Trash empties itself after TRASH_DAYS; the archive keeps things. */
+  var TRASH_DAYS = 30;
+  var binTask = (n, key, id, by) => {
+    const t = (n.tasks || []).find((x) => x.id === id);
+    if (!t) return null;
+    n.tasks = n.tasks.filter((x) => x.id !== id);
+    const at = (/* @__PURE__ */ new Date()).toISOString();
+    const row = key === "trash" ? { ...t, trashedAt: at, trashedBy: by } : { ...t, archivedAt: at, archivedBy: by };
+    n[key] = [...(n[key] || []).filter((x) => x.id !== id), row];
+    return row;
+  };
+  var unbinTask = (n, key, id) => {
+    const t = (n[key] || []).find((x) => x.id === id);
+    if (!t) return null;
+    n[key] = n[key].filter((x) => x.id !== id);
+    const { trashedAt, trashedBy, archivedAt, archivedBy, ...rest } = t;
+    if (!n.tasks.some((x) => x.id === id)) n.tasks.push(rest);
+    return rest;
+  };
   /* Three versions in play: `base` is what we know reached the server, `mine` is
      what's on this screen, `theirs` is what the server holds now. Replay only the
      rows this screen actually touched on top of theirs - everything else survives. */
@@ -822,6 +843,8 @@
     if (!Array.isArray(base.templates)) base.templates = [];
     if (!Array.isArray(base.meetings)) base.meetings = [];
     if (!Array.isArray(base.timeoff)) base.timeoff = [];
+    if (!Array.isArray(base.archive)) base.archive = [];
+    if (!Array.isArray(base.trash)) base.trash = [];
     const people = (base.people || []).map((p) => OLD_ROLE_MAP[p.role] ? { ...p, role: OLD_ROLE_MAP[p.role] } : p);
     base.people = people.some((p) => p.role === "qa") || base.qaCleared ? people : [...people, { id: "p_stephen", name: "Stephen", role: "qa" }];
     if (base.videos) base.videos = base.videos.map((v) => OLD_STAGE_MAP[v.stage] ? { ...v, stage: OLD_STAGE_MAP[v.stage] } : v);
@@ -2311,6 +2334,75 @@
           h("input", { placeholder: "Optional message under the picture", maxLength: 300, value: draft.text, onChange: (e) => setDraft({ ...draft, text: e.target.value }) }),
           h("button", { className: "ps-btn", disabled: !draft.url, onClick: publish }, a ? "Replace the current popup" : "Show to everyone"))));
   }
+  /* ---- Archive & Trash page ------------------------------------------- */
+  function ArchivePage({ db, me, mutate, setToast, confirm }) {
+    const h = React.createElement;
+    const [tab, setTab] = useState("archive");
+    const [q, setQ] = useState("");
+    const [openId, setOpenId] = useState(null);
+    const isLead = me.role === "lead";
+    const lead = isManager(me.role);
+    const name = (id) => (db.people.find((p) => p.id === id) || {}).name || "Someone";
+    const now = Date.now();
+    const daysLeft = (t) => Math.max(0, TRASH_DAYS - Math.floor((now - new Date(t.trashedAt).getTime()) / DAY));
+    const rows = (key) => (db[key] || []).filter((t) => canSeeTask(db, me, t))
+      .filter((t) => { const n = q.trim().toLowerCase(); return !n || [t.text, t.details, name(t.personId), ((db.clients || []).find((c) => c.id === t.clientId) || {}).name].some((x) => String(x || "").toLowerCase().includes(n)); })
+      .slice().sort((a, b) => String(b.archivedAt || b.trashedAt || "").localeCompare(String(a.archivedAt || a.trashedAt || "")));
+    const archived = rows("archive"), trashed = rows("trash");
+    const list = tab === "archive" ? archived : trashed;
+    const canRestore = (t) => lead || t.by === me.id || t.personId === me.id || t.archivedBy === me.id || t.trashedBy === me.id;
+    const restore = (t) => {
+      mutate((n) => { unbinTask(n, tab, t.id); });
+      setToast(`“${t.text}” is back where it was.`);
+    };
+    const forever = (t) => confirm({
+      title: "Delete forever?",
+      lines: [`“${t.text}”`, "This cannot be undone."],
+      confirmLabel: "Delete forever",
+      onYes: () => { mutate((n) => { n.trash = (n.trash || []).filter((x) => x.id !== t.id); }); setToast("Deleted for good."); }
+    });
+    const oldDone = (db.tasks || []).filter((t) => t.done && t.doneAt && now - new Date(t.doneAt).getTime() > 14 * DAY);
+    const archiveOld = () => confirm({
+      title: `Archive ${oldDone.length} finished task${oldDone.length === 1 ? "" : "s"}?`,
+      lines: ["Everything marked done more than 2 weeks ago moves to the Archive. Nothing is lost - it can be restored any time."],
+      confirmLabel: "Archive them",
+      onYes: () => { mutate((n) => { oldDone.forEach((t) => binTask(n, "archive", t.id, me.id)); }); setToast(`Archived ${oldDone.length} finished task${oldDone.length === 1 ? "" : "s"}.`); }
+    });
+    const emptyTrash = () => confirm({
+      title: "Empty the Trash?",
+      lines: [`${(db.trash || []).length} task${(db.trash || []).length === 1 ? "" : "s"} will be deleted for good.`, "This cannot be undone."],
+      confirmLabel: "Empty Trash",
+      onYes: () => { mutate((n) => { n.trash = []; }); setToast("Trash emptied."); }
+    });
+    return h(React.Fragment, null,
+      h("div", { className: "ps-ovhead" }, h("span", { className: "ps-ovicon", "aria-hidden": "true" }, "\u{1F5C3}"), h("h1", { className: "ps-h1" }, "Archive")),
+      h("p", { className: "ps-lede" }, "Finished work you've tidied away, and tasks that were deleted. Trash empties itself after ", TRASH_DAYS, " days."),
+      h("div", { className: "ps-bin-bar" },
+        h("div", { className: "ps-tabs" },
+          h("button", { className: `ps-tab ${tab === "archive" ? "on" : ""}`, onClick: () => { setTab("archive"); setOpenId(null); } }, "Archived ", archived.length || ""),
+          h("button", { className: `ps-tab ${tab === "trash" ? "on" : ""}`, onClick: () => { setTab("trash"); setOpenId(null); } }, "Trash ", trashed.length || "")),
+        h("input", { className: "ps-bin-find", type: "search", placeholder: "Search by task, person or client", value: q, onChange: (e) => setQ(e.target.value) }),
+        lead && tab === "archive" && oldDone.length > 0 && h("button", { className: "ps-btn ghost small", onClick: archiveOld }, `Archive ${oldDone.length} finished 2+ weeks ago`),
+        isLead && tab === "trash" && (db.trash || []).length > 0 && h("button", { className: "ps-btn ghost small danger-text", onClick: emptyTrash }, "Empty Trash")),
+      list.length === 0
+        ? h("p", { className: "ps-empty" }, q ? "Nothing matches that." : tab === "archive" ? "Nothing archived yet. Open a task and press Archive to tidy it away." : "Trash is empty.")
+        : h("div", { className: "ps-bin-list" }, list.map((t) => {
+          const c = (db.clients || []).find((x) => x.id === t.clientId);
+          const open = openId === t.id;
+          return h("div", { key: t.id, className: `ps-bin-row ${open ? "open" : ""}` },
+            h("button", { className: "ps-bin-main", onClick: () => setOpenId(open ? null : t.id) },
+              h("span", { className: "ps-bin-title" }, t.text || "Untitled task", t.done ? h("span", { className: "ps-chip ok" }, "Done") : null),
+              h("span", { className: "ps-muted ps-bin-meta" },
+                (kindOf(t.kind) || { label: "Task" }).label, " \xB7 ", name(t.personId), c ? ` \xB7 ${c.name}` : "",
+                " \xB7 ", tab === "archive" ? `archived ${shortDate(t.archivedAt)} by ${name(t.archivedBy)}` : `deleted ${shortDate(t.trashedAt)} by ${name(t.trashedBy)} \xB7 ${daysLeft(t)} day${daysLeft(t) === 1 ? "" : "s"} left`)),
+            h("span", { className: "ps-bin-btns" },
+              canRestore(t) && h("button", { className: "ps-btn ghost small", onClick: () => restore(t) }, "Restore"),
+              tab === "trash" && isLead && h("button", { className: "ps-btn ghost small danger-text", onClick: () => forever(t) }, "Delete forever")),
+            open && h("div", { className: "ps-bin-peek" },
+              t.details ? h("p", null, t.details) : h("p", { className: "ps-muted" }, "No brief."),
+              h("p", { className: "ps-muted" }, (t.comments || []).length, " comment", (t.comments || []).length === 1 ? "" : "s", " \xB7 ", (t.revisions || []).length, " revision", (t.revisions || []).length === 1 ? "" : "s", (t.workMs || 0) > 0 ? ` \xB7 ${hms(t.workMs)} logged` : "", " \xB7 restore it to open the full task.")));
+        })));
+  }
   function TaskModal({ t, db, me, lead, updateTask, mutate, setToast, close, confirm, openTask }) {
     const [note, setNote] = useState("");
     const [comment, setComment] = useState("");
@@ -2349,11 +2441,11 @@
     const addHelper = (id) => {
       const p = db.people.find((x) => x.id === id);
       if (!p) return;
-      updateTask(t.id, { helpers: [...helpers, id], ...log(`Added ${p.name} as a helper`) });
+      updateTask(t.id, { helpers: [...helpers, id], ...log(`Added ${p.name} to assist`) });
     };
     const dropHelper = (id) => {
       const p = db.people.find((x) => x.id === id);
-      updateTask(t.id, { helpers: helpers.filter((x) => x !== id), ...log(`${id === me.id ? "Left the task" : `Removed ${p ? p.name : "a helper"}`} as helper`) });
+      updateTask(t.id, { helpers: helpers.filter((x) => x !== id), ...log(`${id === me.id ? "Stopped assisting" : `Removed ${p ? p.name : "someone"} from assist`}`) });
     };
     const dupSelfOnly = !canDelegate(me.role);
     const canDup = me.role !== "client" && (canDelegate(me.role) || canSelfAssign(me.role) && (t.personId === me.id || t.reviewFrom === me.id || t.by === me.id));
@@ -2667,19 +2759,24 @@
     };
     const remove = () => {
       const go = () => {
-        mutate((n) => {
-          n.tasks = n.tasks.filter((y) => y.id !== t.id);
-        });
-        setToast(`Deleted \u201C${t.text}\u201D.`);
+        mutate((n) => { binTask(n, "trash", t.id, me.id); });
+        setToast(`\u201C${t.text}\u201D moved to Trash. Restore it from Archive \u2192 Trash within ${TRASH_DAYS} days.`);
         close();
       };
       if (!confirm) return go();
       confirm({
-        title: "Delete this task?",
-        lines: [`\u201C${t.text}\u201D`, taskLoss(t), "This cannot be undone."],
-        confirmLabel: "Delete task",
+        title: "Move this task to Trash?",
+        lines: [`\u201C${t.text}\u201D`, `It stays in Trash for ${TRASH_DAYS} days, so it can be restored if this was a mistake.`],
+        confirmLabel: "Move to Trash",
         onYes: go
       });
+    };
+    /* Archive: tidy finished (or dropped) work out of every list, keep it findable. */
+    const canArchive = me.role !== "client" && (lead || t.by === me.id || (mine && t.done));
+    const archive = () => {
+      mutate((n) => { binTask(n, "archive", t.id, me.id); });
+      setToast(`\u201C${t.text}\u201D archived. Find it under Archive.`);
+      close();
     };
     /* Read-only used to mean a dead input showing a URL you couldn't click.
        Now it's the link itself, and an empty one just isn't drawn. */
@@ -2702,11 +2799,11 @@
     return /* @__PURE__ */ React.createElement("div", { className: "ps-overlay", onClick: (e) => e.target === e.currentTarget && close() }, /* @__PURE__ */ React.createElement("div", { className: "ps-modal", role: "dialog", "aria-modal": "true", onPaste }, /* @__PURE__ */ React.createElement("button", { className: "ps-x", onClick: close, "aria-label": "Close" }, "\xD7"), /* @__PURE__ */ React.createElement("div", { className: "ps-task-top" }, /* @__PURE__ */ React.createElement("p", { className: "ps-muted" }, "Task", from ? ` \xB7 from ${from.id === me.id ? "you" : from.name}` : "", t.at ? ` \xB7 ${shortDate(t.at)}` : ""), /* @__PURE__ */ React.createElement("button", { className: "ps-linkbtn", title: "Copy a link that opens this task", onClick: async () => {
       const ok = await copyText(taskLink(t.id));
       setToast(ok ? "Link copied \u2014 paste it in Slack or a chat. It opens this task for anyone who can see it." : "Couldn't copy. Your browser blocked it.");
-    } }, "\u{1F517} Copy link"), canDup && /* @__PURE__ */ React.createElement("button", { className: "ps-linkbtn", title: "Make a copy to turn into a variation", onClick: () => dup ? setDup(null) : startDup() }, "\u29C9 Duplicate")), dup && /* @__PURE__ */ React.createElement("div", { className: "ps-dup" }, /* @__PURE__ */ React.createElement("b", null, "Duplicate as a variation"), /* @__PURE__ */ React.createElement("input", { className: "ps-dup-title", autoFocus: true, value: dup.text, onChange: (e) => setDup({ ...dup, text: e.target.value }), onKeyDown: (e) => { if (e.key === "Enter") makeDup(); if (e.key === "Escape") setDup(null); } }), /* @__PURE__ */ React.createElement("div", { className: "ps-dup-row" }, !dupSelfOnly && /* @__PURE__ */ React.createElement("label", { className: "ps-dup-who" }, /* @__PURE__ */ React.createElement("span", null, "Give it to"), /* @__PURE__ */ React.createElement("select", { value: dup.personId || "", onChange: (e) => setDup({ ...dup, personId: e.target.value }) }, db.people.filter((p) => p.role !== "client").map((p) => /* @__PURE__ */ React.createElement("option", { key: p.id, value: p.id }, p.name, isAway(p) ? " (away)" : "")))), [["brief", "Brief"], ["steps", "Steps"], ["photos", "Photos"]].map(([k, l]) => /* @__PURE__ */ React.createElement("label", { key: k, className: "ps-dup-check" }, /* @__PURE__ */ React.createElement("input", { type: "checkbox", checked: !!dup[k], onChange: (e) => setDup({ ...dup, [k]: e.target.checked }) }), " Copy ", l.toLowerCase()))), /* @__PURE__ */ React.createElement("p", { className: "ps-muted ps-dup-note" }, "Starts fresh: To do, no comments, revisions or logged time. Kind, client and due date carry over."), /* @__PURE__ */ React.createElement("div", { className: "ps-btnrow" }, /* @__PURE__ */ React.createElement("button", { className: "ps-btn ghost small", onClick: () => setDup(null) }, "Cancel"), /* @__PURE__ */ React.createElement("button", { className: "ps-btn small", disabled: !dup.text.trim(), onClick: makeDup }, "Create copy"))), family.length > 0 && /* @__PURE__ */ React.createElement("div", { className: "ps-family" }, /* @__PURE__ */ React.createElement("span", { className: "ps-muted" }, t.variantOf ? "Variation of / alongside:" : "Variations:"), family.map((x) => /* @__PURE__ */ React.createElement("button", { key: x.id, className: `ps-family-chip ${x.done ? "done" : ""}`, onClick: () => openTask && openTask(x.id), title: canSeeTask(db, me, x) ? x.text : "Private task" }, x.id === familyId ? "Original" : (x.text || "").replace(/^.*\u2014\s*/, "") || "Variation", " \xB7 ", (db.people.find((p) => p.id === x.personId) || {}).name || "", x.done ? " \u2713" : ""))), canShape ? /* @__PURE__ */ React.createElement("input", { className: "ps-title-in", value: t.text, onChange: (e) => updateTask(t.id, { text: e.target.value }) }) : /* @__PURE__ */ React.createElement("h2", { className: "ps-h2" }, t.text), /* @__PURE__ */ React.createElement("div", { className: "ps-meta" }, /* @__PURE__ */ React.createElement("span", { className: "ps-chip" }, (kindOf(t.kind) || { label: "Task" }).label), taskClient && /* @__PURE__ */ React.createElement("span", { className: "ps-chip" }, taskClient.name), person && ((canEdit || canShape || canAssign) && !t.done ? /* @__PURE__ */ React.createElement("label", { className: "ps-who ps-who-chip", title: "Click to give this task to someone else" }, /* @__PURE__ */ React.createElement(Avatar, { person, size: 24 }), person.name, /* @__PURE__ */ React.createElement("span", { className: "ps-who-caret", "aria-hidden": "true" }, "\u25BE"), /* @__PURE__ */ React.createElement("select", { className: "ps-who-select", "aria-label": `Assigned to ${person.name} - choose someone else`, value: t.personId, onChange: (e) => handTo(e.target.value) }, (me.role === "teamlead" && !lead ? benchFor("teamlead") : db.people.filter((p) => p.role !== "client")).map((p) => /* @__PURE__ */ React.createElement("option", { key: p.id, value: p.id }, p.name, isAway(p) ? " (away)" : "")))) : /* @__PURE__ */ React.createElement("span", { className: "ps-who" }, /* @__PURE__ */ React.createElement(Avatar, { person, size: 24 }), person.name)), t.done ? /* @__PURE__ */ React.createElement("span", { className: "ps-chip ok" }, "Done", t.doneAt ? ` ${shortDate(t.doneAt)}` : "") : t.due ? /* @__PURE__ */ React.createElement(TaskDue, { due: t.due }) : /* @__PURE__ */ React.createElement("span", { className: "ps-muted" }, "no date"), !t.done && /* @__PURE__ */ React.createElement("span", { className: "ps-chip", style: taskStatusMeta(t).color ? { background: taskStatusMeta(t).soft, color: taskStatusMeta(t).color } : void 0 }, taskStatusMeta(t).label), running ? /* @__PURE__ */ React.createElement("span", { className: "ps-clock", title: "Working time" }, /* @__PURE__ */ React.createElement("span", { className: "ps-dot", "aria-hidden": "true" }), /* @__PURE__ */ React.createElement(Elapsed, { from: t.startedAt, interval: 1e3, seconds: true })) : bankedMs > 0 ? /* @__PURE__ */ React.createElement("span", { className: "ps-muted" }, hms(bankedMs), " of work") : null, steps.length > 0 && !t.done && /* @__PURE__ */ React.createElement("span", { className: "ps-muted" }, steps.filter((x) => x.done).length, " of ", steps.length, " steps")), (helpers.length > 0 || canHelpers) && /* @__PURE__ */ React.createElement("div", { className: "ps-helpers" }, /* @__PURE__ */ React.createElement("span", { className: "ps-muted ps-helpers-l" }, "Helpers"), helpers.map((id) => {
+    } }, "\u{1F517} Copy link"), canDup && /* @__PURE__ */ React.createElement("button", { className: "ps-linkbtn", title: "Make a copy to turn into a variation", onClick: () => dup ? setDup(null) : startDup() }, "\u29C9 Duplicate")), dup && /* @__PURE__ */ React.createElement("div", { className: "ps-dup" }, /* @__PURE__ */ React.createElement("b", null, "Duplicate as a variation"), /* @__PURE__ */ React.createElement("input", { className: "ps-dup-title", autoFocus: true, value: dup.text, onChange: (e) => setDup({ ...dup, text: e.target.value }), onKeyDown: (e) => { if (e.key === "Enter") makeDup(); if (e.key === "Escape") setDup(null); } }), /* @__PURE__ */ React.createElement("div", { className: "ps-dup-row" }, !dupSelfOnly && /* @__PURE__ */ React.createElement("label", { className: "ps-dup-who" }, /* @__PURE__ */ React.createElement("span", null, "Give it to"), /* @__PURE__ */ React.createElement("select", { value: dup.personId || "", onChange: (e) => setDup({ ...dup, personId: e.target.value }) }, db.people.filter((p) => p.role !== "client").map((p) => /* @__PURE__ */ React.createElement("option", { key: p.id, value: p.id }, p.name, isAway(p) ? " (away)" : "")))), [["brief", "Brief"], ["steps", "Steps"], ["photos", "Photos"]].map(([k, l]) => /* @__PURE__ */ React.createElement("label", { key: k, className: "ps-dup-check" }, /* @__PURE__ */ React.createElement("input", { type: "checkbox", checked: !!dup[k], onChange: (e) => setDup({ ...dup, [k]: e.target.checked }) }), " Copy ", l.toLowerCase()))), /* @__PURE__ */ React.createElement("p", { className: "ps-muted ps-dup-note" }, "Starts fresh: To do, no comments, revisions or logged time. Kind, client and due date carry over."), /* @__PURE__ */ React.createElement("div", { className: "ps-btnrow" }, /* @__PURE__ */ React.createElement("button", { className: "ps-btn ghost small", onClick: () => setDup(null) }, "Cancel"), /* @__PURE__ */ React.createElement("button", { className: "ps-btn small", disabled: !dup.text.trim(), onClick: makeDup }, "Create copy"))), family.length > 0 && /* @__PURE__ */ React.createElement("div", { className: "ps-family" }, /* @__PURE__ */ React.createElement("span", { className: "ps-muted" }, t.variantOf ? "Variation of / alongside:" : "Variations:"), family.map((x) => /* @__PURE__ */ React.createElement("button", { key: x.id, className: `ps-family-chip ${x.done ? "done" : ""}`, onClick: () => openTask && openTask(x.id), title: canSeeTask(db, me, x) ? x.text : "Private task" }, x.id === familyId ? "Original" : (x.text || "").replace(/^.*\u2014\s*/, "") || "Variation", " \xB7 ", (db.people.find((p) => p.id === x.personId) || {}).name || "", x.done ? " \u2713" : ""))), canShape ? /* @__PURE__ */ React.createElement("input", { className: "ps-title-in", value: t.text, onChange: (e) => updateTask(t.id, { text: e.target.value }) }) : /* @__PURE__ */ React.createElement("h2", { className: "ps-h2" }, t.text), /* @__PURE__ */ React.createElement("div", { className: "ps-meta" }, /* @__PURE__ */ React.createElement("span", { className: "ps-chip" }, (kindOf(t.kind) || { label: "Task" }).label), taskClient && /* @__PURE__ */ React.createElement("span", { className: "ps-chip" }, taskClient.name), person && ((canEdit || canShape || canAssign) && !t.done ? /* @__PURE__ */ React.createElement("label", { className: "ps-who ps-who-chip", title: "Click to give this task to someone else" }, /* @__PURE__ */ React.createElement(Avatar, { person, size: 24 }), person.name, /* @__PURE__ */ React.createElement("span", { className: "ps-who-caret", "aria-hidden": "true" }, "\u25BE"), /* @__PURE__ */ React.createElement("select", { className: "ps-who-select", "aria-label": `Assigned to ${person.name} - choose someone else`, value: t.personId, onChange: (e) => handTo(e.target.value) }, (me.role === "teamlead" && !lead ? benchFor("teamlead") : db.people.filter((p) => p.role !== "client")).map((p) => /* @__PURE__ */ React.createElement("option", { key: p.id, value: p.id }, p.name, isAway(p) ? " (away)" : "")))) : /* @__PURE__ */ React.createElement("span", { className: "ps-who" }, /* @__PURE__ */ React.createElement(Avatar, { person, size: 24 }), person.name)), t.done ? /* @__PURE__ */ React.createElement("span", { className: "ps-chip ok" }, "Done", t.doneAt ? ` ${shortDate(t.doneAt)}` : "") : t.due ? /* @__PURE__ */ React.createElement(TaskDue, { due: t.due }) : /* @__PURE__ */ React.createElement("span", { className: "ps-muted" }, "no date"), !t.done && /* @__PURE__ */ React.createElement("span", { className: "ps-chip", style: taskStatusMeta(t).color ? { background: taskStatusMeta(t).soft, color: taskStatusMeta(t).color } : void 0 }, taskStatusMeta(t).label), running ? /* @__PURE__ */ React.createElement("span", { className: "ps-clock", title: "Working time" }, /* @__PURE__ */ React.createElement("span", { className: "ps-dot", "aria-hidden": "true" }), /* @__PURE__ */ React.createElement(Elapsed, { from: t.startedAt, interval: 1e3, seconds: true })) : bankedMs > 0 ? /* @__PURE__ */ React.createElement("span", { className: "ps-muted" }, hms(bankedMs), " of work") : null, steps.length > 0 && !t.done && /* @__PURE__ */ React.createElement("span", { className: "ps-muted" }, steps.filter((x) => x.done).length, " of ", steps.length, " steps")), (helpers.length > 0 || canHelpers) && /* @__PURE__ */ React.createElement("div", { className: "ps-helpers" }, /* @__PURE__ */ React.createElement("span", { className: "ps-muted ps-helpers-l" }, "Assist"), helpers.map((id) => {
       const p = db.people.find((x) => x.id === id);
       if (!p) return null;
-      return /* @__PURE__ */ React.createElement("span", { key: id, className: "ps-helper" }, /* @__PURE__ */ React.createElement(Avatar, { person: p, size: 20 }), p.name, (canHelpers || id === me.id) && /* @__PURE__ */ React.createElement("button", { className: "ps-helper-x", "aria-label": `Remove ${p.name}`, title: id === me.id ? "Leave this task" : "Remove helper", onClick: () => dropHelper(id) }, "\xD7"));
-    }), canHelpers && helperOptions.length > 0 && /* @__PURE__ */ React.createElement("label", { className: "ps-helper-add" }, "+ Add helper", /* @__PURE__ */ React.createElement("select", { value: "", "aria-label": "Add a helper", onChange: (e) => { if (e.target.value) addHelper(e.target.value); } }, /* @__PURE__ */ React.createElement("option", { value: "" }, "Add helper\u2026"), helperOptions.map((p) => /* @__PURE__ */ React.createElement("option", { key: p.id, value: p.id }, p.name, isAway(p) ? " (away)" : "")))), helpers.length > 0 && /* @__PURE__ */ React.createElement("span", { className: "ps-muted ps-helpers-note" }, person ? `${person.id === me.id ? "You" : person.name} ${person.id === me.id ? "own" : "owns"} it and sends it on` : "")), (details || canBrief) && /* @__PURE__ */ React.createElement("div", { className: `ps-notebox ps-brief ${briefOpen || briefDraft !== null ? "open" : "shut"}` }, /* @__PURE__ */ React.createElement("div", { className: "ps-brief-head" }, /* @__PURE__ */ React.createElement("button", { className: "ps-fold-h", "aria-expanded": briefOpen, onClick: () => setBriefOpen(!briefOpen) }, /* @__PURE__ */ React.createElement("span", { className: "ps-fold-car", "aria-hidden": "true" }, briefOpen || briefDraft !== null ? "\u25BE" : "\u25B8"), "The brief"), canBrief && briefDraft === null && /* @__PURE__ */ React.createElement("button", { className: "ps-btn ghost small ps-brief-edit-btn", onClick: () => { setBriefOpen(true); setBriefDraft(details); } }, details ? "Edit" : "Write one")), !briefOpen && briefDraft === null ? null : briefDraft === null ? details ? /* @__PURE__ */ React.createElement("p", null, details) : /* @__PURE__ */ React.createElement("p", { className: "ps-muted" }, "No brief was written when this went out.") : /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("textarea", { className: "ps-brief-in", autoFocus: true, maxLength: DETAIL_MAX, value: briefDraft, onChange: (e) => setBriefDraft(e.target.value.slice(0, DETAIL_MAX)), placeholder: "Anything they need to know: links, references, what done looks like." }), /* @__PURE__ */ React.createElement("div", { className: "ps-btnrow" }, /* @__PURE__ */ React.createElement("span", { className: `ps-counter ${briefDraft.length >= DETAIL_MAX ? "full" : ""}` }, briefDraft.length, " / ", DETAIL_MAX), /* @__PURE__ */ React.createElement("button", { className: "ps-btn ghost small", onClick: () => setBriefDraft(null) }, "Cancel"), /* @__PURE__ */ React.createElement("button", { className: "ps-btn small", onClick: () => {
+      return /* @__PURE__ */ React.createElement("span", { key: id, className: "ps-helper" }, /* @__PURE__ */ React.createElement(Avatar, { person: p, size: 20 }), p.name, (canHelpers || id === me.id) && /* @__PURE__ */ React.createElement("button", { className: "ps-helper-x", "aria-label": `Remove ${p.name}`, title: id === me.id ? "Stop assisting" : "Remove from assist", onClick: () => dropHelper(id) }, "\xD7"));
+    }), canHelpers && helperOptions.length > 0 && /* @__PURE__ */ React.createElement("label", { className: "ps-helper-add" }, "+ Add assist", /* @__PURE__ */ React.createElement("select", { value: "", "aria-label": "Add someone to assist", onChange: (e) => { if (e.target.value) addHelper(e.target.value); } }, /* @__PURE__ */ React.createElement("option", { value: "" }, "Add assist\u2026"), helperOptions.map((p) => /* @__PURE__ */ React.createElement("option", { key: p.id, value: p.id }, p.name, isAway(p) ? " (away)" : "")))), helpers.length > 0 && /* @__PURE__ */ React.createElement("span", { className: "ps-muted ps-helpers-note" }, person ? `${person.id === me.id ? "You" : person.name} ${person.id === me.id ? "own" : "owns"} it and sends it on` : "")), (details || canBrief) && /* @__PURE__ */ React.createElement("div", { className: `ps-notebox ps-brief ${briefOpen || briefDraft !== null ? "open" : "shut"}` }, /* @__PURE__ */ React.createElement("div", { className: "ps-brief-head" }, /* @__PURE__ */ React.createElement("button", { className: "ps-fold-h", "aria-expanded": briefOpen, onClick: () => setBriefOpen(!briefOpen) }, /* @__PURE__ */ React.createElement("span", { className: "ps-fold-car", "aria-hidden": "true" }, briefOpen || briefDraft !== null ? "\u25BE" : "\u25B8"), "The brief"), canBrief && briefDraft === null && /* @__PURE__ */ React.createElement("button", { className: "ps-btn ghost small ps-brief-edit-btn", onClick: () => { setBriefOpen(true); setBriefDraft(details); } }, details ? "Edit" : "Write one")), !briefOpen && briefDraft === null ? null : briefDraft === null ? details ? /* @__PURE__ */ React.createElement("p", null, details) : /* @__PURE__ */ React.createElement("p", { className: "ps-muted" }, "No brief was written when this went out.") : /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("textarea", { className: "ps-brief-in", autoFocus: true, maxLength: DETAIL_MAX, value: briefDraft, onChange: (e) => setBriefDraft(e.target.value.slice(0, DETAIL_MAX)), placeholder: "Anything they need to know: links, references, what done looks like." }), /* @__PURE__ */ React.createElement("div", { className: "ps-btnrow" }, /* @__PURE__ */ React.createElement("span", { className: `ps-counter ${briefDraft.length >= DETAIL_MAX ? "full" : ""}` }, briefDraft.length, " / ", DETAIL_MAX), /* @__PURE__ */ React.createElement("button", { className: "ps-btn ghost small", onClick: () => setBriefDraft(null) }, "Cancel"), /* @__PURE__ */ React.createElement("button", { className: "ps-btn small", onClick: () => {
       const next = briefDraft.trim().slice(0, DETAIL_MAX);
       if (next !== details) updateTask(t.id, { details: next, ...log(details ? "Rewrote the brief" : "Wrote the brief") });
       setBriefDraft(null);
@@ -2751,7 +2848,7 @@
     ), /* @__PURE__ */ React.createElement("button", { className: "ps-btn ghost small", onClick: addStep }, "Add step"))), !canEdit && !canShape && canAssign && /* @__PURE__ */ React.createElement("div", { className: "ps-fields" }, /* @__PURE__ */ React.createElement("label", { className: "ps-field" }, /* @__PURE__ */ React.createElement("span", null, "Reassign this task"), /* @__PURE__ */ React.createElement("select", { value: t.personId, onChange: (e) => handTo(e.target.value) }, benchFor(me.role).map((p) => /* @__PURE__ */ React.createElement("option", { key: p.id, value: p.id }, p.name, isAway(p) ? " (away)" : "")))), /* @__PURE__ */ React.createElement("p", { className: "ps-muted" }, "It keeps its brief, comments and logged time \u2014 only the person changes.")), /* @__PURE__ */ React.createElement(CommentBox, { t, db, me, comments, comment, setComment, postComment, askQuestion, answerQuestion, askBack, asker, status, mine, shots, setShots, setToast, editComment: (id, text) => {
       const people = taggableOn(db, me, t);
       updateTask(t.id, { comments: comments.map((c) => c.id === id ? { ...c, text, to: mentionIds(text, people), editedAt: (/* @__PURE__ */ new Date()).toISOString() } : c) });
-    } }), canEdit ? /* @__PURE__ */ React.createElement("div", { className: "ps-actions" }, !t.done && status === "in_progress" && !qa && !skipsQA(t) && /* @__PURE__ */ React.createElement("p", { className: "ps-warn" }, "Nobody has the QA role right now, so finishing this will skip review and mark it done directly. Add someone as QA in Settings first if that's not what you want."), !t.done && status !== "todo" && steps.length > 0 && !allTicked && /* @__PURE__ */ React.createElement("p", { className: "ps-warn" }, "Tick every step before this can ", status === "in_progress" ? canGoToReview ? viaQA ? "go to QA" : "be submitted for review" : qaOwnWork ? "go for final check" : "be finished" : status === "review" ? viaQA ? "pass QA" : "be approved" : "be finished", "."), (atReview || atFinal) && /* @__PURE__ */ React.createElement("p", { className: "ps-muted ps-rev-hint" }, "Changes needed? Write them in Revisions above and send it back."), /* @__PURE__ */ React.createElement("div", { className: "ps-btnrow" }, t.done ? /* @__PURE__ */ React.createElement("button", { className: "ps-btn", onClick: reopen }, "Reopen") : status === "todo" ? /* @__PURE__ */ React.createElement("button", { className: "ps-btn", onClick: start }, "Start task") : status === "in_progress" ? canGoToReview ? /* @__PURE__ */ React.createElement("button", { className: "ps-btn", disabled: !allTicked, onClick: sendToReview }, viaQA ? "Go to QA" : "Submit for review") : qaOwnWork || reportUp ? /* @__PURE__ */ React.createElement("button", { className: "ps-btn", disabled: !allTicked, onClick: passToLead }, "Send to ", signOff.name, " for final check") : /* @__PURE__ */ React.createElement("button", { className: "ps-btn", disabled: !allTicked, onClick: finish }, "Mark done") : status === "review" ? /* @__PURE__ */ React.createElement("button", { className: "ps-btn", disabled: !allTicked, onClick: canFinalCheck ? passToLead : finish }, viaQA ? "Pass QA" : "Approve") : /* @__PURE__ */ React.createElement("button", { className: "ps-btn", disabled: !allTicked, onClick: finish }, "Mark done")), (lead || t.by === me.id) && /* @__PURE__ */ React.createElement("button", { className: "ps-btn ghost small ps-del-task", onClick: remove }, "Delete task")) : /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("p", { className: "ps-muted", style: { marginTop: 16 } }, "Only ", person ? person.name : "the owner", " or the lead can work on this."), t.by === me.id && /* @__PURE__ */ React.createElement("div", { className: "ps-btnrow" }, /* @__PURE__ */ React.createElement("button", { className: "ps-btn ghost small ps-del-task", onClick: remove }, "Delete task"))), history.length > 0 && /* @__PURE__ */ React.createElement("details", { className: "ps-history" }, /* @__PURE__ */ React.createElement("summary", null, "History (", history.length, ")"), /* @__PURE__ */ React.createElement("ul", null, history.slice().reverse().map((h, i) => /* @__PURE__ */ React.createElement("li", { key: i }, /* @__PURE__ */ React.createElement("span", { className: "ps-muted" }, new Date(h.at).toLocaleString(void 0, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })), " ", who(h.by), ": ", h.text))))));
+    } }), canEdit ? /* @__PURE__ */ React.createElement("div", { className: "ps-actions" }, !t.done && status === "in_progress" && !qa && !skipsQA(t) && /* @__PURE__ */ React.createElement("p", { className: "ps-warn" }, "Nobody has the QA role right now, so finishing this will skip review and mark it done directly. Add someone as QA in Settings first if that's not what you want."), !t.done && status !== "todo" && steps.length > 0 && !allTicked && /* @__PURE__ */ React.createElement("p", { className: "ps-warn" }, "Tick every step before this can ", status === "in_progress" ? canGoToReview ? viaQA ? "go to QA" : "be submitted for review" : qaOwnWork ? "go for final check" : "be finished" : status === "review" ? viaQA ? "pass QA" : "be approved" : "be finished", "."), (atReview || atFinal) && /* @__PURE__ */ React.createElement("p", { className: "ps-muted ps-rev-hint" }, "Changes needed? Write them in Revisions above and send it back."), /* @__PURE__ */ React.createElement("div", { className: "ps-btnrow" }, t.done ? /* @__PURE__ */ React.createElement("button", { className: "ps-btn", onClick: reopen }, "Reopen") : status === "todo" ? /* @__PURE__ */ React.createElement("button", { className: "ps-btn", onClick: start }, "Start task") : status === "in_progress" ? canGoToReview ? /* @__PURE__ */ React.createElement("button", { className: "ps-btn", disabled: !allTicked, onClick: sendToReview }, viaQA ? "Go to QA" : "Submit for review") : qaOwnWork || reportUp ? /* @__PURE__ */ React.createElement("button", { className: "ps-btn", disabled: !allTicked, onClick: passToLead }, "Send to ", signOff.name, " for final check") : /* @__PURE__ */ React.createElement("button", { className: "ps-btn", disabled: !allTicked, onClick: finish }, "Mark done") : status === "review" ? /* @__PURE__ */ React.createElement("button", { className: "ps-btn", disabled: !allTicked, onClick: canFinalCheck ? passToLead : finish }, viaQA ? "Pass QA" : "Approve") : /* @__PURE__ */ React.createElement("button", { className: "ps-btn", disabled: !allTicked, onClick: finish }, "Mark done")), canArchive && /* @__PURE__ */ React.createElement("button", { className: "ps-btn ghost small ps-arch-task", onClick: archive }, "Archive"), (lead || t.by === me.id) && /* @__PURE__ */ React.createElement("button", { className: "ps-btn ghost small ps-del-task", onClick: remove }, "Move to Trash")) : /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("p", { className: "ps-muted", style: { marginTop: 16 } }, "Only ", person ? person.name : "the owner", " or the lead can work on this."), t.by === me.id && /* @__PURE__ */ React.createElement("div", { className: "ps-btnrow" }, /* @__PURE__ */ React.createElement("button", { className: "ps-btn ghost small ps-arch-task", onClick: archive }, "Archive"), /* @__PURE__ */ React.createElement("button", { className: "ps-btn ghost small ps-del-task", onClick: remove }, "Move to Trash"))), history.length > 0 && /* @__PURE__ */ React.createElement("details", { className: "ps-history" }, /* @__PURE__ */ React.createElement("summary", null, "History (", history.length, ")"), /* @__PURE__ */ React.createElement("ul", null, history.slice().reverse().map((h, i) => /* @__PURE__ */ React.createElement("li", { key: i }, /* @__PURE__ */ React.createElement("span", { className: "ps-muted" }, new Date(h.at).toLocaleString(void 0, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })), " ", who(h.by), ": ", h.text))))));
   }
   function TodoList({ person, tasks, clients, canAdd, canToggle, mutate, openTask, shareFinalCheck = false, notify, confirm }) {
     const [shut, setShut] = useState({ done: true });
@@ -2770,16 +2867,14 @@
     };
     const remove = (t) => {
       const go = () => {
-        mutate((n) => {
-          n.tasks = n.tasks.filter((y) => y.id !== t.id);
-        });
+        mutate((n) => { binTask(n, "trash", t.id, person.id); });
         setRemoved(t);
       };
       if (!confirm) return go();
       confirm({
-        title: "Delete this task?",
-        lines: [`\u201C${t.text}\u201D`, taskLoss(t)],
-        confirmLabel: "Delete task",
+        title: "Move this task to Trash?",
+        lines: [`\u201C${t.text}\u201D`, `It stays in Trash for ${TRASH_DAYS} days, so it can be restored.`],
+        confirmLabel: "Move to Trash",
         onYes: go
       });
     };
@@ -2787,6 +2882,7 @@
       if (!removed) return;
       const t = removed;
       mutate((n) => {
+        unbinTask(n, "trash", t.id);
         if (!n.tasks.some((y) => y.id === t.id)) n.tasks.push(t);
       });
       setRemoved(null);
@@ -3073,15 +3169,13 @@
       const row = (db.tasks || []).find((y) => y.id === id);
       const go = () => {
         notify && notify(row, "deleted the task");
-        mutate((n) => {
-          n.tasks = n.tasks.filter((y) => y.id !== id);
-        });
+        mutate((n) => { binTask(n, "trash", id, me.id); });
       };
       if (!confirm || !row) return go();
       confirm({
-        title: `Delete ${person.name}'s task?`,
-        lines: [`\u201C${row.text}\u201D`, taskLoss(row), "This cannot be undone."],
-        confirmLabel: "Delete task",
+        title: `Move ${person.name}'s task to Trash?`,
+        lines: [`\u201C${row.text}\u201D`, `It stays in Trash for ${TRASH_DAYS} days, so it can be restored.`],
+        confirmLabel: "Move to Trash",
         onYes: go
       });
     };
@@ -3361,6 +3455,15 @@ ${lines.join("\n")}`);
       const t = setInterval(pull, 2 * 60 * 1000);
       return () => { stop(); clearInterval(t); };
     }, [authLock]);
+    /* Trash older than TRASH_DAYS goes for good. Only the Lead's screen does it,
+       so twelve screens don't all rewrite the data at once. */
+    useEffect(() => {
+      if (!db || !me || me.role !== "lead") return;
+      const cut = Date.now() - TRASH_DAYS * DAY;
+      if ((db.trash || []).some((t) => new Date(t.trashedAt).getTime() < cut)) {
+        mutate((n) => { n.trash = (n.trash || []).filter((t) => new Date(t.trashedAt).getTime() >= cut); });
+      }
+    }, [!!db, me && me.id]);
     /* Opening a shared task link. Waits for the data and the signed-in person. */
     useEffect(() => {
       if (!db || !me) return;
@@ -3372,7 +3475,11 @@ ${lines.join("\n")}`);
         if (!id) return;
         try { history.replaceState(null, "", window.location.pathname + window.location.search); } catch (e) {}
         const t = (db.tasks || []).find((x) => x.id === id);
-        if (!t) return setToast("That task link doesn't match a task any more \u2014 it may have been deleted.");
+        if (!t) {
+          if ((db.archive || []).some((x) => x.id === id)) return setToast("That task has been archived \u2014 find it under Archive.");
+          if ((db.trash || []).some((x) => x.id === id)) return setToast("That task is in the Trash \u2014 restore it from Archive \u2192 Trash.");
+          return setToast("That task link doesn't match a task any more \u2014 it may have been deleted.");
+        }
         if (!canSeeTask(db, me, t)) return setToast("That task is private, so it won't open for you.");
         setTaskId(id);
       };
@@ -3696,6 +3803,7 @@ ${lines.join("\n")}`);
       ...!lead && me.role !== "client" ? [["pipeline", "Pipeline", mineInMotion.length || ""]] : [],
       ...!lead && me.role !== "hr" && me.role !== "client" ? [["overview", "Team overview", ""]] : [],
       ...me.role !== "client" ? [["studio", "Studio", ""]] : [],
+      ...me.role !== "client" ? [["archive", "Archive", ""]] : [],
       ...me.role !== "client" && !isLead ? [["timeoff", "Time off", leaveStats(db, me.id).left]] : [],
       ...isLead ? [["settings", "Settings", ""]] : []
     ];
@@ -3718,6 +3826,8 @@ ${lines.join("\n")}`);
       body = c ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("h1", { className: "ps-h1" }, c.name), /* @__PURE__ */ React.createElement("div", { className: "ps-meta" }, /* @__PURE__ */ React.createElement("span", { className: `ps-chip ${clientKindOf(c).id === "personal" ? "warn" : "ok"}` }, clientKindOf(c).label)), lead && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Invoices"), /* @__PURE__ */ React.createElement("p", { className: "ps-muted" }, billingOf(c).label, " \xB7 ", billingOf(c).note, unpaidFor(db, c).length > 0 ? ` \u2014 ${unpaidFor(db, c).length} unpaid` : billingOf(c).id === "none" ? "" : " \u2014 all settled", billingOf(c).id !== "none" ? ". Click a line to mark it paid or unpaid." : ""), /* @__PURE__ */ React.createElement(InvoiceList, { db, client: c, canEdit: lead, toggle: (k) => toggleInvoice(c.id, k), addJob: (label) => addJobInvoice(c.id, label), removeJob: (k) => removeJobInvoice(c.id, k), openVideo: setOpenId })), /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Pipeline"), /* @__PURE__ */ React.createElement(FilmStrip, { videos: [...rows, ...clientTasks], filter, setFilter }), /* @__PURE__ */ rows.some((v) => !v.archived && v.stage !== "ready") ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "In production"), /* @__PURE__ */ React.createElement(VideoTable, { rows: rows.filter((v) => !v.archived && v.stage !== "ready" && (!filter || v.stage === filter)), db, me, open: setOpenId, showClient: false })) : null, /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, filter ? `Tasks \u00b7 ${stageOf(filter).name}` : "Tasks"), /* @__PURE__ */ React.createElement(ClientTasks, { db, me, client: c, openTask: setTaskId, filter }), /* @__PURE__ */ React.createElement(SentToClient, { db, me, client: c, openTask: setTaskId, openVideo: setOpenId }), /* @__PURE__ */ React.createElement(ClientBrief, { db, client: c, canEdit: lead, mutate, setToast })) : /* @__PURE__ */ React.createElement("p", { className: "ps-empty" }, "That client no longer exists.");
     } else if (page.tab === "timeoff") {
       body = /* @__PURE__ */ React.createElement(TimeOffPage, { db, me, mutate, setToast });
+    } else if (page.tab === "archive" && me.role !== "client") {
+      body = /* @__PURE__ */ React.createElement(ArchivePage, { db, me, mutate, setToast, confirm: setConfirming });
     } else if (page.tab === "studio" && me.role !== "client") {
       body = /* @__PURE__ */ React.createElement(Studio, { db, me, dark, openTask: setTaskId, online, seen, live: !!(typeof window !== "undefined" && window.psPresence && authLock) });
     } else if (page.tab === "calendar") {
@@ -3778,7 +3888,7 @@ ${lines.join("\n")}`);
       body = /* @__PURE__ */ React.createElement(React.Fragment, null, me.role !== "client" ? /* @__PURE__ */ React.createElement("div", { className: "ps-profile" }, picker(me, 72), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("h1", { className: "ps-h1" }, "My tasks"), /* @__PURE__ */ React.createElement("p", { className: "ps-muted" }, me.name, " \xB7 ", ROLES[me.role].label))) : /* @__PURE__ */ React.createElement("h1", { className: "ps-h1" }, "Hi, ", me.name), me.role !== "client" && /* @__PURE__ */ React.createElement(PinnedNotice, { db, me, mutate, canEdit: lead || me.role === "hr" }), /* @__PURE__ */ React.createElement("p", { className: "ps-lede" }, waitingLine, lead && late.length ? ` ${late.length} past due across the studio.` : ""), client && billingOf(client).id !== "none" && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Your invoices"), /* @__PURE__ */ React.createElement(InvoiceList, { db, client, canEdit: false, toggle: () => {
     }, addJob: () => {
     }, removeJob: () => {
-    }, openVideo: setOpenId })), me.role !== "hr" && mine.length > 0 && /* @__PURE__ */ React.createElement(React.Fragment, null, me.role !== "client" && /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Videos"), /* @__PURE__ */ React.createElement(VideoTable, { rows: mine, db, me, open: setOpenId, showClient: me.role !== "client" })), me.role !== "client" && canApproveTimeoff(db, me) && /* @__PURE__ */ React.createElement(TimeOffPanel, { db, me, mutate, setToast, queueOnly: true }), me.role !== "client" && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Tasks"), /* @__PURE__ */ React.createElement(TodoList, { person: me, tasks: db.tasks, clients: db.clients, canAdd: false, canToggle: canEditPerson(me), mutate, openTask: setTaskId, shareFinalCheck: lead, notify: notifyTask, confirm: setConfirming }), helping.length > 0 && /* @__PURE__ */ React.createElement("div", { className: "ps-helping" }, /* @__PURE__ */ React.createElement("h4", { className: "ps-h4" }, "Helping on (", helping.length, ")"), helping.map((t) => {
+    }, openVideo: setOpenId })), me.role !== "hr" && mine.length > 0 && /* @__PURE__ */ React.createElement(React.Fragment, null, me.role !== "client" && /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Videos"), /* @__PURE__ */ React.createElement(VideoTable, { rows: mine, db, me, open: setOpenId, showClient: me.role !== "client" })), me.role !== "client" && canApproveTimeoff(db, me) && /* @__PURE__ */ React.createElement(TimeOffPanel, { db, me, mutate, setToast, queueOnly: true }), me.role !== "client" && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Tasks"), /* @__PURE__ */ React.createElement(TodoList, { person: me, tasks: db.tasks, clients: db.clients, canAdd: false, canToggle: canEditPerson(me), mutate, openTask: setTaskId, shareFinalCheck: lead, notify: notifyTask, confirm: setConfirming }), helping.length > 0 && /* @__PURE__ */ React.createElement("div", { className: "ps-helping" }, /* @__PURE__ */ React.createElement("h4", { className: "ps-h4" }, "Assisting on (", helping.length, ")"), helping.map((t) => {
         const owner = db.people.find((p) => p.id === t.personId);
         return /* @__PURE__ */ React.createElement("button", { key: t.id, className: "ps-helping-row", onClick: () => setTaskId(t.id) }, /* @__PURE__ */ React.createElement("span", { className: "ps-helping-t" }, t.text || "Untitled task"), /* @__PURE__ */ React.createElement("span", { className: "ps-muted" }, owner ? `${owner.name}'s task` : "", " \xB7 ", taskStatusMeta(t).label, t.due ? ` \xB7 ${taskDueText(t.due).text}` : ""));
       }))), (canDelegate(me.role) || canSelfAssign(me.role)) && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, canDelegate(me.role) ? "Delegate" : "Add a task"), /* @__PURE__ */ React.createElement(Delegate, { db, me, draft, setDraft, addTodo: delegateTodo, setToast })), client && waiting.length > 0 && /* @__PURE__ */ React.createElement("details", { className: "ps-fold" }, /* @__PURE__ */ React.createElement("summary", null, waiting.length, " with someone else"), /* @__PURE__ */ React.createElement(VideoTable, { rows: waiting, db, me, open: setOpenId, showClient: false })), me.role !== "client" && /* @__PURE__ */ React.createElement(ActivityHistory, { db, me, mutate, setToast, openTask: setTaskId, openVideo: setOpenId }), !client && recentlyFinished.length > 0 && /* @__PURE__ */ React.createElement("details", { className: "ps-fold" }, /* @__PURE__ */ React.createElement("summary", null, "Recently finished (", recentlyFinished.length, ")"), /* @__PURE__ */ React.createElement("div", { className: "ps-table" }, recentlyFinished.map((f) => /* @__PURE__ */ React.createElement(
@@ -4576,6 +4686,21 @@ ${lines.join("\n")}`);
 .ps-root .ps-st-tag .ps-st-tagav i{position:absolute;right:-2px;bottom:-2px;width:7px;height:7px;border-radius:50%;border:1.5px solid #fff}
 .ps-st-tag[data-fit="dot"] .ps-st-tagav .ps-av{display:none}
 .ps-st-tag[data-fit="dot"] .ps-st-tagav i{position:static;width:8px;height:8px}
+.ps-bin-bar{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin:6px 0 14px}
+.ps-bin-bar .ps-tabs{margin:0}
+.ps-root .ps-bin-find{flex:1;min-width:200px;max-width:380px}
+.ps-bin-list{display:flex;flex-direction:column;gap:8px}
+.ps-bin-row{display:grid;grid-template-columns:1fr auto;align-items:center;gap:6px 12px;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:10px 12px}
+.ps-root .ps-bin-main{display:flex;flex-direction:column;align-items:flex-start;gap:3px;background:none;border:0;padding:0;text-align:left;cursor:pointer;min-width:0}
+.ps-bin-title{font-weight:600;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.ps-bin-meta{font-size:12.5px}
+.ps-bin-btns{display:flex;gap:6px}
+.ps-bin-peek{grid-column:1/-1;border-top:1px dashed var(--line);padding-top:8px}
+.ps-bin-peek p{margin:2px 0;white-space:pre-wrap;overflow-wrap:anywhere}
+.ps-root .danger-text{color:var(--late)}
+.ps-root .ps-arch-task{margin-left:auto}
+.ps-root .ps-arch-task + .ps-del-task{margin-left:0}
+@media (max-width:640px){.ps-bin-row{grid-template-columns:1fr}}
 .ps-spacer{flex:1}
 .ps-viewas{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:13px}
 .ps-root select,.ps-root input,.ps-root textarea{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:7px 10px}

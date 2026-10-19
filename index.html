@@ -2699,7 +2699,16 @@
       const locked = !draft;
       const paidCount = run.lines.filter((l) => l.paidAt).length;
       const setLine = (pid, patch) => putRun({ ...run, lines: run.lines.map((l) => l.personId === pid ? { ...l, ...patch } : l) });
-      const totals = run.lines.reduce((t, l) => { const m = lineMath(l, settings); t.earn += m.earnings; t.ded += m.deductions; t.net += m.net; return t; }, { earn: 0, ded: 0, net: 0 });
+      const totals = run.lines.reduce((t, l) => { const m = lineMath(l, settings); const meth = (l.payTo || {}).method || "gcash"; t.earn += m.earnings; t.ded += m.deductions; t.net += m.net; if (l.paidAt) t.sent += m.net; t.by[meth] = (t.by[meth] || 0) + m.net; return t; }, { earn: 0, ded: 0, net: 0, sent: 0, by: {} });
+      const toSend = r2(totals.net - totals.sent);
+      const fund = h("div", { className: "ps-pay-fund" },
+        h("div", { className: "ps-pay-fundmain" }, h("span", { className: "ps-muted" }, "Deposit to cover this payroll"), h("b", { className: "ps-pay-fundamt" }, peso(totals.net)),
+          h("button", { className: "ps-pay-link", onClick: () => copy(r2(totals.net).toFixed(2), "Total") }, "Copy")),
+        Object.keys(totals.by).length > 1 && h("div", { className: "ps-pay-fundby" }, Object.keys(totals.by).map((k) => h("span", { key: k }, methodLabel(k), " ", h("b", null, peso(totals.by[k]))))),
+        !draft && h("div", { className: "ps-pay-fundprog" },
+          h("span", null, "Sent ", h("b", null, peso(totals.sent))),
+          h("span", { className: toSend > 0 ? "left" : "done" }, toSend > 0 ? h(React.Fragment, null, "Still to send ", h("b", null, peso(toSend))) : "Everything sent"),
+          h("div", { className: "ps-pay-bar" }, h("i", { style: { width: (totals.net > 0 ? Math.min(100, totals.sent / totals.net * 100) : 0) + "%" } }))));
       const markPaid = (l) => {
         const ref = (refs[l.personId] || "").trim();
         const lines = run.lines.map((x) => x.personId === l.personId ? { ...x, paidAt: (/* @__PURE__ */ new Date()).toISOString(), paidBy: me.name, paidRef: ref } : x);
@@ -2720,7 +2729,8 @@
       const reopen = () => paidCount ? setToast("Someone has already been paid in this run — undo their PAID mark first.") : put(run.id, "run", note({ ...run, lines: run.lines.map((x) => ({ ...x, rateLock: null })), status: "draft", approvedBy: null, approvedAt: null }, "Reopened for changes"));
       const del = () => confirm({ title: "Delete this draft?", lines: [periodLabel(run), "This cannot be undone."], confirmLabel: "Delete draft", onYes: () => { drop(run.id); setOpenRun(null); } });
       const exportPayout = () => downloadCsv(`payout-${run.from}-to-${run.to}.csv`, [["Name", "Method", "GCash / account no.", "Account name", "Bank / provider", "Net pay", "Paid", "Reference"],
-        ...run.lines.map((l) => { const p = l.payTo || {}; return [l.name, methodLabel(p.method), p.method === "gcash" ? gcashNorm(p.accountNo) : p.accountNo || "", p.accountName || "", p.bank || "", lineMath(l, settings).net.toFixed(2), l.paidAt ? "PAID" : "", l.paidRef || ""]; })]);
+        ...run.lines.map((l) => { const p = l.payTo || {}; return [l.name, methodLabel(p.method), p.method === "gcash" ? gcashNorm(p.accountNo) : p.accountNo || "", p.accountName || "", p.bank || "", lineMath(l, settings).net.toFixed(2), l.paidAt ? "PAID" : "", l.paidRef || ""]; }),
+        ["Total to deposit", "", "", "", "", r2(totals.net).toFixed(2), `${paidCount}/${run.lines.length}`, ""]]);
       const exportSummary = () => downloadCsv(`payroll-summary-${run.from}-to-${run.to}.csv`, [["Name", "Type", "Basic", "Allowance", "OT", "Other earnings", "Total earnings", "Unpaid leave", "Other deductions", "SSS", "Pag-IBIG", "PhilHealth", "Withholding tax", "Total deductions", "Net", "Paid"],
         ...run.lines.map((l) => { const m = lineMath(l, settings); const wht = l.type === "contractor" ? m.gov : num(l.tax);
           return [l.name, l.type, m.basic.toFixed(2), m.allowance.toFixed(2), m.otAmt.toFixed(2), m.plus.toFixed(2), m.earnings.toFixed(2), m.unpaidAmt.toFixed(2), m.minus.toFixed(2), num(l.sss).toFixed(2), num(l.pagibig).toFixed(2), num(l.philhealth).toFixed(2), wht.toFixed(2), m.deductions.toFixed(2), m.net.toFixed(2), l.paidAt ? "PAID" : ""]; }),
@@ -2805,8 +2815,8 @@
         h("div", { className: "ps-pay-runhead" },
           h("button", { className: "ps-st-back", onClick: () => setOpenRun(null) }, "← All runs"),
           h("h2", { className: "ps-h2" }, periodLabel(run)),
-          h("span", { className: `ps-chip ps-pay-st ${run.status}` }, run.status === "draft" ? "Draft" : run.status === "approved" ? `Approved · ${paidCount} of ${run.lines.length} paid` : "All paid"),
-          h("span", { className: "ps-pay-runtot" }, "Net total ", h("b", null, peso(totals.net)))),
+          h("span", { className: `ps-chip ps-pay-st ${run.status}` }, run.status === "draft" ? "Draft" : run.status === "approved" ? `Approved · ${paidCount} of ${run.lines.length} paid` : "All paid")),
+        fund,
         run.lines.map(card),
         h("div", { className: "ps-btnrow ps-pay-actions" },
           draft && h("button", { className: "ps-btn ghost small danger-text", onClick: del }, "Delete draft"),
@@ -2829,7 +2839,7 @@
             const pc = run.lines.filter((l) => l.paidAt).length;
             return h("button", { key: run.id, className: "ps-pay-runrow", onClick: () => setOpenRun(run.id) },
               h("b", null, periodLabel(run)),
-              h("span", { className: "ps-muted" }, run.lines.length, " people · net ", peso(net)),
+              h("span", { className: "ps-muted" }, run.lines.length, " people · deposit ", peso(net)),
               h("span", { className: `ps-chip ps-pay-st ${run.status}` }, run.status === "draft" ? "Draft" : run.status === "approved" ? `${pc} of ${run.lines.length} paid` : "All paid"));
           }));
 
@@ -5250,7 +5260,7 @@ ${lines.join("\n")}`);
 .ps-pay-paid{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-top:4px;font-size:12.5px}
 .ps-pay-stamp{background:#6BF05A;color:#0B3B07;font-weight:800;letter-spacing:.08em;padding:3px 12px;border-radius:4px}
 .ps-pay-slip{align-self:flex-start;padding:0 !important}
-.ps-pay-runtot{margin-left:auto;font-size:14px}
+.ps-pay-runtot{margin-left:auto;font-size:14px}.ps-pay-fund{border:1px solid var(--ps-line,#ddd);border-radius:12px;padding:12px 14px;margin:10px 0 14px;display:flex;flex-direction:column;gap:6px;background:var(--ps-card,transparent)}.ps-pay-fundmain{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}.ps-pay-fundamt{font-size:24px;font-variant-numeric:tabular-nums}.ps-pay-fundby{display:flex;gap:14px;flex-wrap:wrap;font-size:13px}.ps-pay-fundprog{display:flex;gap:14px;flex-wrap:wrap;align-items:center;font-size:13px}.ps-pay-fundprog .left b{color:#c2410c}.ps-pay-fundprog .done{color:#15803d;font-weight:600}.ps-pay-bar{flex-basis:100%;height:6px;border-radius:4px;background:rgba(127,127,127,.2);overflow:hidden}.ps-pay-bar i{display:block;height:100%;background:#16a34a}
 .ps-pay-val{font-variant-numeric:tabular-nums}
 .ps-pay-bad input{border-color:var(--late)}
 .ps-pay-bad small{color:var(--late)}

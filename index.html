@@ -2403,6 +2403,479 @@
               h("p", { className: "ps-muted" }, (t.comments || []).length, " comment", (t.comments || []).length === 1 ? "" : "s", " \xB7 ", (t.revisions || []).length, " revision", (t.revisions || []).length === 1 ? "" : "s", (t.workMs || 0) > 0 ? ` \xB7 ${hms(t.workMs)} logged` : "", " \xB7 restore it to open the full task.")));
         })));
   }
+  /* ---- Payroll ---------------------------------------------------------------
+     Pay data never touches the shared app record. It goes through
+     window.psPayroll to a Supabase table that only logins in payroll_admins can
+     read. In the preview (no Supabase) a local demo store stands in, clearly
+     labelled, so the screens can be tried without real data. */
+  var PAY_KEY_DEMO = "ps-payroll-demo";
+  var payDemoStore = {
+    live: false,
+    can: async () => ({ ok: true }),
+    list: async () => { try { return JSON.parse(localStorage.getItem(PAY_KEY_DEMO) || "[]"); } catch (e) { return []; } },
+    save: async (id, kind, data) => {
+      let rows = []; try { rows = JSON.parse(localStorage.getItem(PAY_KEY_DEMO) || "[]"); } catch (e) {}
+      rows = rows.filter((r) => r.id !== id); rows.push({ id, kind, data, updated_at: new Date().toISOString() });
+      try { localStorage.setItem(PAY_KEY_DEMO, JSON.stringify(rows)); } catch (e) {}
+    },
+    remove: async (id) => {
+      let rows = []; try { rows = JSON.parse(localStorage.getItem(PAY_KEY_DEMO) || "[]"); } catch (e) {}
+      try { localStorage.setItem(PAY_KEY_DEMO, JSON.stringify(rows.filter((r) => r.id !== id))); } catch (e) {}
+    }
+  };
+  var payApi = () => (typeof window !== "undefined" && window.psPayroll) || payDemoStore;
+  var r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+  var peso = (n) => "₱" + r2(n).toLocaleString("en-PH", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  var num = (v) => { const x = parseFloat(String(v == null ? "" : v).replace(/[^0-9.\-]/g, "")); return Number.isFinite(x) ? x : 0; };
+  var PAY_METHODS = [["gcash", "GCash"], ["bank", "Bank transfer"], ["cash", "Cash"], ["other", "Other"]];
+  var methodLabel = (m) => (PAY_METHODS.find((x) => x[0] === m) || ["", m || "—"])[1];
+  /* GCash numbers: accept 0917..., 917..., 63917..., +63 917...; show as 0917 123 4567. */
+  var gcashNorm = (raw) => {
+    let d = String(raw || "").replace(/\D/g, "");
+    if (d.length === 12 && d.startsWith("63")) d = "0" + d.slice(2);
+    if (d.length === 10 && d.startsWith("9")) d = "0" + d;
+    return d;
+  };
+  var gcashOk = (raw) => /^09\d{9}$/.test(gcashNorm(raw));
+  var gcashPretty = (raw) => { const d = gcashNorm(raw); return gcashOk(raw) ? `${d.slice(0, 4)} ${d.slice(4, 7)} ${d.slice(7)}` : String(raw || ""); };
+  var DED_KEYS = [["sss", "SSS"], ["pagibig", "Pag-IBIG"], ["philhealth", "PhilHealth"], ["tax", "Withholding tax"]];
+  var WHEN = [["both", "Every payout"], ["first", "1st payout (1–15)"], ["second", "2nd payout (16–end)"]];
+  var lastDay = (y, m) => new Date(y, m + 1, 0).getDate();
+  var isoOf = (y, m, d) => `${y}-${String(m + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+  var periodFor = (date, schedule) => {
+    const y = date.getFullYear(), m = date.getMonth(), d = date.getDate();
+    if (schedule === "monthly") return { from: isoOf(y, m, 1), to: isoOf(y, m, lastDay(y, m)) };
+    return d <= 15 ? { from: isoOf(y, m, 1), to: isoOf(y, m, 15) } : { from: isoOf(y, m, 16), to: isoOf(y, m, lastDay(y, m)) };
+  };
+  var periodLabel = (p) => {
+    const a = new Date(p.from + "T00:00"), b = new Date(p.to + "T00:00");
+    const mo = (x) => x.toLocaleDateString("en-PH", { month: "short" });
+    return a.getMonth() === b.getMonth() ? `${mo(a)} ${a.getDate()}–${b.getDate()}, ${b.getFullYear()}` : `${mo(a)} ${a.getDate()} – ${mo(b)} ${b.getDate()}, ${b.getFullYear()}`;
+  };
+  var longDate = (iso) => iso ? new Date(String(iso).slice(0, 10) + "T00:00").toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" }) : "";
+  /* Weekdays two date ranges share - for approved leave inside a pay period. */
+  var weekdaysOverlap = (aFrom, aTo, bFrom, bTo) => {
+    const from = aFrom > bFrom ? aFrom : bFrom, to = aTo < bTo ? aTo : bTo;
+    if (from > to) return 0;
+    let n = 0;
+    for (let d = new Date(from + "T00:00"); isoDay(d) <= to; d.setDate(d.getDate() + 1)) if (d.getDay() % 6 !== 0) n++;
+    return n;
+  };
+  /* Daily and hourly rates: (monthly basic + monthly allowance) / working days / hours. */
+  var payRates = (l, s) => {
+    /* An approved run keeps the rates it was approved with. */
+    if (l.rateLock) return l.rateLock;
+    const wd = Math.max(1, num(s.workdays) || 22), hpd = Math.max(1, num(s.hours) || 8);
+    const base = num(l.monthly) + (s.allowanceInRate === false ? 0 : num(l.allowanceMonthly));
+    const day = base / wd;
+    return { day, hour: day / hpd * (num(s.otMultiplier) || 1) };
+  };
+  var lineMath = (l, s) => {
+    const { day, hour } = payRates(l, s);
+    const basic = num(l.basic), allowance = num(l.allowance);
+    const ot = (l.ot || []).map((o) => ({ ...o, amount: r2(num(o.hours) * hour) }));
+    const otAmt = r2(ot.reduce((t, o) => t + o.amount, 0));
+    const adj = l.adjustments || [];
+    const plus = r2(adj.filter((a) => num(a.amount) > 0).reduce((t, a) => t + num(a.amount), 0));
+    const minus = r2(adj.filter((a) => num(a.amount) < 0).reduce((t, a) => t - num(a.amount), 0));
+    const unpaidAmt = r2(num(l.unpaidDays) * day);
+    const earnings = r2(basic + allowance + otAmt + plus);
+    const gov = l.type === "contractor"
+      ? r2(Math.max(0, earnings - unpaidAmt - minus) * num(l.whtPct) / 100)
+      : r2(num(l.sss) + num(l.philhealth) + num(l.pagibig) + num(l.tax));
+    const deductions = r2(unpaidAmt + minus + gov);
+    return { basic, allowance, ot, otAmt, plus, minus, unpaidAmt, earnings, gov, deductions, net: r2(earnings - deductions), day, hour };
+  };
+  var downloadCsv = (name, rows) => {
+    const esc = (v) => { const t = String(v == null ? "" : v); return /[",\n]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t; };
+    const blob = new Blob(["﻿" + rows.map((r) => r.map(esc).join(",")).join("\n")], { type: "text/csv;charset=utf-8" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob); a.download = name;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+  };
+  /* Payslip laid out like the studio's spreadsheet one: earnings, deductions,
+     totals, net, and a green PAID mark once that person has been paid. */
+  var payslipHtml = (run, lines, settings) => {
+    const esc = (t) => String(t == null ? "" : t).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+    const money = (n) => r2(n).toLocaleString("en-PH", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    const slip = (l) => {
+      const m = lineMath(l, settings);
+      const row = (k, note, v) => `<tr><td>${esc(k)}</td><td class="note">${esc(note || "")}</td><td class="amt">${v === "" ? "" : money(v)}</td></tr>`;
+      const earn = [row(l.type === "contractor" ? "FEE" : "BASIC", "", m.basic)];
+      if (m.allowance) earn.push(row("ALLOWANCE", "", m.allowance));
+      const other = [...(l.adjustments || []).filter((a) => num(a.amount) > 0).map((a) => [a.label || "Other", num(a.amount)]),
+        ...m.ot.map((o) => [`OT ${num(o.hours)} hour${num(o.hours) === 1 ? "" : "s"}${o.date ? ` (${longDate(o.date)})` : ""}`, o.amount])];
+      other.forEach(([k, v], i) => earn.push(row(i === 0 ? "OTHER COMPENSATION" : "", k, v)));
+      const ded = [];
+      if (m.unpaidAmt) ded.push(row("Unpaid leave", `${num(l.unpaidDays)} day${num(l.unpaidDays) === 1 ? "" : "s"}`, m.unpaidAmt));
+      (l.adjustments || []).filter((a) => num(a.amount) < 0).forEach((a) => ded.push(row(a.label || "Deduction", "", -num(a.amount))));
+      const gov = l.type === "contractor"
+        ? (num(l.whtPct) ? [row("Withholding tax", `${num(l.whtPct)}%`, m.gov)] : [])
+        : DED_KEYS.map(([k, label]) => row(label, num(l[k]) ? longDate(run.to) : "", num(l[k]) || ""));
+      const paid = l.paidAt ? `<div class="paid">PAID<small>${esc(new Date(l.paidAt).toLocaleDateString("en-PH"))}${l.paidRef ? " · ref " + esc(l.paidRef) : ""}</small></div>` : "";
+      return `<section class="slip">
+        <div class="top"><div><b>${esc(l.name)}</b>${l.payTo && l.payTo.accountNo ? `<span>${esc(l.payTo.method === "gcash" ? gcashPretty(l.payTo.accountNo) : l.payTo.accountNo)}</span>` : ""}</div><div class="co">${esc(settings.company || "Projeclab Studios")}</div></div>
+        <div class="meta"><span>SSS no. ${esc(l.sssNo || "")}</span><span>PAY FROM: <b>${esc(longDate(run.from))}</b></span><span>TO: <b>${esc(longDate(run.to))}</b></span></div>
+        <h3>EARNINGS</h3><table>${earn.join("")}</table>
+        <h3>DEDUCTIONS</h3><table>${ded.join("")}${l.type === "contractor" ? "" : `<tr><td colspan="3" class="gb">Government Benefits:</td></tr>`}${gov.join("")}</table>
+        <div class="tot"><span>TOTAL EARNINGS</span><b>${money(m.earnings)}</b><span>TOTAL DEDUCTIONS</span><b>${money(m.deductions)}</b><span class="net">NET EARNINGS:</span><b class="net">${money(m.net)}</b></div>
+        ${paid}</section>`;
+    };
+    return `<!doctype html><html><head><meta charset="utf-8"><title>Payslips · ${esc(periodLabel(run))}</title><style>
+      body{font-family:system-ui,-apple-system,Segoe UI,sans-serif;color:#1A2230;margin:24px}
+      .slip{max-width:640px;margin:0 auto 32px;border:1.5px solid #1A2230;padding:18px 20px;page-break-after:always;position:relative}
+      .top{display:flex;justify-content:space-between;border-bottom:1.5px solid #1A2230;padding-bottom:6px}.top b{font-size:17px;margin-right:14px}.top span{font-style:italic}.co{color:#5B6676;font-size:13px}
+      .meta{display:flex;gap:18px;flex-wrap:wrap;font-size:13px;margin:8px 0 4px}
+      h3{font-size:13px;letter-spacing:.06em;margin:14px 0 4px;text-align:center}
+      table{width:100%;border-collapse:collapse;font-size:13.5px}td{border:1px solid #1A2230;padding:5px 8px}td.note{font-style:italic;text-align:right;color:#333}td.amt{text-align:right;width:120px;font-variant-numeric:tabular-nums}td.gb{border:0;padding-top:10px}
+      .tot{display:grid;grid-template-columns:1fr auto;gap:6px 18px;margin-top:14px;font-size:14px}.tot b{text-align:right;border-bottom:1px solid #1A2230;min-width:120px;font-variant-numeric:tabular-nums}.tot .net{font-weight:800;font-size:16px}
+      .paid{display:inline-flex;flex-direction:column;align-items:center;background:#6BF05A;color:#0B3B07;font-weight:800;letter-spacing:.08em;padding:10px 40px;margin-top:14px}.paid small{font-weight:600;letter-spacing:0;font-size:11px}
+      @media print{body{margin:0}.slip{margin-bottom:0}}
+      </style></head><body>${lines.map(slip).join("")}<script>setTimeout(function(){window.print()},300)<\/script></body></html>`;
+  };
+
+  function PayProfileForm({ p, profiles, settings, put, setEditing }) {
+    const h = React.createElement;
+    const base = profiles[p.id] || { personId: p.id, type: "employee", monthly: "", allowanceMonthly: "", payTo: { method: "gcash" } };
+    const [f, setF] = useState({ ...base, payTo: { ...base.payTo || {} } });
+    const set = (k, v) => setF((x) => ({ ...x, [k]: v }));
+    const setPay = (k, v) => setF((x) => ({ ...x, payTo: { ...x.payTo, [k]: v } }));
+    const field = (label, k, opts = {}) => h("label", { className: "ps-field" }, h("span", null, label),
+      h("input", { value: f[k] == null ? "" : f[k], inputMode: opts.money ? "decimal" : void 0, placeholder: opts.ph || "", onChange: (e) => set(k, e.target.value) }));
+    const gc = f.payTo.method === "gcash";
+    const badNo = gc && f.payTo.accountNo && !gcashOk(f.payTo.accountNo);
+    const rate = payRates({ monthly: f.monthly, allowanceMonthly: f.allowanceMonthly }, settings);
+    return h("div", { className: "ps-pay-form" },
+      h("div", { className: "ps-pay-grid" },
+        h("label", { className: "ps-field" }, h("span", null, "Type"),
+          h("select", { value: f.type, onChange: (e) => set("type", e.target.value) }, h("option", { value: "employee" }, "Employee"), h("option", { value: "contractor" }, "Contractor"))),
+        field("Monthly basic (₱)", "monthly", { money: true, ph: "e.g. 12000" }),
+        field("Monthly allowance (₱)", "allowanceMonthly", { money: true, ph: "0" }),
+        field("Start date", "start", { ph: "YYYY-MM-DD" })),
+      num(f.monthly) > 0 && h("p", { className: "ps-muted ps-pay-hint" }, settings.schedule === "monthly" ? "Each payout: " : "Each payout (half-month): ",
+        peso((num(f.monthly)) / (settings.schedule === "monthly" ? 1 : 2)), " basic", num(f.allowanceMonthly) ? ` + ${peso(num(f.allowanceMonthly) / (settings.schedule === "monthly" ? 1 : 2))} allowance` : "",
+        " · OT ", peso(rate.hour), "/hour · one day ", peso(rate.day)),
+      h("b", { className: "ps-pay-sub" }, "Where to pay"),
+      h("div", { className: "ps-pay-grid" },
+        h("label", { className: "ps-field" }, h("span", null, "Method"),
+          h("select", { value: f.payTo.method || "gcash", onChange: (e) => setPay("method", e.target.value) }, PAY_METHODS.map(([v, l]) => h("option", { key: v, value: v }, l)))),
+        h("label", { className: `ps-field ${badNo ? "ps-pay-bad" : ""}` }, h("span", null, gc ? "GCash number" : "Account no."),
+          h("input", { value: f.payTo.accountNo || "", inputMode: gc ? "tel" : void 0, placeholder: gc ? "0917 123 4567" : "", onChange: (e) => setPay("accountNo", e.target.value) }),
+          badNo && h("small", null, "A GCash number has 11 digits starting with 09.")),
+        h("label", { className: "ps-field" }, h("span", null, gc ? "Name on the GCash account" : "Account name"), h("input", { value: f.payTo.accountName || "", onChange: (e) => setPay("accountName", e.target.value) })),
+        !gc && h("label", { className: "ps-field" }, h("span", null, "Bank / provider"), h("input", { value: f.payTo.bank || "", placeholder: "e.g. BPI", onChange: (e) => setPay("bank", e.target.value) }))),
+      f.type === "employee"
+        ? h(React.Fragment, null,
+          h("b", { className: "ps-pay-sub" }, "Government numbers"),
+          h("div", { className: "ps-pay-grid" }, field("TIN", "tin"), field("SSS no.", "sssNo"), field("PhilHealth no.", "philhealthNo"), field("Pag-IBIG no.", "pagibigNo")),
+          h("b", { className: "ps-pay-sub" }, "Deductions"),
+          h("p", { className: "ps-muted ps-pay-hint" }, "Amount taken out, and on which payout. Copy these from a current payslip or get them from your accountant. Each run starts with them and they can still be changed per run."),
+          h("div", { className: "ps-pay-dedgrid" }, DED_KEYS.map(([k, label]) => h("div", { key: k, className: "ps-pay-ded" },
+            h("label", { className: "ps-field" }, h("span", null, label, " (₱)"), h("input", { inputMode: "decimal", value: f[k] == null ? "" : f[k], placeholder: "0", onChange: (e) => set(k, e.target.value) })),
+            settings.schedule !== "monthly" && h("label", { className: "ps-field" }, h("span", null, "Taken on"),
+              h("select", { value: f[k + "When"] || "both", onChange: (e) => set(k + "When", e.target.value) }, WHEN.map(([v, l]) => h("option", { key: v, value: v }, l))))))))
+        : h(React.Fragment, null,
+          h("b", { className: "ps-pay-sub" }, "Tax"),
+          h("div", { className: "ps-pay-grid" }, field("TIN", "tin"), field("Withholding % on fees (if any)", "whtPct", { money: true, ph: "0" })),
+          h("p", { className: "ps-muted ps-pay-hint" }, "Contractors have no SSS, PhilHealth or Pag-IBIG taken out. Ask your accountant whether tax must be withheld on their fees.")),
+      h("div", { className: "ps-btnrow" },
+        h("button", { className: "ps-btn ghost small", onClick: () => setEditing(null) }, "Cancel"),
+        h("button", { className: "ps-btn small", onClick: () => { put(`profile:${p.id}`, "profile", { ...f, personId: p.id, monthly: num(f.monthly), allowanceMonthly: num(f.allowanceMonthly) }); setEditing(null); } }, "Save pay profile")));
+  }
+
+  function PayrollPage({ db, me, setToast, confirm }) {
+    const h = React.createElement;
+    const api = payApi();
+    const [state, setState] = useState({ loading: true, ok: false, setup: "" });
+    const [rows, setRows] = useState([]);
+    const [tab, setTab] = useState("runs");
+    const [openRun, setOpenRun] = useState(null);
+    const [editing, setEditing] = useState(null);
+    const [refs, setRefs] = useState({});
+    const isLead = me.role === "lead";
+    const people = db.people.filter((p) => p.role !== "client");
+    const nameOf = (id) => (db.people.find((p) => p.id === id) || {}).name || "Someone";
+
+    const load = async () => {
+      try {
+        const c = await api.can();
+        if (!c.ok) { setState({ loading: false, ok: false, setup: c.setup || "" }); return; }
+        setRows(await api.list());
+        setState({ loading: false, ok: true, setup: "" });
+      } catch (e) {
+        setState({ loading: false, ok: false, setup: "error" });
+      }
+    };
+    useEffect(() => { load(); }, []);
+
+    const settings = { schedule: "semi", workdays: 22, hours: 8, otMultiplier: 1, allowanceInRate: true, company: "Projeclab Studios", ...((rows.find((r) => r.id === "settings") || {}).data || {}) };
+    const profiles = {};
+    rows.filter((r) => r.kind === "profile").forEach((r) => { profiles[r.data.personId] = r.data; });
+    const runs = rows.filter((r) => r.kind === "run").map((r) => r.data).sort((a, b) => b.from.localeCompare(a.from));
+
+    const put = async (id, kind, data, quiet) => {
+      setRows((cur) => [...cur.filter((r) => r.id !== id), { id, kind, data }]);
+      try { await api.save(id, kind, data); if (!quiet) setToast("Saved."); }
+      catch (e) { setToast("That didn't save: " + (e && e.message ? e.message : "check your connection")); }
+    };
+    const drop = async (id) => {
+      setRows((cur) => cur.filter((r) => r.id !== id));
+      try { await api.remove(id); } catch (e) { setToast("That didn't delete: " + (e && e.message ? e.message : "")); }
+    };
+    const runTimer = useRef({});
+    const putRun = (run) => {
+      setRows((cur) => [...cur.filter((r) => r.id !== run.id), { id: run.id, kind: "run", data: run }]);
+      clearTimeout(runTimer.current[run.id]);
+      runTimer.current[run.id] = setTimeout(() => api.save(run.id, "run", run).catch((e) => setToast("That didn't save: " + (e && e.message ? e.message : ""))), 600);
+    };
+    const note = (run, text) => ({ ...run, history: [...run.history || [], { at: (/* @__PURE__ */ new Date()).toISOString(), by: me.name, text }] });
+
+    if (state.loading) return h("p", { className: "ps-loading" }, "Opening payroll…");
+    if (!state.ok) return h(React.Fragment, null,
+      h("h1", { className: "ps-h1" }, "Payroll"),
+      h("div", { className: "ps-pay-locked" },
+        h("b", null, state.setup === "missing" ? "Payroll isn't set up in Supabase yet." : "Your login can't open payroll."),
+        h("p", null, state.setup === "missing"
+          ? "Run payroll_setup.sql once in Supabase (SQL Editor → New query → paste → Run), with your and HR's login emails filled in."
+          : state.setup === "error"
+            ? "Supabase didn't answer. Check your connection and open this page again."
+            : "Only logins listed in Supabase → payroll_admins can see pay. Add your sign-in email there if this should be you.")));
+
+    /* ---------- pay profiles ---------- */
+    const profilesTab = h("div", { className: "ps-pay-list" },
+      h("p", { className: "ps-muted" }, "Everyone with a pay profile is included in new payroll runs. Only you and HR can see this page."),
+      people.map((p) => {
+        const pr = profiles[p.id];
+        const pt = (pr && pr.payTo) || {};
+        return h("div", { key: p.id, className: "ps-pay-person" },
+          h("div", { className: "ps-pay-row" },
+            h(Avatar, { person: p, size: 32 }),
+            h("span", { className: "ps-pay-who" }, h("b", null, p.name),
+              h("span", { className: "ps-muted" }, pr
+                ? `${pr.type === "contractor" ? "Contractor" : "Employee"} · ${peso(num(pr.monthly) + num(pr.allowanceMonthly))} / month · ${methodLabel(pt.method)}${pt.accountNo ? " " + (pt.method === "gcash" ? gcashPretty(pt.accountNo) : pt.accountNo) : ""}`
+                : "No pay profile yet"),
+              pr && pt.method === "gcash" && pt.accountNo && !gcashOk(pt.accountNo) && h("span", { className: "ps-pay-warn" }, "Check this GCash number — it should be 11 digits starting with 09.")),
+            h("button", { className: "ps-btn ghost small", onClick: () => setEditing(editing === p.id ? null : p.id) }, editing === p.id ? "Close" : pr ? "Edit" : "Set up pay")),
+          editing === p.id && h(PayProfileForm, { key: p.id, p, profiles, settings, put, setEditing }));
+      }));
+
+    /* ---------- runs ---------- */
+    const lineFor = (pid, per) => {
+      const pr = profiles[pid];
+      const p = db.people.find((x) => x.id === pid);
+      const monthly = num(pr.monthly), allowanceMonthly = num(pr.allowanceMonthly);
+      const split = settings.schedule === "monthly" ? 1 : 2;
+      const half = settings.schedule === "monthly" ? "both" : (Number(per.from.slice(8, 10)) <= 15 ? "first" : "second");
+      const ded = {};
+      DED_KEYS.forEach(([k]) => { const when = pr[k + "When"] || "both"; ded[k] = when === "both" || when === half ? num(pr[k]) : 0; });
+      return {
+        personId: pid, name: p ? p.name : "Former teammate", type: pr.type, monthly, allowanceMonthly,
+        basic: r2(monthly / split), allowance: r2(allowanceMonthly / split),
+        unpaidDays: 0, adjustments: [], ot: [],
+        ...ded, whtPct: num(pr.whtPct), sssNo: pr.sssNo || "",
+        payTo: { ...pr.payTo || {} }, paidAt: null, paidBy: null, paidRef: ""
+      };
+    };
+    const newRun = () => {
+      const after = runs[0] ? new Date(runs[0].to + "T00:00") : null;
+      if (after) after.setDate(after.getDate() + 1);
+      const per = periodFor(after || new Date(), settings.schedule);
+      const ids = Object.keys(profiles).filter((id) => db.people.some((p) => p.id === id));
+      if (!ids.length) { setToast("Set up at least one pay profile first."); setTab("profiles"); return; }
+      const run = note({ id: `run:${uid("pr")}`, ...per, status: "draft", createdBy: me.name, lines: ids.map((id) => lineFor(id, per)) }, `Started ${periodLabel(per)}`);
+      put(run.id, "run", run, true);
+      setOpenRun(run.id);
+    };
+    const leaveIn = (run, pid) => (db.timeoff || []).filter((r) => r.personId === pid && r.status === "approved")
+      .reduce((n, r) => n + weekdaysOverlap(r.from, r.to, run.from, run.to), 0);
+    const copy = async (text, what) => {
+      const ok = await copyText(text);
+      setToast(ok ? `${what} copied.` : "Couldn't copy. Your browser blocked it.");
+    };
+
+    const RunView = ({ run }) => {
+      const draft = run.status === "draft";
+      const locked = !draft;
+      const paidCount = run.lines.filter((l) => l.paidAt).length;
+      const setLine = (pid, patch) => putRun({ ...run, lines: run.lines.map((l) => l.personId === pid ? { ...l, ...patch } : l) });
+      const totals = run.lines.reduce((t, l) => { const m = lineMath(l, settings); t.earn += m.earnings; t.ded += m.deductions; t.net += m.net; return t; }, { earn: 0, ded: 0, net: 0 });
+      const markPaid = (l) => {
+        const ref = (refs[l.personId] || "").trim();
+        const lines = run.lines.map((x) => x.personId === l.personId ? { ...x, paidAt: (/* @__PURE__ */ new Date()).toISOString(), paidBy: me.name, paidRef: ref } : x);
+        const all = lines.every((x) => x.paidAt);
+        put(run.id, "run", note({ ...run, lines, status: all ? "paid" : run.status, ...(all ? { paidAt: (/* @__PURE__ */ new Date()).toISOString() } : {}) }, `Paid ${l.name} ${peso(lineMath(l, settings).net)}${ref ? ` (ref ${ref})` : ""}${all ? " — everyone paid" : ""}`), true);
+        setToast(`${l.name} marked as paid.`);
+      };
+      const unpay = (l) => confirm({
+        title: `Undo ${l.name}'s PAID mark?`, lines: ["Only do this if the payment didn't actually go through."], confirmLabel: "Undo PAID",
+        onYes: () => put(run.id, "run", note({ ...run, status: "approved", lines: run.lines.map((x) => x.personId === l.personId ? { ...x, paidAt: null, paidBy: null, paidRef: "" } : x) }, `Undid PAID for ${l.name}`), true)
+      });
+      const approve = () => confirm({
+        title: `Approve payroll for ${periodLabel(run)}?`,
+        lines: [`${run.lines.length} people · net total ${peso(totals.net)}.`, "Approved runs are locked, and then each person can be marked as paid."],
+        confirmLabel: "Approve",
+        onYes: () => put(run.id, "run", note({ ...run, lines: run.lines.map((x) => ({ ...x, rateLock: payRates({ ...x, rateLock: null }, settings) })), status: "approved", approvedBy: me.name, approvedAt: (/* @__PURE__ */ new Date()).toISOString() }, "Approved"))
+      });
+      const reopen = () => paidCount ? setToast("Someone has already been paid in this run — undo their PAID mark first.") : put(run.id, "run", note({ ...run, lines: run.lines.map((x) => ({ ...x, rateLock: null })), status: "draft", approvedBy: null, approvedAt: null }, "Reopened for changes"));
+      const del = () => confirm({ title: "Delete this draft?", lines: [periodLabel(run), "This cannot be undone."], confirmLabel: "Delete draft", onYes: () => { drop(run.id); setOpenRun(null); } });
+      const exportPayout = () => downloadCsv(`payout-${run.from}-to-${run.to}.csv`, [["Name", "Method", "GCash / account no.", "Account name", "Bank / provider", "Net pay", "Paid", "Reference"],
+        ...run.lines.map((l) => { const p = l.payTo || {}; return [l.name, methodLabel(p.method), p.method === "gcash" ? gcashNorm(p.accountNo) : p.accountNo || "", p.accountName || "", p.bank || "", lineMath(l, settings).net.toFixed(2), l.paidAt ? "PAID" : "", l.paidRef || ""]; })]);
+      const exportSummary = () => downloadCsv(`payroll-summary-${run.from}-to-${run.to}.csv`, [["Name", "Type", "Basic", "Allowance", "OT", "Other earnings", "Total earnings", "Unpaid leave", "Other deductions", "SSS", "Pag-IBIG", "PhilHealth", "Withholding tax", "Total deductions", "Net", "Paid"],
+        ...run.lines.map((l) => { const m = lineMath(l, settings); const wht = l.type === "contractor" ? m.gov : num(l.tax);
+          return [l.name, l.type, m.basic.toFixed(2), m.allowance.toFixed(2), m.otAmt.toFixed(2), m.plus.toFixed(2), m.earnings.toFixed(2), m.unpaidAmt.toFixed(2), m.minus.toFixed(2), num(l.sss).toFixed(2), num(l.pagibig).toFixed(2), num(l.philhealth).toFixed(2), wht.toFixed(2), m.deductions.toFixed(2), m.net.toFixed(2), l.paidAt ? "PAID" : ""]; }),
+        ["Total", "", "", "", "", "", r2(totals.earn).toFixed(2), "", "", "", "", "", "", r2(totals.ded).toFixed(2), r2(totals.net).toFixed(2), `${paidCount}/${run.lines.length}`]]);
+      const slips = (lines) => {
+        const w = window.open("", "_blank");
+        if (!w) { setToast("Your browser blocked the payslip window. Allow pop-ups for this site and try again."); return; }
+        w.document.open(); w.document.write(payslipHtml(run, lines, settings)); w.document.close();
+      };
+      const inp = (l, k, ph, cls) => draft
+        ? h("input", { className: `ps-pay-num ${cls || ""}`, inputMode: "decimal", value: l[k] === 0 ? "" : l[k], placeholder: ph || "0", onChange: (e) => setLine(l.personId, { [k]: e.target.value }) })
+        : h("span", { className: "ps-pay-val" }, num(l[k]) ? peso(l[k]) : "—");
+      const card = (l) => {
+        const m = lineMath(l, settings);
+        const off = leaveIn(run, l.personId);
+        const contractor = l.type === "contractor";
+        const pt = l.payTo || {};
+        const gc = pt.method === "gcash";
+        const shownNo = gc ? gcashPretty(pt.accountNo) : pt.accountNo || "";
+        const bad = gc && (!pt.accountNo || !gcashOk(pt.accountNo));
+        return h("div", { key: l.personId, className: `ps-pay-card ${l.paidAt ? "paid" : ""}` },
+          h("div", { className: "ps-pay-cardhead" },
+            h("span", null, h("b", null, l.name), h("span", { className: "ps-muted" }, " · ", contractor ? "Contractor" : "Employee", " · OT ", peso(m.hour), "/h")),
+            h("span", { className: "ps-pay-netbig" }, peso(m.net))),
+          h("div", { className: "ps-pay-cols" },
+            h("div", { className: "ps-pay-col" },
+              h("b", { className: "ps-pay-colh" }, "Earnings"),
+              h("div", { className: "ps-pay-kv" }, h("span", null, contractor ? "Fee" : "Basic"), h("span", null, peso(m.basic))),
+              m.allowance > 0 && h("div", { className: "ps-pay-kv" }, h("span", null, "Allowance"), h("span", null, peso(m.allowance))),
+              (l.ot || []).map((o, i) => h("div", { key: o.id, className: "ps-pay-kv" },
+                draft ? h("span", { className: "ps-pay-ot" }, "OT ",
+                  h("input", { className: "ps-pay-num tiny", inputMode: "decimal", value: o.hours, placeholder: "h", onChange: (e) => setLine(l.personId, { ot: l.ot.map((x) => x.id === o.id ? { ...x, hours: e.target.value } : x) }) }), " h on ",
+                  h("input", { type: "date", className: "ps-pay-date", value: o.date || "", onChange: (e) => setLine(l.personId, { ot: l.ot.map((x) => x.id === o.id ? { ...x, date: e.target.value } : x) }) }),
+                  h("button", { className: "ps-x-small", "aria-label": "Remove overtime", onClick: () => setLine(l.personId, { ot: l.ot.filter((x) => x.id !== o.id) }) }, "\xD7"))
+                  : h("span", null, `OT ${num(o.hours)} h`, o.date ? ` (${longDate(o.date)})` : ""),
+                h("span", null, peso(m.ot[i].amount)))),
+              (l.adjustments || []).filter((a) => draft || num(a.amount) > 0).map((a) => (draft || num(a.amount) > 0) && h("div", { key: a.id, className: "ps-pay-kv" },
+                draft ? h("span", { className: "ps-pay-adj" },
+                  h("input", { className: "ps-pay-adjl", value: a.label, placeholder: "e.g. Perfect attendance", onChange: (e) => setLine(l.personId, { adjustments: l.adjustments.map((x) => x.id === a.id ? { ...x, label: e.target.value } : x) }) }),
+                  h("input", { className: "ps-pay-num small", inputMode: "decimal", value: a.amount, placeholder: "+/-", onChange: (e) => setLine(l.personId, { adjustments: l.adjustments.map((x) => x.id === a.id ? { ...x, amount: e.target.value } : x) }) }),
+                  h("button", { className: "ps-x-small", "aria-label": "Remove", onClick: () => setLine(l.personId, { adjustments: l.adjustments.filter((x) => x.id !== a.id) }) }, "\xD7"))
+                  : h("span", null, a.label || "Other"),
+                draft ? null : h("span", null, peso(a.amount)))),
+              draft && h("div", { className: "ps-pay-adds" },
+                h("button", { className: "ps-pay-link", onClick: () => setLine(l.personId, { ot: [...l.ot || [], { id: uid("ot"), hours: 1, date: run.from }] }) }, "+ overtime"),
+                h("button", { className: "ps-pay-link", onClick: () => setLine(l.personId, { adjustments: [...l.adjustments || [], { id: uid("aj"), label: "", amount: "" }] }) }, "+ other pay or deduction")),
+              h("div", { className: "ps-pay-kv total" }, h("span", null, "Total earnings"), h("span", null, peso(m.earnings)))),
+            h("div", { className: "ps-pay-col" },
+              h("b", { className: "ps-pay-colh" }, "Deductions"),
+              h("div", { className: "ps-pay-kv" }, h("span", null, "Unpaid days ",
+                draft ? h("input", { className: "ps-pay-num tiny", inputMode: "decimal", value: l.unpaidDays || "", placeholder: "0", onChange: (e) => setLine(l.personId, { unpaidDays: e.target.value }) }) : num(l.unpaidDays) || "—",
+                off > 0 && h("span", { className: "ps-pay-leave", title: "Approved time off in this period (weekdays). Count it only if it's unpaid." }, off, " day", off === 1 ? "" : "s", " approved leave",
+                  draft && num(l.unpaidDays) !== off ? h("button", { className: "ps-pay-link", onClick: () => setLine(l.personId, { unpaidDays: off }) }, "use") : null)),
+                h("span", null, m.unpaidAmt ? "−" + peso(m.unpaidAmt) : "—")),
+              (l.adjustments || []).filter((a) => !draft && num(a.amount) < 0).map((a) => h("div", { key: a.id, className: "ps-pay-kv" }, h("span", null, a.label || "Deduction"), h("span", null, "−" + peso(-num(a.amount))))),
+              contractor
+                ? h("div", { className: "ps-pay-kv" }, h("span", null, "Withholding ", draft ? h("span", { className: "ps-pay-pct" }, h("input", { className: "ps-pay-num tiny", inputMode: "decimal", value: l.whtPct || "", placeholder: "0", onChange: (e) => setLine(l.personId, { whtPct: e.target.value }) }), "%") : `${num(l.whtPct)}%`), h("span", null, m.gov ? "−" + peso(m.gov) : "—"))
+                : DED_KEYS.map(([k, label]) => h("div", { key: k, className: "ps-pay-kv" }, h("span", null, label), inp(l, k))),
+              m.minus > 0 && draft && h("div", { className: "ps-pay-kv" }, h("span", null, "Deductions from the list on the left"), h("span", null, "−" + peso(m.minus))),
+              h("div", { className: "ps-pay-kv total" }, h("span", null, "Total deductions"), h("span", null, peso(m.deductions)))),
+            h("div", { className: "ps-pay-col ps-pay-payto" },
+              h("b", { className: "ps-pay-colh" }, "Pay to"),
+              h("div", { className: "ps-pay-method" }, methodLabel(pt.method), pt.bank && pt.method !== "gcash" ? ` · ${pt.bank}` : ""),
+              shownNo ? h("div", { className: `ps-pay-acct ${bad ? "bad" : ""}` }, h("span", { className: "ps-pay-no" }, shownNo),
+                h("button", { className: "ps-pay-link", onClick: () => copy(gc ? gcashNorm(pt.accountNo) : pt.accountNo, gc ? "GCash number" : "Account number") }, "Copy"))
+                : pt.method !== "cash" && h("div", { className: "ps-pay-warn" }, "No number saved — add it in Pay profiles."),
+              bad && shownNo && h("div", { className: "ps-pay-warn" }, "This doesn't look like a GCash number (11 digits, starts with 09)."),
+              pt.accountName && h("div", { className: "ps-muted ps-pay-acname" }, "Name: ", pt.accountName, gc ? " — compare with the name GCash shows before you send." : ""),
+              h("div", { className: "ps-pay-amtcopy" }, "Send ", h("b", null, peso(m.net)), h("button", { className: "ps-pay-link", onClick: () => copy(m.net.toFixed(2), "Amount") }, "Copy")),
+              l.paidAt
+                ? h("div", { className: "ps-pay-paid" }, h("span", { className: "ps-pay-stamp" }, "PAID"),
+                  h("span", { className: "ps-muted" }, new Date(l.paidAt).toLocaleString("en-PH", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }), " by ", l.paidBy, l.paidRef ? ` · ref ${l.paidRef}` : ""),
+                  isLead && h("button", { className: "ps-pay-link", onClick: () => unpay(l) }, "Undo"))
+                : locked
+                  ? h("div", { className: "ps-pay-payrow" },
+                    h("input", { className: "ps-pay-ref", placeholder: "GCash ref no. (optional)", value: refs[l.personId] || "", onChange: (e) => setRefs((x) => ({ ...x, [l.personId]: e.target.value })) }),
+                    h("button", { className: "ps-btn small ps-pay-paidbtn", onClick: () => markPaid(l) }, "Mark PAID"))
+                  : h("div", { className: "ps-muted ps-pay-hint" }, "Can be marked paid once the run is approved."),
+              h("button", { className: "ps-pay-link ps-pay-slip", onClick: () => slips([l]) }, "Payslip"))));
+      };
+      return h("div", { className: "ps-pay-run" },
+        h("div", { className: "ps-pay-runhead" },
+          h("button", { className: "ps-st-back", onClick: () => setOpenRun(null) }, "← All runs"),
+          h("h2", { className: "ps-h2" }, periodLabel(run)),
+          h("span", { className: `ps-chip ps-pay-st ${run.status}` }, run.status === "draft" ? "Draft" : run.status === "approved" ? `Approved · ${paidCount} of ${run.lines.length} paid` : "All paid"),
+          h("span", { className: "ps-pay-runtot" }, "Net total ", h("b", null, peso(totals.net)))),
+        run.lines.map(card),
+        h("div", { className: "ps-btnrow ps-pay-actions" },
+          draft && h("button", { className: "ps-btn ghost small danger-text", onClick: del }, "Delete draft"),
+          !draft && isLead && paidCount === 0 && h("button", { className: "ps-btn ghost small", onClick: reopen }, "Reopen to edit"),
+          h("button", { className: "ps-btn ghost small", onClick: () => slips(run.lines) }, "Print all payslips"),
+          h("button", { className: "ps-btn ghost small", onClick: exportPayout }, "Payout list (CSV)"),
+          h("button", { className: "ps-btn ghost small", onClick: exportSummary }, "Summary for accountant (CSV)"),
+          draft && (isLead ? h("button", { className: "ps-btn", onClick: approve }, "Approve payroll") : h("span", { className: "ps-muted" }, "Waiting for the Lead to approve"))),
+        (run.history || []).length > 0 && h("details", { className: "ps-history" }, h("summary", null, "History (", run.history.length, ")"),
+          run.history.slice().reverse().map((e, i) => h("div", { key: i, className: "ps-muted" }, new Date(e.at).toLocaleString("en-PH", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }), " · ", e.by, " · ", e.text))));
+    };
+    const runsTab = openRun && runs.find((r) => r.id === openRun)
+      ? RunView({ run: runs.find((r) => r.id === openRun) })
+      : h("div", null,
+        h("div", { className: "ps-btnrow ps-pay-top" }, h("button", { className: "ps-btn", onClick: newRun }, "New payroll run")),
+        runs.length === 0
+          ? h("p", { className: "ps-empty" }, "No payroll runs yet. Set up pay profiles, then start the first run.")
+          : runs.map((run) => {
+            const net = run.lines.reduce((t, l) => t + lineMath(l, settings).net, 0);
+            const pc = run.lines.filter((l) => l.paidAt).length;
+            return h("button", { key: run.id, className: "ps-pay-runrow", onClick: () => setOpenRun(run.id) },
+              h("b", null, periodLabel(run)),
+              h("span", { className: "ps-muted" }, run.lines.length, " people · net ", peso(net)),
+              h("span", { className: `ps-chip ps-pay-st ${run.status}` }, run.status === "draft" ? "Draft" : run.status === "approved" ? `${pc} of ${run.lines.length} paid` : "All paid"));
+          }));
+
+    /* ---------- 13th month: basic salary only (no allowance, OT or bonuses) ---------- */
+    const year = new Date().getFullYear();
+    const thirteenth = {};
+    runs.filter((r) => r.status !== "draft" && r.from.slice(0, 4) === String(year)).forEach((r) => r.lines.forEach((l) => {
+      if (l.type === "contractor") return;
+      const basicDay = num(l.monthly) / Math.max(1, num(settings.workdays) || 22);
+      thirteenth[l.personId] = r2((thirteenth[l.personId] || 0) + num(l.basic) - num(l.unpaidDays) * basicDay);
+    }));
+    const thirteenthTab = h("div", null,
+      h("p", { className: "ps-muted" }, "Basic salary earned in approved or paid runs this year ÷ 12, for employees (allowances, OT and bonuses aren't counted). By law it's due on or before December 24. Contractors aren't included."),
+      h("div", { className: "ps-pay-tablewrap" }, h("table", { className: "ps-pay-table" },
+        h("thead", null, h("tr", null, h("th", null, "Employee"), h("th", null, `Basic earned in ${year}`), h("th", null, "13th month so far"))),
+        h("tbody", null, Object.keys(thirteenth).length === 0
+          ? h("tr", null, h("td", { colSpan: 3, className: "ps-muted" }, "Nothing yet — it fills in as runs are approved."))
+          : Object.entries(thirteenth).map(([pid, basic]) => h("tr", { key: pid }, h("td", null, nameOf(pid)), h("td", null, peso(basic)), h("td", { className: "ps-pay-net" }, peso(basic / 12))))))));
+
+    /* ---------- settings ---------- */
+    const sset = (patch, quiet) => put("settings", "settings", { ...settings, ...patch }, quiet);
+    const settingsTab = h("div", { className: "ps-pay-form" },
+      h("div", { className: "ps-pay-grid" },
+        h("label", { className: "ps-field" }, h("span", null, "Pay schedule"),
+          h("select", { value: settings.schedule, onChange: (e) => sset({ schedule: e.target.value }) },
+            h("option", { value: "semi" }, "Twice a month (1–15, 16–end)"), h("option", { value: "monthly" }, "Once a month"))),
+        h("label", { className: "ps-field" }, h("span", null, "Working days per month"),
+          h("input", { inputMode: "numeric", value: settings.workdays, onChange: (e) => sset({ workdays: e.target.value }, true) })),
+        h("label", { className: "ps-field" }, h("span", null, "Hours per working day"),
+          h("input", { inputMode: "numeric", value: settings.hours, onChange: (e) => sset({ hours: e.target.value }, true) })),
+        h("label", { className: "ps-field" }, h("span", null, "OT pay × (1 = normal hourly rate)"),
+          h("input", { inputMode: "decimal", value: settings.otMultiplier, onChange: (e) => sset({ otMultiplier: e.target.value }, true) })),
+        h("label", { className: "ps-field" }, h("span", null, "Allowance counts in the hourly/daily rate"),
+          h("select", { value: settings.allowanceInRate === false ? "no" : "yes", onChange: (e) => sset({ allowanceInRate: e.target.value === "yes" }) }, h("option", { value: "yes" }, "Yes"), h("option", { value: "no" }, "No"))),
+        h("label", { className: "ps-field" }, h("span", null, "Name on payslips"),
+          h("input", { value: settings.company, onChange: (e) => sset({ company: e.target.value }, true) }))),
+      h("p", { className: "ps-muted ps-pay-hint" }, "Hourly rate = (monthly basic", settings.allowanceInRate === false ? "" : " + monthly allowance", ") ÷ working days ÷ hours", num(settings.otMultiplier) !== 1 ? ` × ${num(settings.otMultiplier)}` : "", ". One unpaid day = the same monthly amount ÷ working days. Changing these updates draft runs straight away; approved and paid runs keep the rates they were approved with."));
+
+    return h(React.Fragment, null,
+      h("div", { className: "ps-ovhead" }, h("span", { className: "ps-ovicon", "aria-hidden": "true" }, "\u{1F4B8}"), h("h1", { className: "ps-h1" }, "Payroll")),
+      !api.live && h("p", { className: "ps-pay-demo" }, "Demo mode — this preview isn't connected to Supabase, so anything here stays in this browser only. On your site it saves to the locked payroll table."),
+      h("p", { className: "ps-lede" }, "Only you and HR can open this page. Pay data is kept apart from the rest of the app."),
+      h("div", { className: "ps-tabs" }, [["runs", "Payroll runs"], ["profiles", "Pay profiles"], ["13th", "13th month"], ["settings", "Settings"]].map(([k, l]) =>
+        h("button", { key: k, className: `ps-tab ${tab === k ? "on" : ""}`, onClick: () => { setTab(k); setOpenRun(null); } }, l))),
+      h("div", { className: "ps-pay-body" }, tab === "runs" ? runsTab : tab === "profiles" ? profilesTab : tab === "13th" ? thirteenthTab : settingsTab));
+  }
   function TaskModal({ t, db, me, lead, updateTask, mutate, setToast, close, confirm, openTask }) {
     const [note, setNote] = useState("");
     const [comment, setComment] = useState("");
@@ -3804,6 +4277,7 @@ ${lines.join("\n")}`);
       ...!lead && me.role !== "hr" && me.role !== "client" ? [["overview", "Team overview", ""]] : [],
       ...me.role !== "client" ? [["studio", "Studio", ""]] : [],
       ...me.role !== "client" ? [["archive", "Archive", ""]] : [],
+      ...me.role === "lead" || me.role === "hr" ? [["payroll", "Payroll", ""]] : [],
       ...me.role !== "client" && !isLead ? [["timeoff", "Time off", leaveStats(db, me.id).left]] : [],
       ...isLead ? [["settings", "Settings", ""]] : []
     ];
@@ -3826,6 +4300,8 @@ ${lines.join("\n")}`);
       body = c ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("h1", { className: "ps-h1" }, c.name), /* @__PURE__ */ React.createElement("div", { className: "ps-meta" }, /* @__PURE__ */ React.createElement("span", { className: `ps-chip ${clientKindOf(c).id === "personal" ? "warn" : "ok"}` }, clientKindOf(c).label)), lead && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Invoices"), /* @__PURE__ */ React.createElement("p", { className: "ps-muted" }, billingOf(c).label, " \xB7 ", billingOf(c).note, unpaidFor(db, c).length > 0 ? ` \u2014 ${unpaidFor(db, c).length} unpaid` : billingOf(c).id === "none" ? "" : " \u2014 all settled", billingOf(c).id !== "none" ? ". Click a line to mark it paid or unpaid." : ""), /* @__PURE__ */ React.createElement(InvoiceList, { db, client: c, canEdit: lead, toggle: (k) => toggleInvoice(c.id, k), addJob: (label) => addJobInvoice(c.id, label), removeJob: (k) => removeJobInvoice(c.id, k), openVideo: setOpenId })), /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Pipeline"), /* @__PURE__ */ React.createElement(FilmStrip, { videos: [...rows, ...clientTasks], filter, setFilter }), /* @__PURE__ */ rows.some((v) => !v.archived && v.stage !== "ready") ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "In production"), /* @__PURE__ */ React.createElement(VideoTable, { rows: rows.filter((v) => !v.archived && v.stage !== "ready" && (!filter || v.stage === filter)), db, me, open: setOpenId, showClient: false })) : null, /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, filter ? `Tasks \u00b7 ${stageOf(filter).name}` : "Tasks"), /* @__PURE__ */ React.createElement(ClientTasks, { db, me, client: c, openTask: setTaskId, filter }), /* @__PURE__ */ React.createElement(SentToClient, { db, me, client: c, openTask: setTaskId, openVideo: setOpenId }), /* @__PURE__ */ React.createElement(ClientBrief, { db, client: c, canEdit: lead, mutate, setToast })) : /* @__PURE__ */ React.createElement("p", { className: "ps-empty" }, "That client no longer exists.");
     } else if (page.tab === "timeoff") {
       body = /* @__PURE__ */ React.createElement(TimeOffPage, { db, me, mutate, setToast });
+    } else if (page.tab === "payroll" && (me.role === "lead" || me.role === "hr")) {
+      body = /* @__PURE__ */ React.createElement(PayrollPage, { db, me, setToast, confirm: setConfirming });
     } else if (page.tab === "archive" && me.role !== "client") {
       body = /* @__PURE__ */ React.createElement(ArchivePage, { db, me, mutate, setToast, confirm: setConfirming });
     } else if (page.tab === "studio" && me.role !== "client") {
@@ -4704,6 +5180,83 @@ ${lines.join("\n")}`);
 .ps-root .ps-arch-task{margin-left:auto}
 .ps-root .ps-arch-task + .ps-del-task{margin-left:0}
 @media (max-width:640px){.ps-bin-row{grid-template-columns:1fr}}
+.ps-pay-locked{border:1px solid var(--line);border-radius:12px;background:var(--card);padding:16px 18px;max-width:640px}
+.ps-pay-locked p{margin:6px 0 0;color:var(--muted)}
+.ps-pay-demo{background:var(--warnbg);color:var(--warn);border-radius:10px;padding:8px 12px;font-size:13.5px;margin:6px 0 10px}
+.ps-pay-body{margin-top:14px}
+.ps-pay-list{display:flex;flex-direction:column;gap:8px}
+.ps-pay-person{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:10px 12px}
+.ps-pay-row{display:flex;align-items:center;gap:12px}
+.ps-pay-who{display:flex;flex-direction:column;flex:1;min-width:0}
+.ps-pay-who .ps-muted{font-size:13px}
+.ps-pay-form{margin-top:10px;display:flex;flex-direction:column;gap:8px}
+.ps-pay-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:8px 12px}
+.ps-pay-sub{margin-top:6px;font-size:14px}
+.ps-pay-hint{margin:0;font-size:12.5px}
+.ps-pay-form .ps-btnrow{justify-content:flex-end}
+.ps-pay-top{margin-bottom:10px}
+.ps-root .ps-pay-runrow{display:flex;align-items:center;gap:14px;width:100%;text-align:left;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px 14px;margin-bottom:8px;cursor:pointer}
+.ps-root .ps-pay-runrow:hover{border-color:var(--accent)}
+.ps-pay-runrow .ps-muted{flex:1}
+.ps-pay-st.draft{background:var(--warnbg);color:var(--warn)}
+.ps-pay-st.approved{background:color-mix(in srgb,#4F8EF7 18%,var(--card));color:#2F6FE0}
+.ps-pay-st.paid{background:var(--okbg);color:var(--accent)}
+.ps-pay-runhead{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:10px}
+.ps-pay-runhead .ps-h2{margin:0}
+.ps-pay-tablewrap{overflow-x:auto;border:1px solid var(--line);border-radius:12px;background:var(--card)}
+.ps-pay-table{width:100%;border-collapse:collapse;font-size:13.5px;min-width:820px}
+.ps-pay-table td:last-child{white-space:nowrap}
+.ps-pay-table th{text-align:left;font-size:12px;color:var(--muted);font-weight:600;padding:8px 10px;border-bottom:1px solid var(--line);white-space:nowrap}
+.ps-pay-table td{padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:top;font-variant-numeric:tabular-nums}
+.ps-pay-table tfoot td{border-bottom:0;font-weight:700}
+.ps-pay-type{display:block;font-size:12px}
+.ps-root input.ps-pay-num{width:78px;padding:4px 6px;text-align:right}
+.ps-root input.ps-pay-num.small{width:56px}
+.ps-pay-mini{display:block;font-size:12px;white-space:nowrap}
+.ps-pay-leave{display:block;font-size:11.5px;color:var(--warn);margin-top:3px}
+.ps-root .ps-pay-link{background:none;border:0;padding:0 0 0 6px;color:var(--accent);cursor:pointer;font-size:12.5px;text-decoration:underline}
+.ps-pay-adj{display:flex;align-items:center;gap:4px;margin-bottom:4px;flex-wrap:wrap}
+.ps-root input.ps-pay-adjl{width:130px;padding:4px 6px}
+.ps-pay-pct{display:inline-flex;align-items:center;gap:3px}
+.ps-pay-net{font-weight:700;white-space:nowrap}
+.ps-btnrow.ps-pay-actions{margin-top:12px;flex-wrap:wrap;justify-content:flex-start;gap:8px}
+.ps-pay-actions > .ps-btn:not(.ghost),.ps-pay-actions > .ps-muted{margin-left:auto}
+.ps-pay-card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px 14px;margin-bottom:10px}
+.ps-pay-card.paid{border-color:color-mix(in srgb,#2FB344 50%,var(--line))}
+.ps-pay-cardhead{display:flex;justify-content:space-between;align-items:baseline;gap:10px;border-bottom:1px solid var(--line);padding-bottom:8px;margin-bottom:8px}
+.ps-pay-netbig{font-weight:800;font-size:18px;font-variant-numeric:tabular-nums}
+.ps-pay-cols{display:grid;grid-template-columns:1.25fr 1fr 1fr;gap:14px}
+.ps-pay-col{display:flex;flex-direction:column;gap:5px;min-width:0}
+.ps-pay-colh{font-size:12px;letter-spacing:.05em;text-transform:uppercase;color:var(--muted)}
+.ps-pay-kv{display:flex;justify-content:space-between;align-items:center;gap:8px;font-size:13.5px;font-variant-numeric:tabular-nums}
+.ps-pay-kv.total{border-top:1px solid var(--line);padding-top:5px;margin-top:2px;font-weight:700}
+.ps-pay-kv > span:first-child{min-width:0}
+.ps-root input.ps-pay-num.tiny{width:48px}
+.ps-root input.ps-pay-date{padding:3px 4px;font-size:12.5px;width:132px}
+.ps-pay-ot,.ps-pay-adj{display:inline-flex;align-items:center;gap:4px;flex-wrap:wrap}
+.ps-pay-adds{display:flex;gap:12px}
+.ps-pay-adds .ps-pay-link{padding:0}
+.ps-pay-payto{background:var(--paper);border-radius:10px;padding:8px 10px}
+.ps-pay-method{font-weight:600;font-size:13.5px}
+.ps-pay-acct{display:flex;align-items:center;gap:6px}
+.ps-pay-no{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:16px;font-weight:700;letter-spacing:.02em}
+.ps-pay-acct.bad .ps-pay-no{color:var(--late)}
+.ps-pay-acname{font-size:12.5px}
+.ps-pay-amtcopy{font-size:13.5px}
+.ps-pay-warn{color:var(--late);font-size:12.5px}
+.ps-pay-payrow{display:flex;gap:6px;align-items:center;margin-top:4px;flex-wrap:wrap}
+.ps-root input.ps-pay-ref{flex:1;min-width:120px;padding:5px 8px;font-size:13px}
+.ps-root .ps-pay-paidbtn{background:#2FB344;border-color:#2FB344;color:#fff}
+.ps-pay-paid{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-top:4px;font-size:12.5px}
+.ps-pay-stamp{background:#6BF05A;color:#0B3B07;font-weight:800;letter-spacing:.08em;padding:3px 12px;border-radius:4px}
+.ps-pay-slip{align-self:flex-start;padding:0 !important}
+.ps-pay-runtot{margin-left:auto;font-size:14px}
+.ps-pay-val{font-variant-numeric:tabular-nums}
+.ps-pay-bad input{border-color:var(--late)}
+.ps-pay-bad small{color:var(--late)}
+.ps-pay-dedgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:8px 14px}
+.ps-pay-ded{display:grid;grid-template-columns:1fr 1.2fr;gap:6px;align-items:end}
+@media (max-width:900px){.ps-pay-cols{grid-template-columns:1fr}}
 .ps-spacer{flex:1}
 .ps-viewas{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:13px}
 .ps-root select,.ps-root input,.ps-root textarea{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:7px 10px}
@@ -5419,6 +5972,34 @@ if (sb) {
       const out = {};
       (data || []).forEach((r) => { out[r.person_id] = r.seen_at; });
       return out;
+    }
+  };
+}
+
+/* Payroll lives in its own Supabase table that only logins listed in
+   payroll_admins can read or write (enforced by the database, not the app).
+   Nothing here goes through the shared app data, Realtime or Slack. */
+if (sb) {
+  window.psPayroll = {
+    live: true,
+    can: async () => {
+      const { data, error } = await sb.rpc("is_payroll_admin");
+      if (error) return { ok: false, setup: /function|does not exist|schema cache/i.test(error.message || "") ? "missing" : "error" };
+      return { ok: data === true };
+    },
+    list: async () => {
+      const { data, error } = await sb.from("payroll").select("id, kind, data, updated_at, updated_by");
+      if (error) throw error;
+      return data || [];
+    },
+    save: async (id, kind, data) => {
+      const { data: u } = await sb.auth.getUser();
+      const { error } = await sb.from("payroll").upsert({ id, kind, data, updated_at: new Date().toISOString(), updated_by: (u && u.user && u.user.email) || null });
+      if (error) throw error;
+    },
+    remove: async (id) => {
+      const { error } = await sb.from("payroll").delete().eq("id", id);
+      if (error) throw error;
     }
   };
 }

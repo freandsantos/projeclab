@@ -4392,7 +4392,7 @@ ${lines.join("\n")}`);
         /* @__PURE__ */ React.createElement("span", { className: "ps-row-go" }, "View")
       )))));
     }
-    return /* @__PURE__ */ React.createElement("div", { className: `ps-root ${dark ? "dark" : ""}` }, /* @__PURE__ */ React.createElement("style", null, CSS), /* @__PURE__ */ React.createElement("header", { className: "ps-top" }, tourWrap(/* @__PURE__ */ React.createElement("button", { className: "ps-logo", title: "Back to My tasks", onClick: () => {
+    return /* @__PURE__ */ React.createElement("div", { className: `ps-root ${dark ? "dark" : ""}` }, /* @__PURE__ */ React.createElement("style", null, CSS), /* @__PURE__ */ React.createElement("header", { className: "ps-top" }, seasonWrap(/* @__PURE__ */ React.createElement("button", { className: "ps-logo", title: "Back to My tasks", onClick: () => {
       setPage({ tab: "queue" });
       setFilter(null);
       setOpenId(null);
@@ -5007,6 +5007,40 @@ ${lines.join("\n")}`);
           React.createElement("span", { className: "t-sub" }, sp("s6 inline"), React.createElement("span", null, "MLBB Tournament \u00b7 Oct 16"), sp("s7 inline"))),
         React.createElement("span", { className: "t-right", "aria-hidden": "true" }, tourArt(TOUR_ART.trophy, "t-trophy-at"), sp("s3"), sp("s4"), sp("s5"))));
   }
+
+  /* Halloween dressing around the logo, Oct 22-31 (Manila). Same rule as the
+     tournament one: the logo itself is untouched; the hat, pumpkin, bat,
+     spider and ghost are separate pixel art placed around it. Turns itself
+     off on Nov 1. Animations are transform/opacity only. */
+  const HALLO_FIRST_DAY = "2026-10-22", HALLO_LAST_DAY = "2026-10-31";
+  const HALLO_ART = {"hat": "<svg class=\"h-hat\" viewBox=\"0 0 15 9\" width=\"30\" height=\"18\" shape-rendering=\"crispEdges\" aria-hidden=\"true\"><rect x=\"8\" y=\"0\" width=\"2\" height=\"1\" fill=\"#2a1a3d\"/><rect x=\"7\" y=\"1\" width=\"2\" height=\"1\" fill=\"#2a1a3d\"/><rect x=\"9\" y=\"1\" width=\"1\" height=\"1\" fill=\"#5b3a86\"/><rect x=\"6\" y=\"2\" width=\"3\" height=\"1\" fill=\"#2a1a3d\"/><rect x=\"9\" y=\"2\" width=\"1\" height=\"1\" fill=\"#5b3a86\"/><rect x=\"5\" y=\"3\" width=\"5\" height=\"1\" fill=\"#2a1a3d\"/><rect x=\"5\" y=\"4\" width=\"6\" height=\"1\" fill=\"#2a1a3d\"/><rect x=\"4\" y=\"5\" width=\"7\" height=\"1\" fill=\"#2a1a3d\"/><rect x=\"4\" y=\"6\" width=\"8\" height=\"1\" fill=\"#ff8a1f\"/><rect x=\"3\" y=\"7\" width=\"10\" height=\"1\" fill=\"#2a1a3d\"/><rect x=\"0\" y=\"8\" width=\"15\" height=\"1\" fill=\"#2a1a3d\"/></svg>", "pump": "<svg class=\"h-pump\" viewBox=\"0 0 13 11\" width=\"26\" height=\"22\" shape-rendering=\"crispEdges\" aria-hidden=\"true\"><rect x=\"6\" y=\"0\" width=\"2\" height=\"1\" fill=\"#3f7a2a\"/><rect x=\"5\" y=\"1\" width=\"1\" height=\"1\" fill=\"#3f7a2a\"/><rect x=\"2\" y=\"2\" width=\"1\" height=\"1\" fill=\"#ff8a1f\"/><rect x=\"3\" y=\"2\" width=\"1\" height=\"1\" fill=\"#d9600b\"/><rect x=\"4\" y=\"2\" width=\"2\" height=\"1\" fill=\"#ff8a1f\"/><rect x=\"6\" y=\"2\" width=\"2\" height=\"1\" fill=\"#d9600b\"/><rect x=\"8\" y=\"2\" width=\"2\" height=\"1\" fill=\"#ff8a1f\"/><rect x=\"10\" y=\"2\" width=\"1\" height=\"1\" fill=\"#d9600b\"/><rect x=\"1\" y=\"3\" width=\"1\" height=\"1\" fill=\"#ff8a1f\"/><rect x=\"2\" y=\"3\" width=\"1\" height=\"1\" fill=\"#d9600b\"/><rect x=\"3\" y=\"3\" width=\"3\" height=\"1\" fill=\"#ff8a1f\"/><rect x=\"6\" y=\"3\" width=\"1\" height=\"1\" fill=\"#d9600b\"/><rect x=\"7\" y=\"3\" width=\"4\" height=\"1\" fill=\"#ff8a1f\"/><rect x=\"11\" y=\"3\" width=\"1\" height=\"1\" fill=\"#d9600b\"/><rect x=\"0\" y=\"4\" width=\"1\" height=\"1\" fill=\"#ff8a1f\"/><rect x=\"1\" y=\"4\" width=\"1\" height=\"1\" fill=\"#d9600b\"/><rect x=\"2\" y=\"4\" width=\"4\" height=\"1\" fill=\"#ff8a1f\"/><rect x=\"6\" y=\"4\" width=\"1\" height=\"1\" fill=\"#d9600b\"/><rect x=\"7\" y=\"4\" width=\"5\" height=\"1\" fill=\"#ff8a1f\"/><rect x=\"12\" y=\"4\" width=\"1\" height=\"1\" fill=\"#d9600b\"/><rect x=\"0\" y=\"5\" width=\"1\" height=\"1\" fill=\"#ff8a1f\"/><rect x=\"1\" y=\"5\" width=\"1\" height=\"1\" fill=\"#d9600b\"/><rect x=\"2\" y=\"5\" width=\"1\" height=\"1\" fill=\"#ff8a1f\"/><rect x=\"3\" y=\"5\" width=\"2\" height=\"1\" fill=\"#ffe066\"/><rect x=\"5\" y=\"5\" width=\"1\" height=\"1\" fill=\"#ff8a1f\"/><rect x=\"6\" y=\"5\" width=\"1\" height=\"1\" fill=\"#d9600b\"/><rect x=\"7\" y=\"5\" width=\"1\" height=\"1\" fill=\"#ff8a1f\"/><rect x=\"8\" y=\"5\" width=\"2\" height=\"1\" fill=\"#ffe066\"/><rect x=\"10\" y=\"5\" width=\"2\" height=\"1\" fill=\"#ff8a1f\"/><rect x=\"12\" y=\"5\" width=\"1\" height=\"1\" fill=\"#d9600b\"/><rect x=\"0\" y=\"6\" width=\"1\" height=\"1\" fill=\"#ff8a1f\"/><rect x=\"1\" y=\"6\" width=\"1\" height=\"1\" fill=\"#d9600b\"/><rect x=\"2\" y=\"6\" width=\"4\" height=\"1\" fill=\"#ff8a1f\"/><rect x=\"6\" y=\"6\" width=\"1\" height=\"1\" fill=\"#d9600b\"/><rect x=\"7\" y=\"6\" width=\"5\" height=\"1\" fill=\"#ff8a1f\"/><rect x=\"12\" y=\"6\" width=\"1\" height=\"1\" fill=\"#d9600b\"/><rect x=\"0\" y=\"7\" width=\"1\" height=\"1\" fill=\"#ff8a1f\"/><rect x=\"1\" y=\"7\" width=\"1\" height=\"1\" fill=\"#d9600b\"/><rect x=\"2\" y=\"7\" width=\"1\" height=\"1\" fill=\"#ff8a1f\"/><rect x=\"3\" y=\"7\" width=\"1\" height=\"1\" fill=\"#ffe066\"/><rect x=\"4\" y=\"7\" width=\"1\" height=\"1\" fill=\"#ff8a1f\"/><rect x=\"5\" y=\"7\" width=\"3\" height=\"1\" fill=\"#ffe066\"/><rect x=\"8\" y=\"7\" width=\"1\" height=\"1\" fill=\"#ff8a1f\"/><rect x=\"9\" y=\"7\" width=\"1\" height=\"1\" fill=\"#ffe066\"/><rect x=\"10\" y=\"7\" width=\"2\" height=\"1\" fill=\"#ff8a1f\"/><rect x=\"12\" y=\"7\" width=\"1\" height=\"1\" fill=\"#d9600b\"/><rect x=\"1\" y=\"8\" width=\"1\" height=\"1\" fill=\"#ff8a1f\"/><rect x=\"2\" y=\"8\" width=\"1\" height=\"1\" fill=\"#d9600b\"/><rect x=\"3\" y=\"8\" width=\"1\" height=\"1\" fill=\"#ff8a1f\"/><rect x=\"4\" y=\"8\" width=\"5\" height=\"1\" fill=\"#ffe066\"/><rect x=\"9\" y=\"8\" width=\"1\" height=\"1\" fill=\"#ff8a1f\"/><rect x=\"10\" y=\"8\" width=\"2\" height=\"1\" fill=\"#d9600b\"/><rect x=\"2\" y=\"9\" width=\"1\" height=\"1\" fill=\"#ff8a1f\"/><rect x=\"3\" y=\"9\" width=\"1\" height=\"1\" fill=\"#d9600b\"/><rect x=\"4\" y=\"9\" width=\"2\" height=\"1\" fill=\"#ff8a1f\"/><rect x=\"6\" y=\"9\" width=\"1\" height=\"1\" fill=\"#d9600b\"/><rect x=\"7\" y=\"9\" width=\"2\" height=\"1\" fill=\"#ff8a1f\"/><rect x=\"9\" y=\"9\" width=\"2\" height=\"1\" fill=\"#d9600b\"/><rect x=\"4\" y=\"10\" width=\"5\" height=\"1\" fill=\"#d9600b\"/><rect class=\"h-glow\" x=\"3\" y=\"5\" width=\"7\" height=\"4\" fill=\"#fff3a0\" opacity=\"0\"/></svg>", "bat": "<span class=\"h-batw\"><svg class=\"h-bat f1\" viewBox=\"0 0 13 6\" width=\"26\" height=\"12\" shape-rendering=\"crispEdges\" aria-hidden=\"true\"><rect x=\"0\" y=\"0\" width=\"1\" height=\"1\" fill=\"#2a1a3d\"/><rect x=\"12\" y=\"0\" width=\"1\" height=\"1\" fill=\"#2a1a3d\"/><rect x=\"0\" y=\"1\" width=\"2\" height=\"1\" fill=\"#2a1a3d\"/><rect x=\"5\" y=\"1\" width=\"1\" height=\"1\" fill=\"#2a1a3d\"/><rect x=\"7\" y=\"1\" width=\"1\" height=\"1\" fill=\"#2a1a3d\"/><rect x=\"11\" y=\"1\" width=\"2\" height=\"1\" fill=\"#2a1a3d\"/><rect x=\"0\" y=\"2\" width=\"3\" height=\"1\" fill=\"#2a1a3d\"/><rect x=\"4\" y=\"2\" width=\"5\" height=\"1\" fill=\"#2a1a3d\"/><rect x=\"10\" y=\"2\" width=\"3\" height=\"1\" fill=\"#2a1a3d\"/><rect x=\"1\" y=\"3\" width=\"5\" height=\"1\" fill=\"#2a1a3d\"/><rect x=\"6\" y=\"3\" width=\"1\" height=\"1\" fill=\"#ff5a3c\"/><rect x=\"7\" y=\"3\" width=\"1\" height=\"1\" fill=\"#2a1a3d\"/><rect x=\"8\" y=\"3\" width=\"1\" height=\"1\" fill=\"#ff5a3c\"/><rect x=\"9\" y=\"3\" width=\"4\" height=\"1\" fill=\"#2a1a3d\"/><rect x=\"2\" y=\"4\" width=\"9\" height=\"1\" fill=\"#2a1a3d\"/><rect x=\"6\" y=\"5\" width=\"1\" height=\"1\" fill=\"#2a1a3d\"/></svg><svg class=\"h-bat f2\" viewBox=\"0 0 13 6\" width=\"26\" height=\"12\" shape-rendering=\"crispEdges\" aria-hidden=\"true\"><rect x=\"6\" y=\"0\" width=\"1\" height=\"1\" fill=\"#2a1a3d\"/><rect x=\"8\" y=\"0\" width=\"1\" height=\"1\" fill=\"#2a1a3d\"/><rect x=\"5\" y=\"1\" width=\"5\" height=\"1\" fill=\"#2a1a3d\"/><rect x=\"2\" y=\"2\" width=\"4\" height=\"1\" fill=\"#2a1a3d\"/><rect x=\"6\" y=\"2\" width=\"1\" height=\"1\" fill=\"#ff5a3c\"/><rect x=\"7\" y=\"2\" width=\"1\" height=\"1\" fill=\"#2a1a3d\"/><rect x=\"8\" y=\"2\" width=\"1\" height=\"1\" fill=\"#ff5a3c\"/><rect x=\"9\" y=\"2\" width=\"3\" height=\"1\" fill=\"#2a1a3d\"/><rect x=\"1\" y=\"3\" width=\"11\" height=\"1\" fill=\"#2a1a3d\"/><rect x=\"0\" y=\"4\" width=\"2\" height=\"1\" fill=\"#2a1a3d\"/><rect x=\"4\" y=\"4\" width=\"5\" height=\"1\" fill=\"#2a1a3d\"/><rect x=\"11\" y=\"4\" width=\"2\" height=\"1\" fill=\"#2a1a3d\"/><rect x=\"0\" y=\"5\" width=\"1\" height=\"1\" fill=\"#2a1a3d\"/><rect x=\"6\" y=\"5\" width=\"1\" height=\"1\" fill=\"#2a1a3d\"/><rect x=\"12\" y=\"5\" width=\"1\" height=\"1\" fill=\"#2a1a3d\"/></svg></span>", "spider": "<svg class=\"h-spider\" viewBox=\"0 0 7 5\" width=\"14\" height=\"10\" shape-rendering=\"crispEdges\" aria-hidden=\"true\"><rect x=\"0\" y=\"0\" width=\"1\" height=\"1\" fill=\"#2a1a3d\"/><rect x=\"2\" y=\"0\" width=\"1\" height=\"1\" fill=\"#2a1a3d\"/><rect x=\"4\" y=\"0\" width=\"1\" height=\"1\" fill=\"#2a1a3d\"/><rect x=\"6\" y=\"0\" width=\"1\" height=\"1\" fill=\"#2a1a3d\"/><rect x=\"1\" y=\"1\" width=\"5\" height=\"1\" fill=\"#2a1a3d\"/><rect x=\"0\" y=\"2\" width=\"7\" height=\"1\" fill=\"#2a1a3d\"/><rect x=\"1\" y=\"3\" width=\"1\" height=\"1\" fill=\"#2a1a3d\"/><rect x=\"2\" y=\"3\" width=\"1\" height=\"1\" fill=\"#ffffff\"/><rect x=\"3\" y=\"3\" width=\"1\" height=\"1\" fill=\"#2a1a3d\"/><rect x=\"4\" y=\"3\" width=\"1\" height=\"1\" fill=\"#ffffff\"/><rect x=\"5\" y=\"3\" width=\"1\" height=\"1\" fill=\"#2a1a3d\"/><rect x=\"0\" y=\"4\" width=\"1\" height=\"1\" fill=\"#2a1a3d\"/><rect x=\"2\" y=\"4\" width=\"3\" height=\"1\" fill=\"#2a1a3d\"/><rect x=\"6\" y=\"4\" width=\"1\" height=\"1\" fill=\"#2a1a3d\"/></svg>", "candy": "<svg class=\"h-candy\" viewBox=\"0 0 5 6\" width=\"10\" height=\"12\" shape-rendering=\"crispEdges\" aria-hidden=\"true\"><rect x=\"2\" y=\"0\" width=\"1\" height=\"1\" fill=\"#fff6e0\"/><rect x=\"1\" y=\"1\" width=\"3\" height=\"1\" fill=\"#fff6e0\"/><rect x=\"1\" y=\"2\" width=\"3\" height=\"1\" fill=\"#ff8a1f\"/><rect x=\"0\" y=\"3\" width=\"5\" height=\"1\" fill=\"#ff8a1f\"/><rect x=\"0\" y=\"4\" width=\"5\" height=\"1\" fill=\"#ff8a1f\"/><rect x=\"0\" y=\"5\" width=\"5\" height=\"1\" fill=\"#ffc93c\"/></svg>", "ghost": "<svg class=\"h-ghost\" viewBox=\"0 0 6 6\" width=\"12\" height=\"12\" shape-rendering=\"crispEdges\" aria-hidden=\"true\"><rect x=\"1\" y=\"0\" width=\"4\" height=\"1\" fill=\"#f4f1ff\"/><rect x=\"0\" y=\"1\" width=\"6\" height=\"1\" fill=\"#f4f1ff\"/><rect x=\"0\" y=\"2\" width=\"1\" height=\"1\" fill=\"#f4f1ff\"/><rect x=\"1\" y=\"2\" width=\"1\" height=\"1\" fill=\"#2a1a3d\"/><rect x=\"2\" y=\"2\" width=\"1\" height=\"1\" fill=\"#f4f1ff\"/><rect x=\"3\" y=\"2\" width=\"1\" height=\"1\" fill=\"#2a1a3d\"/><rect x=\"4\" y=\"2\" width=\"2\" height=\"1\" fill=\"#f4f1ff\"/><rect x=\"0\" y=\"3\" width=\"6\" height=\"1\" fill=\"#f4f1ff\"/><rect x=\"0\" y=\"4\" width=\"6\" height=\"1\" fill=\"#f4f1ff\"/><rect x=\"0\" y=\"5\" width=\"1\" height=\"1\" fill=\"#f4f1ff\"/><rect x=\"2\" y=\"5\" width=\"2\" height=\"1\" fill=\"#f4f1ff\"/><rect x=\"5\" y=\"5\" width=\"1\" height=\"1\" fill=\"#f4f1ff\"/></svg>"};
+  const halloOn = () => {
+    try {
+      if (/[?&]preview=halloween\b/.test(location.search)) return true;
+      const d = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Manila" });
+      return d >= HALLO_FIRST_DAY && d <= HALLO_LAST_DAY;
+    } catch (e) {
+      return false;
+    }
+  };
+  const hArt = (k, cls) => React.createElement("span", { className: "h-art " + (cls || ""), dangerouslySetInnerHTML: { __html: HALLO_ART[k] } });
+  function halloWrap(logo) {
+    return React.createElement("div", { className: "h-wrap" },
+      React.createElement("span", { className: "h-left", "aria-hidden": "true" }, hArt("ghost", "h-ghost-at")),
+      React.createElement("span", { className: "h-logo" },
+        React.createElement("span", { className: "h-col" },
+          React.createElement("span", { className: "h-mark" }, logo, hArt("hat", "h-hat-at")),
+          React.createElement("span", { className: "h-sub" }, hArt("candy", "inline"), React.createElement("span", null, "Happy Halloween"), hArt("candy", "inline"))),
+        React.createElement("span", { className: "h-right", "aria-hidden": "true" },
+          hArt("pump", "h-pump-at"),
+          React.createElement("span", { className: "h-thread" }, hArt("spider", "h-spider-at")),
+          hArt("bat", "h-bat-at"))));
+  }
+  function seasonWrap(logo) {
+    if (tourOn()) return tourWrap(logo);
+    if (halloOn()) return halloWrap(logo);
+    return logo;
+  }
   var CSS = `
 @import url('https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,600;12..96,800&family=Silkscreen&display=swap');
 .ps-root{--paper:#EDF0F3;--card:#FFFFFF;--ink:#1A2230;--muted:#5B6676;--line:#D5DBE3;--accent:#0F766E;--late:#B42318;--film:#1A2230;--okbg:#DDF3EF;--warnbg:#FCEBD7;--warn:#9A4B06;
@@ -5025,6 +5059,44 @@ ${lines.join("\n")}`);
 .ps-top .ps-logo:hover .ps-logo-word{color:var(--accent)}
 /* Same size, lighter weight - "Studios" reads as a subtitle, not a second name. */
 .ps-top .ps-logo-sub{font-weight:400;font-size:23px;margin-left:.28em}
+/* ---- Halloween dressing (Oct 22-31): around the logo, never inside it ---- */
+.h-wrap{position:relative;display:inline-grid;padding-left:30px;padding-top:9px}
+.h-logo{position:relative;display:inline-flex;align-items:flex-start}
+.h-col{display:inline-flex;flex-direction:column;align-items:center}
+.h-mark{position:relative;display:inline-block}
+.h-art{position:absolute;display:block;line-height:0;pointer-events:none}
+.h-art svg{display:block}
+.h-art.inline{position:static;display:inline-block}
+.h-hat-at{left:-5px;top:-15px;transform:rotate(-16deg);transform-origin:50% 100%}
+.h-hat{animation:h-wobble 4s ease-in-out infinite;transform-origin:50% 100%;transform-box:fill-box}
+.h-left{position:absolute;left:0;top:11px;width:24px;height:30px;pointer-events:none}
+.h-ghost-at{left:2px;top:2px}
+.h-ghost{animation:h-float 3s ease-in-out infinite alternate;filter:drop-shadow(0 0 1px rgba(42,26,61,.6))}
+.ps-root.dark .h-ghost{filter:none}
+.h-right{position:relative;display:inline-block;width:64px;height:30px;margin-left:8px;pointer-events:none}
+.h-pump-at{left:0;top:6px}
+.h-pump rect[fill="#ffe066"]{animation:h-flicker 1.7s steps(1) infinite}
+.h-thread{position:absolute;left:36px;top:-21px;width:1px;height:16px}
+.h-thread::before{content:"";position:absolute;left:0;top:0;width:1px;height:100%;background:var(--muted);opacity:.6;transform-origin:top;animation:h-dangle 3.6s ease-in-out infinite}
+.h-spider-at{left:-7px;top:100%;animation:h-drop 3.6s ease-in-out infinite}
+.h-bat-at{left:46px;top:-8px;animation:h-fly 5s ease-in-out infinite}
+.h-batw{position:relative;display:block;width:26px;height:12px}
+.h-batw svg{position:absolute;left:0;top:0}
+.h-bat.f2{opacity:0}
+.h-bat.f1{animation:h-flap1 .36s steps(1) infinite}.h-bat.f2{animation:h-flap2 .36s steps(1) infinite}
+.h-sub{display:flex;align-items:center;gap:7px;margin:4px 0 0;font-family:'Silkscreen',ui-monospace,monospace;font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:#C2410C;line-height:1;white-space:nowrap}
+.ps-root.dark .h-sub{color:#FF9A3C}
+.ps-root.dark .h-hat,.ps-root.dark .h-bat,.ps-root.dark .h-spider{filter:drop-shadow(0 0 1px rgba(255,190,120,.75))}
+@keyframes h-wobble{0%,100%{transform:rotate(0)}50%{transform:rotate(4deg)}}
+@keyframes h-float{from{transform:translateY(1px)}to{transform:translateY(-3px)}}
+@keyframes h-flicker{0%,100%{opacity:1}30%{opacity:.55}34%{opacity:1}62%{opacity:.75}66%{opacity:1}}
+@keyframes h-dangle{0%,100%{transform:scaleY(1)}50%{transform:scaleY(1.45)}}
+@keyframes h-drop{0%,100%{transform:translateY(0)}50%{transform:translateY(7.2px)}}
+@keyframes h-fly{0%,100%{transform:translate(0,0)}25%{transform:translate(4px,-3px)}50%{transform:translate(-2px,2px)}75%{transform:translate(3px,1px)}}
+@keyframes h-flap1{0%{opacity:1}50%{opacity:0}}
+@keyframes h-flap2{0%{opacity:0}50%{opacity:1}}
+@media (prefers-reduced-motion:reduce){.h-hat,.h-ghost,.h-thread::before,.h-spider-at,.h-bat-at,.h-bat.f1,.h-bat.f2,.h-pump rect{animation:none}.h-bat.f2{opacity:0}}
+@media (max-width:520px){.h-left{display:none}.h-wrap{padding-left:0}.h-right{width:30px}.h-thread,.h-bat-at{display:none}}
 /* ---- MLBB tournament dressing: sits around the logo, never inside it ---- */
 .t-wrap{position:relative;display:inline-grid;padding-left:34px}
 .t-logo{position:relative;display:inline-flex;align-items:flex-start}

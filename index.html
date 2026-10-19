@@ -4098,13 +4098,13 @@ ${lines.join("\n")}`);
 
         /* The real office, traced from the floor plan: 50 plan pixels = 1 unit.
            face = the way the person looks (towards their desk and the wall). */
-        const PX = 50, OX = 520, OY = 251;
+        const PX = 56.4, OX = 800.5, OY = 435.5;
         const u = (px, py) => [(px - OX) / PX, (py - OY) / PX];
-        const W = 930 / PX, D = 364 / PX;
+        const W = 1049 / PX, D = 409 / PX;
         box(70, 0.2, 70, C.ground, 0, -0.2, 0);
         box(W, 0.3, D, C.floor, 0, 0, 0);
-        const [sx0] = u(798, 0);
-        box((985 - 798) / PX - 0.1, 0.31, D - 0.1, dark ? "#444A55" : "#E6DFCF", (sx0 + W / 2) / 2 + 0.02, 0.005, 0);
+        const [sx0] = u(1113, 0);
+        box((1325 - 1113) / PX - 0.1, 0.31, D - 0.1, dark ? "#444A55" : "#E6DFCF", (sx0 + W / 2) / 2 + 0.02, 0.005, 0);
         const wall = (x0, y0, x1, y1, hh, c) => {
           const [a, b] = u(x0, y0), [cc, d] = u(x1, y1);
           const w = Math.max(Math.abs(cc - a), 0.2), dd = Math.max(Math.abs(d - b), 0.2);
@@ -4112,18 +4112,18 @@ ${lines.join("\n")}`);
           box(w + 0.02, 0.06, dd + 0.02, C.trim, (a + cc) / 2, 0.15 + hh + 0.03, (b + d) / 2);
         };
         const WH = 0.9;
-        wall(55, 69, 985, 69, WH);
-        wall(55, 69, 55, 433, WH);
-        wall(985, 69, 985, 433, WH);
-        wall(55, 433, 179, 433, WH);
-        wall(341, 433, 985, 433, WH);
-        wall(798, 69, 798, 143, WH);
-        wall(798, 305, 798, 433, WH);
-        wall(388, 69, 388, 250, 1.5, dark ? "#2A2E36" : "#3A3F48");
+        wall(276, 231, 1325, 231, WH);
+        wall(276, 231, 276, 640, WH);
+        wall(1325, 231, 1325, 640, WH);
+        wall(276, 640, 428, 640, WH);
+        wall(557, 640, 1325, 640, WH);
+        wall(1113, 231, 1113, 314, WH);
+        wall(1113, 497, 1113, 640, WH);
+        wall(652, 231, 652, 435, 1.5, dark ? "#2A2E36" : "#3A3F48");
         /* door mats where the doors are */
         const mat2 = (x0, y0, x1, y1) => { const [a, b] = u(x0, y0), [cc, d] = u(x1, y1); box(Math.abs(cc - a), 0.04, Math.abs(d - b), dark ? "#6B4E2E" : "#9C7A52", (a + cc) / 2, 0.17, (b + d) / 2); };
-        mat2(185, 410, 335, 455);
-        mat2(775, 160, 821, 288);
+        mat2(434, 615, 551, 662);
+        mat2(1088, 322, 1138, 489);
         /* a few trees and plants outside, placed the same way every time */
         const tree = (x, z, s) => {
           box(0.3 * s, 1 * s, 0.3 * s, C.trunk, x, 0.4 * s, z);
@@ -4148,24 +4148,25 @@ ${lines.join("\n")}`);
           m.castShadow = true;
           scene.add(m);
         };
-        plant(...u(950, 100));
-        plant(...u(760, 260));
+        plant(...u(1295, 262));
+        plant(...u(305, 262));
 
         /* seats from the plan; named seats go to whoever has that first name,
            anyone not on the plan takes a spare desk, then a hot desk mid-room */
         const SEATS = [
-          { name: "jessie", r: [122, 75, 236, 133], face: "n" },
-          { name: null, r: [243, 75, 357, 133], face: "n" },
-          { name: "mark", r: [409, 75, 523, 133], face: "n" },
-          { name: "ira", r: [539, 75, 653, 133], face: "n" },
-          { name: "stephen", r: [664, 75, 778, 133], face: "n" },
-          { name: "clint", r: [65, 160, 125, 288], face: "w" },
-          { name: "ady", r: [65, 296, 125, 424], face: "w" },
-          { name: "jay", r: [351, 360, 456, 420], face: "s" },
-          { name: "claire", r: [466, 360, 571, 420], face: "s" },
-          { name: "raiza", r: [578, 360, 683, 420], face: "s" },
-          { name: "al", r: [691, 360, 796, 420], face: "s" },
-          { name: "jl", r: [834, 315, 948, 374], face: "n" }
+          { name: "jessie", r: [352, 237, 480, 303], face: "n" },
+          { name: "claire", r: [488, 237, 616, 303], face: "n" },
+          { name: "frean", r: [676, 237, 804, 303], face: "n" },
+          { name: "ira", r: [822, 237, 950, 303], face: "n" },
+          { name: "stephen", r: [963, 237, 1091, 303], face: "n" },
+          { name: "clint", r: [288, 310, 355, 412], face: "w" },
+          { name: "ralph", r: [288, 420, 355, 522], face: "w" },
+          { name: "mark", r: [288, 532, 355, 634], face: "w" },
+          { name: "jay", r: [610, 559, 728, 625], face: "s" },
+          { name: "ady", r: [740, 559, 858, 625], face: "s" },
+          { name: "raiza", r: [866, 559, 984, 625], face: "s" },
+          { name: "al", r: [994, 559, 1112, 625], face: "s" },
+          { name: "jl", r: [1155, 508, 1283, 574], face: "n" }
         ];
         /* Names are matched loosely ("Raizza" sits at "Raiza"), and only the two
            spare desks on the plan are handed out - the middle of the room stays
@@ -4210,11 +4211,13 @@ ${lines.join("\n")}`);
           g.rotation.y = ROT[seat.face];
           scene.add(g);
           /* desk */
-          box(2.1, 0.1, 1, C.desk, 0, 0.75, -0.9, g);
-          box(0.08, 0.7, 0.08, C.trim, -0.95, 0.38, -1.3, g);
-          box(0.08, 0.7, 0.08, C.trim, 0.95, 0.38, -1.3, g);
-          box(0.08, 0.7, 0.08, C.trim, -0.95, 0.38, -0.5, g);
-          box(0.08, 0.7, 0.08, C.trim, 0.95, 0.38, -0.5, g);
+          const along = (seat.face === "w" || seat.face === "e" ? seat.r[3] - seat.r[1] : seat.r[2] - seat.r[0]) / PX;
+          const dw = Math.min(2.1, along - 0.12), lx = dw / 2 - 0.1;
+          box(dw, 0.1, 1, C.desk, 0, 0.75, -0.9, g);
+          box(0.08, 0.7, 0.08, C.trim, -lx, 0.38, -1.3, g);
+          box(0.08, 0.7, 0.08, C.trim, lx, 0.38, -1.3, g);
+          box(0.08, 0.7, 0.08, C.trim, -lx, 0.38, -0.5, g);
+          box(0.08, 0.7, 0.08, C.trim, lx, 0.38, -0.5, g);
           /* monitor - the screen glows in the person's status colour, dark when empty */
           box(0.9, 0.55, 0.06, "#1A1D22", 0, 1.18, -1.15, g);
           box(0.1, 0.25, 0.1, "#1A1D22", 0, 0.9, -1.15, g);
@@ -4822,7 +4825,11 @@ ${lines.join("\n")}`);
 .ps-bell-n{position:absolute;top:-6px;right:-6px;min-width:17px;height:17px;padding:0 4px;border-radius:9px;background:var(--late);color:#fff;font-size:11px;font-weight:700;line-height:17px;text-align:center}
 .ps-bellpanel{position:absolute;top:calc(100% + 6px);right:0;width:330px;max-width:82vw;background:var(--card);border:1px solid var(--line);border-radius:10px;box-shadow:0 18px 40px -12px rgba(0,0,0,.35);z-index:50;padding:10px 12px 8px}
 .ps-bell-head{display:flex;align-items:center;gap:8px;margin-bottom:6px;font-size:14px}
-.ps-bell-head b{flex:1;min-width:0}
+.ps-bell-head b{flex:1;min-width:0;white-space:nowrap}
+.ps-bell-head{flex-wrap:wrap;row-gap:8px}
+.ps-bell-head::after{content:"";order:2;flex-basis:100%;height:0}
+.ps-bell-head > .ps-btn{order:3}
+.ps-bell-head > .ps-btn:first-of-type{margin-left:auto}
 .ps-soundbtn{display:inline-flex;align-items:center;gap:5px;flex:0 0 auto;background:none;border:1px solid var(--line);border-radius:999px;padding:3px 9px 3px 7px;font:inherit;font-size:12px;color:var(--muted);cursor:pointer}
 .ps-soundbtn.on{color:var(--accent);border-color:var(--accent)}
 .ps-soundbtn:hover{background:var(--paper)}

@@ -4540,7 +4540,9 @@ ${lines.join("\n")}`);
     spinRef.current = spin;
     const selRef = useRef(sel);
     selRef.current = sel;
-    const layoutKey = rows.map((r) => r.p.id).join(",") + (dark ? ":d" : ":l");
+    const HW = halloOn();
+    const layoutKey = rows.map((r) => r.p.id).join(",") + (dark ? ":d" : ":l") + (HW ? ":hw" : "");
+    const bubble = useRef(null);
 
     /* Build the office. Only rebuilt when people join/leave or the theme flips. */
     useEffect(() => {
@@ -4564,6 +4566,8 @@ ${lines.join("\n")}`);
         const C = dark
           ? { ground: "#24402A", floor: "#3A3F48", wall: "#4A515C", desk: "#8C6A48", trim: "#2B3038", chair: "#1E2229", leaf: "#2F6B3A", trunk: "#5A3D26" }
           : { ground: "#7FAE57", floor: "#DDD5C4", wall: "#F6F2EA", desk: "#C79A6B", trim: "#B7AFA1", chair: "#3A3F48", leaf: "#4E9A3E", trunk: "#7A5233" };
+        /* Halloween (Oct 20-31): dusk grass and autumn trees */
+        if (HW) Object.assign(C, dark ? { ground: "#1F2A1C", leaf: "#9A4A16", trunk: "#3E2A1C" } : { ground: "#5F7040", leaf: "#D9731F", trunk: "#5A3A22" });
         const mats = {};
         const mat = (c, extra) => {
           const k = c + JSON.stringify(extra || {});
@@ -4579,7 +4583,45 @@ ${lines.join("\n")}`);
           m.castShadow = true;
           m.receiveShadow = true;
           (parent || scene).add(m);
+          if (collect) collect.push(m);
           return m;
+        };
+        /* Static decorations are merged into one mesh per material, so a few
+           hundred little boxes cost the graphics card a handful of draws. */
+        let collect = null;
+        const hwStatic = [];
+        const mergeStatic = (list) => {
+          scene.updateMatrixWorld(true);
+          const byMat = new Map();
+          list.forEach((m) => {
+            const g = m.geometry.clone().applyMatrix4(m.matrixWorld);
+            if (!byMat.has(m.material)) byMat.set(m.material, []);
+            byMat.get(m.material).push({ g, cast: m.castShadow });
+            m.parent && m.parent.remove(m);
+          });
+          byMat.forEach((items, material) => {
+            let vc = 0, ic = 0;
+            items.forEach(({ g }) => { vc += g.attributes.position.count; ic += g.index.count; });
+            const pos = new Float32Array(vc * 3), nor = new Float32Array(vc * 3), idx = new Uint32Array(ic);
+            let vo = 0, io = 0;
+            items.forEach(({ g }) => {
+              pos.set(g.attributes.position.array, vo * 3);
+              nor.set(g.attributes.normal.array, vo * 3);
+              const ii = g.index.array;
+              for (let k = 0; k < ii.length; k++) idx[io + k] = ii[k] + vo;
+              vo += g.attributes.position.count; io += ii.length;
+              g.dispose();
+            });
+            const geo = new THREE.BufferGeometry();
+            geo.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+            geo.setAttribute("normal", new THREE.BufferAttribute(nor, 3));
+            geo.setIndex(new THREE.BufferAttribute(idx, 1));
+            geos.push(geo);
+            const mesh = new THREE.Mesh(geo, material);
+            mesh.castShadow = items.some((x) => x.cast);
+            mesh.receiveShadow = true;
+            scene.add(mesh);
+          });
         };
 
         /* The real office, traced from the floor plan: 50 plan pixels = 1 unit.
@@ -4636,6 +4678,64 @@ ${lines.join("\n")}`);
         };
         plant(...u(1295, 262));
         plant(...u(305, 262));
+
+        /* ---------- Halloween props: pumpkins, gravestones, string lights ---------- */
+        const glow = mat("#2A1400", { emissive: "#FFB020", emissiveIntensity: 1.2 });
+        const pumpkin = (x, y, z, s, parent, ry) => {
+          const g = new THREE.Group();
+          g.position.set(x, y, z);
+          g.rotation.y = ry || 0;
+          (parent || scene).add(g);
+          box(0.5 * s, 0.42 * s, 0.5 * s, "#E8731A", 0, 0.21 * s, 0, g);
+          box(0.58 * s, 0.36 * s, 0.34 * s, "#F08A2A", 0, 0.21 * s, 0, g);
+          box(0.34 * s, 0.36 * s, 0.58 * s, "#D9600B", 0, 0.21 * s, 0, g);
+          box(0.07 * s, 0.14 * s, 0.07 * s, "#3F7A2A", 0, 0.48 * s, 0, g);
+          [[-0.1, 0.28, 0.09, 0.08], [0.1, 0.28, 0.09, 0.08], [0, 0.13, 0.26, 0.06]].forEach(([fx, fy, fw, fh]) => {
+            const m = box(fw * s, fh * s, 0.02, glow, fx * s, fy * s, 0.295 * s, g);
+            m.castShadow = false;
+          });
+          if (s < 0.6) g.traverse((o) => { if (o.isMesh) o.castShadow = false; });
+          return g;
+        };
+        const lights = [];
+        collect = HW ? hwStatic : null;
+        if (HW) {
+          pumpkin(...[u(398, 668)].map(([x, z]) => [x, -0.1, z])[0], 1);
+          pumpkin(...[u(588, 668)].map(([x, z]) => [x, -0.1, z])[0], 1);
+          pumpkin(...[u(1360, 300)].map(([x, z]) => [x, -0.1, z])[0], 0.9, null, Math.PI / 2);
+          pumpkin(...[u(1150, 270)].map(([x, z]) => [x, 0.15, z])[0], 0.8);
+          pumpkin(...[u(610, 460)].map(([x, z]) => [x, 0.15, z])[0], 0.7);
+          /* a little graveyard behind the office */
+          [[430, 95, 0.12], [540, 88, -0.08], [660, 100, 0.05], [900, 92, -0.15], [1010, 98, 0.1], [180, 520, 0.08]].forEach(([px, py, tilt], i) => {
+            const [x, z] = u(px, py);
+            const g = new THREE.Group();
+            g.position.set(x, -0.1, z);
+            g.rotation.z = tilt;
+            g.rotation.y = i === 5 ? Math.PI / 2 : 0;
+            scene.add(g);
+            box(0.5, 0.62, 0.14, "#8A8F99", 0, 0.31, 0, g);
+            box(0.36, 0.12, 0.14, "#8A8F99", 0, 0.68, 0, g);
+            box(0.3, 0.05, 0.02, "#6A6F79", 0, 0.42, 0.08, g);
+            box(0.6, 0.08, 0.7, dark ? "#2E2418" : "#5A4430", 0, 0.02, 0.45, g);
+          });
+          /* string lights along the top of the walls */
+          const bulbs = [mat("#000", { emissive: "#FF8A1F", emissiveIntensity: 1 }), mat("#000", { emissive: "#9B5CF6", emissiveIntensity: 1 }), mat("#000", { emissive: "#7CFF6B", emissiveIntensity: 1 })];
+          lights.push(...bulbs);
+          const run = (x0, y0, x1, y1, side) => {
+            const [a, b] = u(x0, y0), [cc, d] = u(x1, y1);
+            const len = Math.hypot(cc - a, d - b), n = Math.floor(len / 0.42);
+            for (let i = 0; i <= n; i++) {
+              const f = i / n;
+              const m = box(0.09, 0.11, 0.09, bulbs[i % 3], a + (cc - a) * f + side[0], 1.0, b + (d - b) * f + side[1]);
+              m.castShadow = false;
+            }
+          };
+          run(290, 231, 1310, 231, [0, 0.14]);
+          run(290, 640, 420, 640, [0, -0.14]);
+          run(565, 640, 1310, 640, [0, -0.14]);
+          run(276, 245, 276, 625, [0.14, 0]);
+        }
+        collect = null;
 
         /* seats from the plan; named seats go to whoever has that first name,
            anyone not on the plan takes a spare desk, then a hot desk mid-room */
@@ -4710,6 +4810,7 @@ ${lines.join("\n")}`);
           const screen = box(0.8, 0.45, 0.02, new THREE.MeshStandardMaterial({ color: "#000", emissive: r ? STUDIO_STATE[r.state].color : "#2A2F38", emissiveIntensity: r ? 0.9 : 0.3 }), 0, 1.18, -1.11, g);
           screen.castShadow = false;
           box(0.6, 0.03, 0.22, "#E7E3DA", 0, 0.82, -0.62, g);
+          if (HW) { collect = hwStatic; pumpkin(dw / 2 - 0.28, 0.8, -1.0, 0.45, g); collect = null; }
           /* chair */
           box(0.6, 0.1, 0.6, C.chair, 0, 0.5, 0.05, g);
           box(0.6, 0.6, 0.1, C.chair, 0, 0.85, 0.35, g);
@@ -4747,8 +4848,75 @@ ${lines.join("\n")}`);
         rows.forEach((r) => { if (seatOf[r.p.id]) buildSeat(seatOf[r.p.id], r); });
         SEATS.forEach((s) => { if (!used.has(s)) buildSeat(s, null); });
 
-        scene.add(new THREE.HemisphereLight(dark ? "#9FB4D0" : "#FFFFFF", dark ? "#1B2A1E" : "#8EA66A", dark ? 0.55 : 0.5));
-        const sun = new THREE.DirectionalLight("#FFF4E0", dark ? 0.6 : 0.8);
+        /* ---------- Zombies (Halloween only) ----------
+           They shuffle along the aisles and around the building on fixed paths,
+           so they never walk through desks or walls. Click one and it stumbles. */
+        const zombies = [], zPicks = [], zNodes = [], zNb = [];
+        if (HW) {
+          const NODES = [
+            [492, 708], [880, 708], [1395, 708], [1395, 430], [1395, 160], [900, 160], [480, 160], [205, 160], [205, 430], [205, 708]
+          ].map(([px, py]) => u(px, py));
+          /* outside only - a loop around the building; they never come in */
+          const LINKS = [[0, 1], [1, 2], [2, 3], [3, 4], [4, 5], [5, 6], [6, 7], [7, 8], [8, 9], [9, 0]];
+          const nb = NODES.map((_, i) => LINKS.filter((l) => l.includes(i)).map((l) => l[0] === i ? l[1] : l[0]));
+          const SKINZ = ["#7FB069", "#8DB86B", "#6FA35E", "#94B87A"];
+          const SHIRT = ["#1F8A8A", "#6B4E8C", "#8C3A3A", "#3A6E3A"];
+          const makeZombie = (start, k) => {
+            const root = new THREE.Group();
+            scene.add(root);
+            const body = new THREE.Group();
+            root.add(body);
+            const skin = SKINZ[k % SKINZ.length], shirt = SHIRT[k % SHIRT.length];
+            const hip = (sx) => {
+              const g = new THREE.Group();
+              g.position.set(sx, 0.64, 0);
+              body.add(g);
+              box(0.2, 0.56, 0.22, "#2F5D8C", 0, -0.3, 0, g);
+              box(0.08, 0.1, 0.02, "#7FB069", 0.02, -0.25, 0.12, g);
+              box(0.22, 0.1, 0.3, "#2A2622", 0, -0.6, 0.04, g);
+              return g;
+            };
+            const legL = hip(-0.13), legR = hip(0.13);
+            box(0.5, 0.58, 0.32, shirt, 0, 0.94, 0, body);
+            [[-0.17, 0.12], [0.02, 0.18], [0.18, 0.1]].forEach(([x, hh]) => box(0.12, hh, 0.3, shirt, x, 0.65 - hh / 2, 0, body));
+            box(0.14, 0.12, 0.02, "#5A3A22", -0.1, 0.9, 0.17, body);
+            const shoulder = (sx) => {
+              const g = new THREE.Group();
+              g.position.set(sx, 1.15, 0);
+              body.add(g);
+              box(0.16, 0.16, 0.2, shirt, 0, 0, 0.02, g);
+              box(0.12, 0.12, 0.5, skin, 0, -0.02, 0.3, g);
+              box(0.14, 0.08, 0.14, skin, 0, -0.03, 0.6, g);
+              g.rotation.x = -0.12;
+              return g;
+            };
+            const armL = shoulder(-0.32), armR = shoulder(0.32);
+            const head = new THREE.Group();
+            head.position.set(0, 1.42, 0.04);
+            body.add(head);
+            box(0.42, 0.42, 0.42, skin, 0, 0, 0, head);
+            box(0.46, 0.14, 0.46, "#2F4A26", 0, 0.22, -0.01, head);
+            box(0.46, 0.22, 0.08, "#2F4A26", 0, 0.08, -0.21, head);
+            box(0.08, 0.06, 0.02, "#1A1A1A", -0.1, 0.04, 0.215, head);
+            box(0.08, 0.06, 0.02, "#C83A2A", 0.1, 0.04, 0.215, head);
+            box(0.18, 0.08, 0.02, "#3A1A1A", 0, -0.11, 0.215, head);
+            const id = zombies.length;
+            root.traverse((o) => { if (o.isMesh) { o.userData.zid = id; zPicks.push(o); } });
+            const z = { root, body, head, legL, legR, armL, armR, from: start, to: nb[start][0], prev: -1, f: 0, wait: Math.random() * 2, phase: Math.random() * 6, speed: 0.38 + Math.random() * 0.14, poke: -10 };
+            z.to = nb[start][Math.floor(Math.random() * nb[start].length)];
+            zombies.push(z);
+          };
+          [0, 2, 4, 6, 8].forEach((n, k) => makeZombie(n, k));
+          zNodes.push(...NODES);
+          const gone = new Set(hwStatic);
+          mergeStatic(hwStatic);
+          for (let i = pickables.length - 1; i >= 0; i--) if (gone.has(pickables[i])) pickables.splice(i, 1);
+          zNb.push(...nb);
+        }
+
+        scene.add(HW ? new THREE.HemisphereLight(dark ? "#A898C8" : "#ECE6F7", dark ? "#1E1528" : "#6A5E50", dark ? 0.55 : 0.55)
+          : new THREE.HemisphereLight(dark ? "#9FB4D0" : "#FFFFFF", dark ? "#1B2A1E" : "#8EA66A", dark ? 0.55 : 0.5));
+        const sun = new THREE.DirectionalLight(HW ? "#FFDDB8" : "#FFF4E0", dark ? 0.6 : 0.8);
         sun.position.set(12, 20, 8);
         sun.castShadow = true;
         sun.shadow.mapSize.set(1024, 1024);
@@ -4781,7 +4949,8 @@ ${lines.join("\n")}`);
           const inv = cam.matrixWorldInverse;
           let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
           const v = new THREE.Vector3();
-          for (const x of [-W / 2 - 0.6, W / 2 + 0.6]) for (const z of [-D / 2 - 0.6, D / 2 + 0.6]) for (const y of [0, 2.6]) {
+          const mg = HW ? 1.4 : 0.6;
+          for (const x of [-W / 2 - mg, W / 2 + mg]) for (const z of [-D / 2 - mg, D / 2 + mg]) for (const y of [0, 2.6]) {
             v.set(x, y, z).applyMatrix4(inv);
             x0 = Math.min(x0, v.x); x1 = Math.max(x1, v.x); y0 = Math.min(y0, v.y); y1 = Math.max(y1, v.y);
           }
@@ -4830,6 +4999,8 @@ ${lines.join("\n")}`);
           const rect = cv.getBoundingClientRect();
           const ray = new THREE.Raycaster();
           ray.setFromCamera({ x: (e.clientX - rect.left) / rect.width * 2 - 1, y: -((e.clientY - rect.top) / rect.height) * 2 + 1 }, cam);
+          const zh = zPicks.length && ray.intersectObjects(zPicks, false)[0];
+          if (zh) { pokeZombie(zh.object.userData.zid); return; }
           const hit = ray.intersectObjects(pickables, false)[0];
           setSel(hit ? hit.object.userData.pid : null);
         };
@@ -4846,6 +5017,80 @@ ${lines.join("\n")}`);
         const v3 = new THREE.Vector3();
         let last = 0, frameNo = 0;
         const spots = [];
+        const GROANS = ["Braaains\u2026", "Need\u2026 coffee\u2026", "Deadline\u2026 tonight\u2026", "Still\u2026 rendering\u2026", "One more\u2026 revision\u2026", "Mmmrgh\u2026 client feedback\u2026", "Export\u2026 failed\u2026", "Who moved\u2026 my keyframes\u2026"];
+        let talk = null, lastGroan = -1;
+        const pokeZombie = (id) => {
+          const z = zombies[id];
+          if (!z) return;
+          z.poke = performance.now() / 1000;
+          let g;
+          do { g = Math.floor(Math.random() * GROANS.length); } while (g === lastGroan && GROANS.length > 1);
+          lastGroan = g;
+          talk = { z, until: z.poke + 2.8 };
+          if (bubble.current) { bubble.current.textContent = GROANS[g]; bubble.current.dataset.on = "1"; }
+        };
+        const stepZombies = (t, dt) => {
+          zombies.forEach((z) => {
+            const sinceP = t - z.poke;
+            const stumbling = sinceP < 1.9;
+            const walking = !calm && !stumbling && z.wait <= 0;
+            if (!stumbling && z.wait > 0) z.wait -= dt;
+            const A = zNodes[z.from], B = zNodes[z.to];
+            const len = Math.hypot(B[0] - A[0], B[1] - A[1]) || 0.01;
+            if (walking) {
+              z.f += z.speed * dt / len;
+              if (z.f >= 1) {
+                z.prev = z.from; z.from = z.to; z.f = 0;
+                const opts = zNb[z.from].filter((n) => n !== z.prev);
+                const list = opts.length ? opts : zNb[z.from];
+                z.to = list[Math.floor(Math.random() * list.length)];
+                if (Math.random() < 0.3) z.wait = 0.6 + Math.random() * 1.6;
+              }
+            }
+            const A2 = zNodes[z.from], B2 = zNodes[z.to];
+            const x = A2[0] + (B2[0] - A2[0]) * z.f, zz = A2[1] + (B2[1] - A2[1]) * z.f;
+            z.root.position.set(x, -0.1, zz);
+            const want = Math.atan2(B2[0] - A2[0], B2[1] - A2[1]);
+            let dr = want - z.root.rotation.y;
+            dr = Math.atan2(Math.sin(dr), Math.cos(dr));
+            z.root.rotation.y += dr * Math.min(1, dt * 3);
+            const ph = t * 4.2 * z.speed / 0.45 + z.phase;
+            if (stumbling) {
+              const k = sinceP / 1.9;
+              z.body.rotation.x = Math.sin(Math.min(1, k * 1.6) * Math.PI) * 0.75;
+              z.body.position.z = Math.sin(Math.min(1, k * 1.6) * Math.PI) * 0.25;
+              z.armL.rotation.x = -0.12 + Math.sin(t * 22) * 0.6;
+              z.armR.rotation.x = -0.12 - Math.sin(t * 22) * 0.6;
+              z.legL.rotation.x = Math.sin(t * 14) * 0.35;
+              z.legR.rotation.x = -Math.sin(t * 14) * 0.2;
+              z.head.rotation.z = Math.sin(t * 9) * 0.5;
+            } else {
+              const sw = walking ? 1 : 0.15;
+              z.body.rotation.x = 0.12;
+              z.body.position.z = 0;
+              z.body.rotation.z = Math.sin(ph) * 0.09 * sw;
+              z.legL.rotation.x = Math.sin(ph) * 0.5 * sw;
+              z.legR.rotation.x = -Math.sin(ph) * 0.22 * sw;
+              z.armL.rotation.x = -0.12 + Math.sin(ph * 0.5) * 0.12;
+              z.armR.rotation.x = -0.12 + Math.sin(ph * 0.5 + 1.3) * 0.12;
+              z.head.rotation.z = 0.35 + Math.sin(ph * 0.5) * 0.12;
+              z.head.rotation.x = 0.15;
+            }
+          });
+          const bb = bubble.current;
+          if (bb) {
+            if (talk && t < talk.until) {
+              v3.set(talk.z.root.position.x, talk.z.root.position.y + 2.05, talk.z.root.position.z).project(cam);
+              bb.style.transform = `translate(${(v3.x + 1) / 2 * el.clientWidth}px, ${(1 - v3.y) / 2 * el.clientHeight}px) translate(-50%, -100%)`;
+            } else if (bb.dataset.on) { bb.dataset.on = ""; talk = null; }
+          }
+          if (lights.length && !calm) {
+            lights[0].emissiveIntensity = 0.6 + 0.5 * (Math.sin(t * 2.1) > 0 ? 1 : 0.2);
+            lights[1].emissiveIntensity = 0.6 + 0.5 * (Math.sin(t * 2.1 + 2) > 0 ? 1 : 0.2);
+            lights[2].emissiveIntensity = 0.6 + 0.5 * (Math.sin(t * 2.1 + 4) > 0 ? 1 : 0.2);
+          }
+          if (HW && !calm) glow.emissiveIntensity = 1.05 + Math.sin(t * 7) * 0.12 + Math.sin(t * 17) * 0.08;
+        };
         const frame = (now) => {
           raf = requestAnimationFrame(frame);
           if (now - last < 33) return; // ~30 fps is plenty for a desk scene
@@ -4895,10 +5140,12 @@ ${lines.join("\n")}`);
             tg.style.zIndex = String(100 - i);
           });
           spots.length = 0;
+          if (HW) stepZombies(t, dt);
           frameNo++;
           renderer.render(scene, cam);
         };
         world.current = { rows, desks, THREE };
+        if (window.__psTest) window.__psZ = { zombies, cam, el, THREE, renderer, scene };
         raf = requestAnimationFrame(frame);
         setReady(true);
         world.current.cleanup = () => {
@@ -4948,10 +5195,11 @@ ${lines.join("\n")}`);
 
     return h(React.Fragment, null,
       h("div", { className: "ps-ovhead" }, h("span", { className: "ps-ovicon", "aria-hidden": "true" }, "\u{1F3E2}"), h("h1", { className: "ps-h1" }, "Studio")),
-      h("p", { className: "ps-lede" }, "Everyone at their desk, live from the task list. Drag to look around, scroll to zoom, click someone to see their work."),
+      h("p", { className: "ps-lede" }, "Everyone at their desk, live from the task list. Drag to look around, scroll to zoom, click someone to see their work.", HW ? " \u{1F383} Zombies are prowling outside this week \u2014 click one." : ""),
       h("div", { className: "ps-st", ref: wrap },
-        h("div", { className: "ps-st-stage" },
+        h("div", { className: `ps-st-stage ${HW ? "hw" : ""}` },
           h("div", { className: "ps-st-canvas", ref: mount }),
+          HW && h("div", { className: "ps-st-bubble", ref: bubble, "aria-live": "polite" }),
           h("div", { className: "ps-st-tags", "aria-hidden": !ready }, ready && rows.filter((r) => !unseated.includes(r.p.id)).map((r) => h("button", {
             key: r.p.id,
             ref: (n) => { if (n) tags.current[r.p.id] = n; else delete tags.current[r.p.id]; },
@@ -5008,11 +5256,11 @@ ${lines.join("\n")}`);
         React.createElement("span", { className: "t-right", "aria-hidden": "true" }, tourArt(TOUR_ART.trophy, "t-trophy-at"), sp("s3"), sp("s4"), sp("s5"))));
   }
 
-  /* Halloween dressing around the logo, Oct 22-31 (Manila). Same rule as the
+  /* Halloween dressing around the logo, Oct 20-31 (Manila). Same rule as the
      tournament one: the logo itself is untouched; the hat, pumpkin, bat,
      spider and ghost are separate pixel art placed around it. Turns itself
      off on Nov 1. Animations are transform/opacity only. */
-  const HALLO_FIRST_DAY = "2026-10-22", HALLO_LAST_DAY = "2026-10-31";
+  const HALLO_FIRST_DAY = "2026-10-20", HALLO_LAST_DAY = "2026-10-31";
   const HALLO_ART = {"hat": "<svg class=\"h-hat\" viewBox=\"0 0 15 9\" width=\"30\" height=\"18\" shape-rendering=\"crispEdges\" aria-hidden=\"true\"><rect x=\"8\" y=\"0\" width=\"2\" height=\"1\" fill=\"#2a1a3d\"/><rect x=\"7\" y=\"1\" width=\"2\" height=\"1\" fill=\"#2a1a3d\"/><rect x=\"9\" y=\"1\" width=\"1\" height=\"1\" fill=\"#5b3a86\"/><rect x=\"6\" y=\"2\" width=\"3\" height=\"1\" fill=\"#2a1a3d\"/><rect x=\"9\" y=\"2\" width=\"1\" height=\"1\" fill=\"#5b3a86\"/><rect x=\"5\" y=\"3\" width=\"5\" height=\"1\" fill=\"#2a1a3d\"/><rect x=\"5\" y=\"4\" width=\"6\" height=\"1\" fill=\"#2a1a3d\"/><rect x=\"4\" y=\"5\" width=\"7\" height=\"1\" fill=\"#2a1a3d\"/><rect x=\"4\" y=\"6\" width=\"8\" height=\"1\" fill=\"#ff8a1f\"/><rect x=\"3\" y=\"7\" width=\"10\" height=\"1\" fill=\"#2a1a3d\"/><rect x=\"0\" y=\"8\" width=\"15\" height=\"1\" fill=\"#2a1a3d\"/></svg>", "pump": "<svg class=\"h-pump\" viewBox=\"0 0 13 11\" width=\"26\" height=\"22\" shape-rendering=\"crispEdges\" aria-hidden=\"true\"><rect x=\"6\" y=\"0\" width=\"2\" height=\"1\" fill=\"#3f7a2a\"/><rect x=\"5\" y=\"1\" width=\"1\" height=\"1\" fill=\"#3f7a2a\"/><rect x=\"2\" y=\"2\" width=\"1\" height=\"1\" fill=\"#ff8a1f\"/><rect x=\"3\" y=\"2\" width=\"1\" height=\"1\" fill=\"#d9600b\"/><rect x=\"4\" y=\"2\" width=\"2\" height=\"1\" fill=\"#ff8a1f\"/><rect x=\"6\" y=\"2\" width=\"2\" height=\"1\" fill=\"#d9600b\"/><rect x=\"8\" y=\"2\" width=\"2\" height=\"1\" fill=\"#ff8a1f\"/><rect x=\"10\" y=\"2\" width=\"1\" height=\"1\" fill=\"#d9600b\"/><rect x=\"1\" y=\"3\" width=\"1\" height=\"1\" fill=\"#ff8a1f\"/><rect x=\"2\" y=\"3\" width=\"1\" height=\"1\" fill=\"#d9600b\"/><rect x=\"3\" y=\"3\" width=\"3\" height=\"1\" fill=\"#ff8a1f\"/><rect x=\"6\" y=\"3\" width=\"1\" height=\"1\" fill=\"#d9600b\"/><rect x=\"7\" y=\"3\" width=\"4\" height=\"1\" fill=\"#ff8a1f\"/><rect x=\"11\" y=\"3\" width=\"1\" height=\"1\" fill=\"#d9600b\"/><rect x=\"0\" y=\"4\" width=\"1\" height=\"1\" fill=\"#ff8a1f\"/><rect x=\"1\" y=\"4\" width=\"1\" height=\"1\" fill=\"#d9600b\"/><rect x=\"2\" y=\"4\" width=\"4\" height=\"1\" fill=\"#ff8a1f\"/><rect x=\"6\" y=\"4\" width=\"1\" height=\"1\" fill=\"#d9600b\"/><rect x=\"7\" y=\"4\" width=\"5\" height=\"1\" fill=\"#ff8a1f\"/><rect x=\"12\" y=\"4\" width=\"1\" height=\"1\" fill=\"#d9600b\"/><rect x=\"0\" y=\"5\" width=\"1\" height=\"1\" fill=\"#ff8a1f\"/><rect x=\"1\" y=\"5\" width=\"1\" height=\"1\" fill=\"#d9600b\"/><rect x=\"2\" y=\"5\" width=\"1\" height=\"1\" fill=\"#ff8a1f\"/><rect x=\"3\" y=\"5\" width=\"2\" height=\"1\" fill=\"#ffe066\"/><rect x=\"5\" y=\"5\" width=\"1\" height=\"1\" fill=\"#ff8a1f\"/><rect x=\"6\" y=\"5\" width=\"1\" height=\"1\" fill=\"#d9600b\"/><rect x=\"7\" y=\"5\" width=\"1\" height=\"1\" fill=\"#ff8a1f\"/><rect x=\"8\" y=\"5\" width=\"2\" height=\"1\" fill=\"#ffe066\"/><rect x=\"10\" y=\"5\" width=\"2\" height=\"1\" fill=\"#ff8a1f\"/><rect x=\"12\" y=\"5\" width=\"1\" height=\"1\" fill=\"#d9600b\"/><rect x=\"0\" y=\"6\" width=\"1\" height=\"1\" fill=\"#ff8a1f\"/><rect x=\"1\" y=\"6\" width=\"1\" height=\"1\" fill=\"#d9600b\"/><rect x=\"2\" y=\"6\" width=\"4\" height=\"1\" fill=\"#ff8a1f\"/><rect x=\"6\" y=\"6\" width=\"1\" height=\"1\" fill=\"#d9600b\"/><rect x=\"7\" y=\"6\" width=\"5\" height=\"1\" fill=\"#ff8a1f\"/><rect x=\"12\" y=\"6\" width=\"1\" height=\"1\" fill=\"#d9600b\"/><rect x=\"0\" y=\"7\" width=\"1\" height=\"1\" fill=\"#ff8a1f\"/><rect x=\"1\" y=\"7\" width=\"1\" height=\"1\" fill=\"#d9600b\"/><rect x=\"2\" y=\"7\" width=\"1\" height=\"1\" fill=\"#ff8a1f\"/><rect x=\"3\" y=\"7\" width=\"1\" height=\"1\" fill=\"#ffe066\"/><rect x=\"4\" y=\"7\" width=\"1\" height=\"1\" fill=\"#ff8a1f\"/><rect x=\"5\" y=\"7\" width=\"3\" height=\"1\" fill=\"#ffe066\"/><rect x=\"8\" y=\"7\" width=\"1\" height=\"1\" fill=\"#ff8a1f\"/><rect x=\"9\" y=\"7\" width=\"1\" height=\"1\" fill=\"#ffe066\"/><rect x=\"10\" y=\"7\" width=\"2\" height=\"1\" fill=\"#ff8a1f\"/><rect x=\"12\" y=\"7\" width=\"1\" height=\"1\" fill=\"#d9600b\"/><rect x=\"1\" y=\"8\" width=\"1\" height=\"1\" fill=\"#ff8a1f\"/><rect x=\"2\" y=\"8\" width=\"1\" height=\"1\" fill=\"#d9600b\"/><rect x=\"3\" y=\"8\" width=\"1\" height=\"1\" fill=\"#ff8a1f\"/><rect x=\"4\" y=\"8\" width=\"5\" height=\"1\" fill=\"#ffe066\"/><rect x=\"9\" y=\"8\" width=\"1\" height=\"1\" fill=\"#ff8a1f\"/><rect x=\"10\" y=\"8\" width=\"2\" height=\"1\" fill=\"#d9600b\"/><rect x=\"2\" y=\"9\" width=\"1\" height=\"1\" fill=\"#ff8a1f\"/><rect x=\"3\" y=\"9\" width=\"1\" height=\"1\" fill=\"#d9600b\"/><rect x=\"4\" y=\"9\" width=\"2\" height=\"1\" fill=\"#ff8a1f\"/><rect x=\"6\" y=\"9\" width=\"1\" height=\"1\" fill=\"#d9600b\"/><rect x=\"7\" y=\"9\" width=\"2\" height=\"1\" fill=\"#ff8a1f\"/><rect x=\"9\" y=\"9\" width=\"2\" height=\"1\" fill=\"#d9600b\"/><rect x=\"4\" y=\"10\" width=\"5\" height=\"1\" fill=\"#d9600b\"/><rect class=\"h-glow\" x=\"3\" y=\"5\" width=\"7\" height=\"4\" fill=\"#fff3a0\" opacity=\"0\"/></svg>", "bat": "<span class=\"h-batw\"><svg class=\"h-bat f1\" viewBox=\"0 0 13 6\" width=\"26\" height=\"12\" shape-rendering=\"crispEdges\" aria-hidden=\"true\"><rect x=\"0\" y=\"0\" width=\"1\" height=\"1\" fill=\"#2a1a3d\"/><rect x=\"12\" y=\"0\" width=\"1\" height=\"1\" fill=\"#2a1a3d\"/><rect x=\"0\" y=\"1\" width=\"2\" height=\"1\" fill=\"#2a1a3d\"/><rect x=\"5\" y=\"1\" width=\"1\" height=\"1\" fill=\"#2a1a3d\"/><rect x=\"7\" y=\"1\" width=\"1\" height=\"1\" fill=\"#2a1a3d\"/><rect x=\"11\" y=\"1\" width=\"2\" height=\"1\" fill=\"#2a1a3d\"/><rect x=\"0\" y=\"2\" width=\"3\" height=\"1\" fill=\"#2a1a3d\"/><rect x=\"4\" y=\"2\" width=\"5\" height=\"1\" fill=\"#2a1a3d\"/><rect x=\"10\" y=\"2\" width=\"3\" height=\"1\" fill=\"#2a1a3d\"/><rect x=\"1\" y=\"3\" width=\"5\" height=\"1\" fill=\"#2a1a3d\"/><rect x=\"6\" y=\"3\" width=\"1\" height=\"1\" fill=\"#ff5a3c\"/><rect x=\"7\" y=\"3\" width=\"1\" height=\"1\" fill=\"#2a1a3d\"/><rect x=\"8\" y=\"3\" width=\"1\" height=\"1\" fill=\"#ff5a3c\"/><rect x=\"9\" y=\"3\" width=\"4\" height=\"1\" fill=\"#2a1a3d\"/><rect x=\"2\" y=\"4\" width=\"9\" height=\"1\" fill=\"#2a1a3d\"/><rect x=\"6\" y=\"5\" width=\"1\" height=\"1\" fill=\"#2a1a3d\"/></svg><svg class=\"h-bat f2\" viewBox=\"0 0 13 6\" width=\"26\" height=\"12\" shape-rendering=\"crispEdges\" aria-hidden=\"true\"><rect x=\"6\" y=\"0\" width=\"1\" height=\"1\" fill=\"#2a1a3d\"/><rect x=\"8\" y=\"0\" width=\"1\" height=\"1\" fill=\"#2a1a3d\"/><rect x=\"5\" y=\"1\" width=\"5\" height=\"1\" fill=\"#2a1a3d\"/><rect x=\"2\" y=\"2\" width=\"4\" height=\"1\" fill=\"#2a1a3d\"/><rect x=\"6\" y=\"2\" width=\"1\" height=\"1\" fill=\"#ff5a3c\"/><rect x=\"7\" y=\"2\" width=\"1\" height=\"1\" fill=\"#2a1a3d\"/><rect x=\"8\" y=\"2\" width=\"1\" height=\"1\" fill=\"#ff5a3c\"/><rect x=\"9\" y=\"2\" width=\"3\" height=\"1\" fill=\"#2a1a3d\"/><rect x=\"1\" y=\"3\" width=\"11\" height=\"1\" fill=\"#2a1a3d\"/><rect x=\"0\" y=\"4\" width=\"2\" height=\"1\" fill=\"#2a1a3d\"/><rect x=\"4\" y=\"4\" width=\"5\" height=\"1\" fill=\"#2a1a3d\"/><rect x=\"11\" y=\"4\" width=\"2\" height=\"1\" fill=\"#2a1a3d\"/><rect x=\"0\" y=\"5\" width=\"1\" height=\"1\" fill=\"#2a1a3d\"/><rect x=\"6\" y=\"5\" width=\"1\" height=\"1\" fill=\"#2a1a3d\"/><rect x=\"12\" y=\"5\" width=\"1\" height=\"1\" fill=\"#2a1a3d\"/></svg></span>", "spider": "<svg class=\"h-spider\" viewBox=\"0 0 7 5\" width=\"14\" height=\"10\" shape-rendering=\"crispEdges\" aria-hidden=\"true\"><rect x=\"0\" y=\"0\" width=\"1\" height=\"1\" fill=\"#2a1a3d\"/><rect x=\"2\" y=\"0\" width=\"1\" height=\"1\" fill=\"#2a1a3d\"/><rect x=\"4\" y=\"0\" width=\"1\" height=\"1\" fill=\"#2a1a3d\"/><rect x=\"6\" y=\"0\" width=\"1\" height=\"1\" fill=\"#2a1a3d\"/><rect x=\"1\" y=\"1\" width=\"5\" height=\"1\" fill=\"#2a1a3d\"/><rect x=\"0\" y=\"2\" width=\"7\" height=\"1\" fill=\"#2a1a3d\"/><rect x=\"1\" y=\"3\" width=\"1\" height=\"1\" fill=\"#2a1a3d\"/><rect x=\"2\" y=\"3\" width=\"1\" height=\"1\" fill=\"#ffffff\"/><rect x=\"3\" y=\"3\" width=\"1\" height=\"1\" fill=\"#2a1a3d\"/><rect x=\"4\" y=\"3\" width=\"1\" height=\"1\" fill=\"#ffffff\"/><rect x=\"5\" y=\"3\" width=\"1\" height=\"1\" fill=\"#2a1a3d\"/><rect x=\"0\" y=\"4\" width=\"1\" height=\"1\" fill=\"#2a1a3d\"/><rect x=\"2\" y=\"4\" width=\"3\" height=\"1\" fill=\"#2a1a3d\"/><rect x=\"6\" y=\"4\" width=\"1\" height=\"1\" fill=\"#2a1a3d\"/></svg>", "candy": "<svg class=\"h-candy\" viewBox=\"0 0 5 6\" width=\"10\" height=\"12\" shape-rendering=\"crispEdges\" aria-hidden=\"true\"><rect x=\"2\" y=\"0\" width=\"1\" height=\"1\" fill=\"#fff6e0\"/><rect x=\"1\" y=\"1\" width=\"3\" height=\"1\" fill=\"#fff6e0\"/><rect x=\"1\" y=\"2\" width=\"3\" height=\"1\" fill=\"#ff8a1f\"/><rect x=\"0\" y=\"3\" width=\"5\" height=\"1\" fill=\"#ff8a1f\"/><rect x=\"0\" y=\"4\" width=\"5\" height=\"1\" fill=\"#ff8a1f\"/><rect x=\"0\" y=\"5\" width=\"5\" height=\"1\" fill=\"#ffc93c\"/></svg>", "ghost": "<svg class=\"h-ghost\" viewBox=\"0 0 6 6\" width=\"12\" height=\"12\" shape-rendering=\"crispEdges\" aria-hidden=\"true\"><rect x=\"1\" y=\"0\" width=\"4\" height=\"1\" fill=\"#f4f1ff\"/><rect x=\"0\" y=\"1\" width=\"6\" height=\"1\" fill=\"#f4f1ff\"/><rect x=\"0\" y=\"2\" width=\"1\" height=\"1\" fill=\"#f4f1ff\"/><rect x=\"1\" y=\"2\" width=\"1\" height=\"1\" fill=\"#2a1a3d\"/><rect x=\"2\" y=\"2\" width=\"1\" height=\"1\" fill=\"#f4f1ff\"/><rect x=\"3\" y=\"2\" width=\"1\" height=\"1\" fill=\"#2a1a3d\"/><rect x=\"4\" y=\"2\" width=\"2\" height=\"1\" fill=\"#f4f1ff\"/><rect x=\"0\" y=\"3\" width=\"6\" height=\"1\" fill=\"#f4f1ff\"/><rect x=\"0\" y=\"4\" width=\"6\" height=\"1\" fill=\"#f4f1ff\"/><rect x=\"0\" y=\"5\" width=\"1\" height=\"1\" fill=\"#f4f1ff\"/><rect x=\"2\" y=\"5\" width=\"2\" height=\"1\" fill=\"#f4f1ff\"/><rect x=\"5\" y=\"5\" width=\"1\" height=\"1\" fill=\"#f4f1ff\"/></svg>"};
   const halloOn = () => {
     try {
@@ -5059,7 +5307,12 @@ ${lines.join("\n")}`);
 .ps-top .ps-logo:hover .ps-logo-word{color:var(--accent)}
 /* Same size, lighter weight - "Studios" reads as a subtitle, not a second name. */
 .ps-top .ps-logo-sub{font-weight:400;font-size:23px;margin-left:.28em}
-/* ---- Halloween dressing (Oct 22-31): around the logo, never inside it ---- */
+.ps-st-stage.hw{background:linear-gradient(180deg,#3B2F5C,#6E4466 55%,#B8683E)}
+.ps-root.dark .ps-st-stage.hw{background:linear-gradient(180deg,#120E1F,#2A1830 60%,#4A2618)}
+.ps-st-bubble{position:absolute;left:0;top:0;z-index:150;pointer-events:none;padding:6px 11px;border-radius:12px;background:#FFF8E8;color:#3A1A1A;border:2px solid #2A1A3D;font-family:'Silkscreen',ui-monospace,monospace;font-size:12px;white-space:nowrap;box-shadow:0 4px 12px rgba(0,0,0,.25);opacity:0;transition:opacity .15s}
+.ps-st-bubble[data-on="1"]{opacity:1}
+.ps-st-bubble::after{content:"";position:absolute;left:50%;bottom:-8px;margin-left:-6px;border:6px solid transparent;border-top-color:#2A1A3D;border-bottom:0}
+/* ---- Halloween dressing (Oct 20-31): around the logo, never inside it ---- */
 .h-wrap{position:relative;display:inline-grid;padding-left:30px;padding-top:9px}
 .h-logo{position:relative;display:inline-flex;align-items:flex-start}
 .h-col{display:inline-flex;flex-direction:column;align-items:center}

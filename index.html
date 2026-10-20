@@ -1656,7 +1656,7 @@
     (db.meetings || []).forEach((m) => {
       if (!(m.people || []).includes(me.id)) return;
       const when2 = `${shortDate(fromIso(m.date))}${m.time ? ` \u00b7 ${timeLabel(m.time)}` : ""}`;
-      push(`k${m.id}`, m.at, m.by, `put you on a meeting: ${m.title}`, "meeting", m.date, when2);
+      push(`k${m.id}`, m.at, m.by, `put you on ${isEvent(m) ? "an event" : "a meeting"}: ${m.title}`, "meeting", m.date, when2);
     });
     (db.timeoff || []).forEach((r) => {
       if (r.personId !== me.id || !r.decidedAt) return;
@@ -1948,30 +1948,47 @@
       "\xD7"
     )), /* @__PURE__ */ React.createElement("p", { className: "ps-note-text" }, n.text))), !notes.length && /* @__PURE__ */ React.createElement("p", { className: "ps-empty" }, "No notes yet."))));
   }
+  /* Meetings and events share one list (db.meetings); events carry kind "event"
+     and may span several days (to). No time = whole day. */
+  var isEvent = (m) => m.kind === "event";
+  var calItemOn = (m, ds) => isEvent(m) && m.to ? m.date <= ds && ds <= m.to : m.date === ds;
   function DayPanel({ day, db, me, mutate, close, canEdit = true, setToast }) {
+    const h = React.createElement;
+    const [kind, setKind] = useState("meeting");
     const [title, setTitle] = useState("");
     const [time, setTime] = useState("10:00");
+    const [wholeDay, setWholeDay] = useState(false);
+    const [until, setUntil] = useState(day);
     const [withWho, setWithWho] = useState([]);
     const [offWho, setOffWho] = useState("");
     const [offTo, setOffTo] = useState(day);
     const [why, setWhy] = useState("");
     const crew = db.people.filter((p) => p.role !== "client");
-    const meetings = (db.meetings || []).filter((m) => m.date === day).sort((a, b) => (a.time || "").localeCompare(b.time || ""));
+    const byTime = (a, b) => (a.time || "").localeCompare(b.time || "");
+    const items = (db.meetings || []).filter((m) => calItemOn(m, day));
+    const events = items.filter(isEvent).sort(byTime);
+    const meetings = items.filter((m) => !isEvent(m)).sort(byTime);
     const offs = crew.map((p) => ({ p, a: awayOn(p, day) })).filter((x) => x.a);
-    const addMeeting = () => {
+    const nameOf = (id) => (db.people.find((p) => p.id === id) || {}).name || "?";
+    const ev = kind === "event";
+    const add = () => {
       if (!title.trim()) return;
+      const t = wholeDay ? "" : time;
+      const to = ev && until && until > day ? until : "";
       const named = withWho.filter((id) => id !== me.id);
       mutate((n) => {
         n.meetings = n.meetings || [];
-        n.meetings.push({ id: uid("m"), date: day, time, title: title.trim(), people: withWho, by: me.id, at: (/* @__PURE__ */ new Date()).toISOString() });
+        n.meetings.push({ id: uid(ev ? "e" : "m"), kind: ev ? "event" : "meeting", date: day, ...(to ? { to } : {}), time: t, title: title.trim(), people: withWho, by: me.id, at: (/* @__PURE__ */ new Date()).toISOString() });
       });
-      const when2 = `${shortDate(fromIso(day))}${time ? ` at ${timeLabel(time)}` : ""}`;
+      const when2 = `${shortDate(fromIso(day))}${to ? ` – ${shortDate(fromIso(to))}` : ""}${t ? ` at ${timeLabel(t)}` : " (whole day)"}`;
       if (named.length) {
-        slack(db, "activity", `\u{1F4C5} *${me.name}* put ${named.map(nameOf).join(" and ")} on a meeting \u2014 ${title.trim()}\n${when2}`);
+        slack(db, "activity", `${ev ? "\u{1F389}" : "\u{1F4C5}"} *${me.name}* put ${named.map(nameOf).join(" and ")} on ${ev ? "an event" : "a meeting"} — ${title.trim()}\n${when2}`);
         setToast && setToast(`${named.map(nameOf).join(" and ")} notified.`);
-      }
+      } else if (ev) slack(db, "activity", `\u{1F389} *${me.name}* added an event — ${title.trim()}\n${when2}`);
       setTitle("");
       setWithWho([]);
+      setWholeDay(false);
+      setUntil(day);
     };
     const addOff = () => {
       if (!offWho) return;
@@ -1985,37 +2002,45 @@
       setOffTo(day);
     };
     const toggleWho = (id) => setWithWho((w) => w.includes(id) ? w.filter((x) => x !== id) : [...w, id]);
-    const nameOf = (id) => (db.people.find((p) => p.id === id) || {}).name || "?";
-    return /* @__PURE__ */ React.createElement("div", { className: "ps-overlay", onClick: (e) => e.target === e.currentTarget && close() }, /* @__PURE__ */ React.createElement("div", { className: "ps-modal", role: "dialog", "aria-modal": "true" }, /* @__PURE__ */ React.createElement("button", { className: "ps-x", onClick: close, "aria-label": "Close" }, "\xD7"), /* @__PURE__ */ React.createElement("h2", { className: "ps-h2" }, (/* @__PURE__ */ new Date(day + "T00:00:00")).toLocaleDateString(void 0, { weekday: "long", month: "long", day: "numeric" })), /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Meetings"), meetings.length ? meetings.map((m) => /* @__PURE__ */ React.createElement("div", { key: m.id, className: "ps-away-row" }, /* @__PURE__ */ React.createElement("span", null, /* @__PURE__ */ React.createElement("b", null, m.time ? timeLabel(m.time) : "All day", " \xB7 ", m.title), m.people && m.people.length ? /* @__PURE__ */ React.createElement("span", { className: "ps-muted" }, " \u2014 ", m.people.map(nameOf).join(", ")) : null), canEdit && /* @__PURE__ */ React.createElement(
-      "button",
-      {
-        className: "ps-x-small",
-        "aria-label": "Delete meeting",
-        onClick: () => mutate((n) => {
-          n.meetings = (n.meetings || []).filter((x) => x.id !== m.id);
-        })
-      },
-      "\xD7"
-    ))) : /* @__PURE__ */ React.createElement("p", { className: "ps-empty" }, "Nothing booked."), canEdit && /* @__PURE__ */ React.createElement("div", { className: "ps-day-form" }, /* @__PURE__ */ React.createElement("span", { className: "ps-duo ps-day-time" }, /* @__PURE__ */ React.createElement(PickerInput, { type: "time", value: time, onChange: (e) => setTime(e.target.value), ariaLabel: "Time" })), /* @__PURE__ */ React.createElement(
-      "input",
-      {
-        placeholder: "Meeting title",
-        value: title,
-        onChange: (e) => setTitle(e.target.value),
-        onKeyDown: (e) => e.key === "Enter" && addMeeting()
-      }
-    ), /* @__PURE__ */ React.createElement("button", { className: "ps-btn ghost", onClick: addMeeting }, "Add")), canEdit && /* @__PURE__ */ React.createElement("div", { className: "ps-who-pick" }, crew.map((p) => /* @__PURE__ */ React.createElement("button", { key: p.id, type: "button", className: `ps-who ${withWho.includes(p.id) ? "on" : ""}`, onClick: () => toggleWho(p.id) }, p.name))), /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Time off"), offs.length ? offs.map(({ p, a }) => /* @__PURE__ */ React.createElement("div", { key: p.id, className: "ps-away-row" }, /* @__PURE__ */ React.createElement("span", null, /* @__PURE__ */ React.createElement("b", null, p.name), a.note ? /* @__PURE__ */ React.createElement("span", { className: "ps-muted" }, " \u2014 ", a.note) : null, /* @__PURE__ */ React.createElement("span", { className: "ps-muted" }, " (", shortDate(fromIso(a.from)), "\u2013", shortDate(fromIso(a.to)), ")")), canEdit && /* @__PURE__ */ React.createElement(
-      "button",
-      {
-        className: "ps-x-small",
-        "aria-label": "Remove time off",
-        onClick: () => mutate((n) => {
-          const t = n.people.find((x) => x.id === p.id);
-          if (t) t.away = (t.away || []).filter((x) => x.id !== a.id);
-        })
-      },
-      "\xD7"
-    ))) : /* @__PURE__ */ React.createElement("p", { className: "ps-empty" }, "Everyone's in."), canEdit && /* @__PURE__ */ React.createElement("div", { className: "ps-day-form" }, /* @__PURE__ */ React.createElement("select", { value: offWho, onChange: (e) => setOffWho(e.target.value), "aria-label": "Who" }, /* @__PURE__ */ React.createElement("option", { value: "" }, "Who's off?"), crew.map((p) => /* @__PURE__ */ React.createElement("option", { key: p.id, value: p.id }, p.name))), /* @__PURE__ */ React.createElement("span", { className: "ps-duo ps-day-time" }, /* @__PURE__ */ React.createElement(PickerInput, { type: "date", value: offTo, onChange: (e) => setOffTo(e.target.value), ariaLabel: "Until" })), /* @__PURE__ */ React.createElement("input", { placeholder: "Reason (optional)", value: why, onChange: (e) => setWhy(e.target.value) }), /* @__PURE__ */ React.createElement("button", { className: "ps-btn ghost", onClick: addOff }, "Add"))));
+    const allOn = crew.length && crew.every((p) => withWho.includes(p.id));
+    const row = (m) => h("div", { key: m.id, className: `ps-away-row ${isEvent(m) ? "ps-event-row" : ""}` },
+      h("span", null,
+        h("b", null, m.time ? timeLabel(m.time) : "Whole day", " \xB7 ", m.title),
+        isEvent(m) && m.to ? h("span", { className: "ps-muted" }, " (", shortDate(fromIso(m.date)), "–", shortDate(fromIso(m.to)), ")") : null,
+        m.people && m.people.length ? h("span", { className: "ps-muted" }, " — ", m.people.length === crew.length && crew.length > 2 ? "Everyone" : m.people.map(nameOf).join(", ")) : null),
+      canEdit && h("button", { className: "ps-x-small", "aria-label": isEvent(m) ? "Delete event" : "Delete meeting", onClick: () => mutate((n) => { n.meetings = (n.meetings || []).filter((x) => x.id !== m.id); }) }, "\xD7"));
+    return h("div", { className: "ps-overlay", onClick: (e) => e.target === e.currentTarget && close() },
+      h("div", { className: "ps-modal", role: "dialog", "aria-modal": "true" },
+        h("button", { className: "ps-x", onClick: close, "aria-label": "Close" }, "\xD7"),
+        h("h2", { className: "ps-h2" }, (/* @__PURE__ */ new Date(day + "T00:00:00")).toLocaleDateString(void 0, { weekday: "long", month: "long", day: "numeric" })),
+        events.length > 0 && h(React.Fragment, null, h("h3", { className: "ps-h3" }, "Events"), events.map(row)),
+        h("h3", { className: "ps-h3" }, "Meetings"),
+        meetings.length ? meetings.map(row) : h("p", { className: "ps-empty" }, "Nothing booked."),
+        canEdit && h("div", { className: "ps-seg ps-day-kind", role: "tablist" },
+          ["meeting", "event"].map((k) => h("button", { key: k, type: "button", role: "tab", "aria-selected": kind === k, className: `ps-seg-btn ${kind === k ? "on" : ""}`, onClick: () => setKind(k) }, k === "meeting" ? "\u{1F4C5} Meeting" : "\u{1F389} Event"))),
+        canEdit && h("div", { className: "ps-day-form" },
+          h("span", { className: "ps-duo ps-day-time" }, wholeDay
+            ? h("span", { className: "ps-day-whole" }, "Whole day")
+            : h(PickerInput, { type: "time", value: time, onChange: (e) => setTime(e.target.value), ariaLabel: "Time" })),
+          h("label", { className: "ps-day-check" }, h("input", { type: "checkbox", checked: wholeDay, onChange: (e) => setWholeDay(e.target.checked) }), "Whole day"),
+          h("input", { className: "ps-day-title", placeholder: ev ? "Event name, e.g. Halloween party" : "Meeting title", value: title, onChange: (e) => setTitle(e.target.value), onKeyDown: (e) => e.key === "Enter" && add() }),
+          h("button", { className: "ps-btn ghost", onClick: add }, ev ? "Add event" : "Add")),
+        canEdit && ev && h("div", { className: "ps-day-form ps-day-until" },
+          h("span", { className: "ps-muted" }, "Ends"),
+          h("span", { className: "ps-duo ps-day-time" }, h(PickerInput, { type: "date", value: until, onChange: (e) => setUntil(e.target.value), ariaLabel: "Event ends" })),
+          h("span", { className: "ps-muted" }, until > day ? "multi-day event" : "same day")),
+        canEdit && h("div", { className: "ps-who-pick" },
+          h("button", { type: "button", className: `ps-who ps-who-all ${allOn ? "on" : ""}`, onClick: () => setWithWho(allOn ? [] : crew.map((p) => p.id)) }, "Everyone"),
+          crew.map((p) => h("button", { key: p.id, type: "button", className: `ps-who ${withWho.includes(p.id) ? "on" : ""}`, onClick: () => toggleWho(p.id) }, p.name))),
+        h("h3", { className: "ps-h3" }, "Time off"),
+        offs.length ? offs.map(({ p, a }) => h("div", { key: p.id, className: "ps-away-row" },
+          h("span", null, h("b", null, p.name), a.note ? h("span", { className: "ps-muted" }, " — ", a.note) : null, h("span", { className: "ps-muted" }, " (", shortDate(fromIso(a.from)), "–", shortDate(fromIso(a.to)), ")")),
+          canEdit && h("button", { className: "ps-x-small", "aria-label": "Remove time off", onClick: () => mutate((n) => { const t = n.people.find((x) => x.id === p.id); if (t) t.away = (t.away || []).filter((x) => x.id !== a.id); }) }, "\xD7"))) : h("p", { className: "ps-empty" }, "Everyone's in."),
+        canEdit && h("div", { className: "ps-day-form" },
+          h("select", { value: offWho, onChange: (e) => setOffWho(e.target.value), "aria-label": "Who" }, h("option", { value: "" }, "Who's off?"), crew.map((p) => h("option", { key: p.id, value: p.id }, p.name))),
+          h("span", { className: "ps-duo ps-day-time" }, h(PickerInput, { type: "date", value: offTo, onChange: (e) => setOffTo(e.target.value), ariaLabel: "Until" })),
+          h("input", { placeholder: "Reason (optional)", value: why, onChange: (e) => setWhy(e.target.value) }),
+          h("button", { className: "ps-btn ghost", onClick: addOff }, "Add"))));
   }
   function CalendarPage({ db, me, mutate, canEdit = true, bare = false, setToast, openOn, onOpened }) {
     const [view, setView] = useState(() => {
@@ -2039,16 +2064,16 @@
     for (let i = 0; i < lead; i++) cells.push(null);
     for (let d = 1; d <= daysInMonth; d++) cells.push(new Date(view.getFullYear(), view.getMonth(), d));
     const shift = (n) => setView((v) => new Date(v.getFullYear(), v.getMonth() + n, 1));
-    const meetingsOn = (ds) => (db.meetings || []).filter((m) => m.date === ds);
+    const meetingsOn = (ds) => (db.meetings || []).filter((m) => calItemOn(m, ds)).sort((a, b) => isEvent(b) - isEvent(a) || (a.time || "").localeCompare(b.time || ""));
     const offOn = (ds) => crew.map((p) => ({ p, a: awayOn(p, ds) })).filter((x) => x.a);
-    return /* @__PURE__ */ React.createElement(React.Fragment, null, !bare && /* @__PURE__ */ React.createElement("div", { className: "ps-ovhead" }, /* @__PURE__ */ React.createElement("span", { className: "ps-ovicon", "aria-hidden": "true" }, "\u{1F5D3}\uFE0F"), /* @__PURE__ */ React.createElement("h1", { className: "ps-h1" }, "Calendar")), !bare && /* @__PURE__ */ React.createElement("p", { className: "ps-lede" }, "Time off and meetings for the whole team. Click any day to add something."), /* @__PURE__ */ React.createElement("div", { className: "ps-cal-head ps-bigcal-head" }, /* @__PURE__ */ React.createElement("button", { type: "button", className: "ps-cal-nav", onClick: () => shift(-1), "aria-label": "Previous month" }, "\u2039"), /* @__PURE__ */ React.createElement("span", { className: "ps-cal-title ps-bigcal-title" }, MONTHS[view.getMonth()], " ", view.getFullYear()), /* @__PURE__ */ React.createElement("button", { type: "button", className: "ps-cal-nav", onClick: () => shift(1), "aria-label": "Next month" }, "\u203A"), /* @__PURE__ */ React.createElement("button", { type: "button", className: "ps-btn ghost ps-today-btn", onClick: () => {
+    return /* @__PURE__ */ React.createElement(React.Fragment, null, !bare && /* @__PURE__ */ React.createElement("div", { className: "ps-ovhead" }, /* @__PURE__ */ React.createElement("span", { className: "ps-ovicon", "aria-hidden": "true" }, "\u{1F5D3}\uFE0F"), /* @__PURE__ */ React.createElement("h1", { className: "ps-h1" }, "Calendar")), !bare && /* @__PURE__ */ React.createElement("p", { className: "ps-lede" }, "Time off, meetings and events for the whole team. Click any day to add something."), /* @__PURE__ */ React.createElement("div", { className: "ps-cal-head ps-bigcal-head" }, /* @__PURE__ */ React.createElement("button", { type: "button", className: "ps-cal-nav", onClick: () => shift(-1), "aria-label": "Previous month" }, "\u2039"), /* @__PURE__ */ React.createElement("span", { className: "ps-cal-title ps-bigcal-title" }, MONTHS[view.getMonth()], " ", view.getFullYear()), /* @__PURE__ */ React.createElement("button", { type: "button", className: "ps-cal-nav", onClick: () => shift(1), "aria-label": "Next month" }, "\u203A"), /* @__PURE__ */ React.createElement("button", { type: "button", className: "ps-btn ghost ps-today-btn", onClick: () => {
       const n = /* @__PURE__ */ new Date();
       setView(new Date(n.getFullYear(), n.getMonth(), 1));
     } }, "Today")), /* @__PURE__ */ React.createElement("div", { className: "ps-bigcal" }, DOW.map((d) => /* @__PURE__ */ React.createElement("span", { key: d, className: "ps-bigcal-dow" }, d)), cells.map((d, i) => {
       if (!d) return /* @__PURE__ */ React.createElement("span", { key: `b${i}`, className: "ps-bigcal-blank" });
       const ds = isoDay(d);
       const ms = meetingsOn(ds), os = offOn(ds);
-      return /* @__PURE__ */ React.createElement("button", { key: ds, className: `ps-bigcal-day ${ds === todayStr ? "today" : ""}`, onClick: () => setDay(ds) }, /* @__PURE__ */ React.createElement("span", { className: "ps-bigcal-num" }, d.getDate()), os.slice(0, 2).map(({ p }) => /* @__PURE__ */ React.createElement("span", { key: p.id, className: "ps-ev off" }, p.name, " off")), os.length > 2 && /* @__PURE__ */ React.createElement("span", { className: "ps-ev more" }, "+", os.length - 2, " off"), ms.slice(0, 2).map((m) => /* @__PURE__ */ React.createElement("span", { key: m.id, className: "ps-ev meet" }, m.time ? timeLabel(m.time).replace(":00", "") : "", " ", m.title)), ms.length > 2 && /* @__PURE__ */ React.createElement("span", { className: "ps-ev more" }, "+", ms.length - 2, " more"));
+      return /* @__PURE__ */ React.createElement("button", { key: ds, className: `ps-bigcal-day ${ds === todayStr ? "today" : ""}`, onClick: () => setDay(ds) }, /* @__PURE__ */ React.createElement("span", { className: "ps-bigcal-num" }, d.getDate()), os.slice(0, 2).map(({ p }) => /* @__PURE__ */ React.createElement("span", { key: p.id, className: "ps-ev off" }, p.name, " off")), os.length > 2 && /* @__PURE__ */ React.createElement("span", { className: "ps-ev more" }, "+", os.length - 2, " off"), ms.slice(0, 2).map((m) => /* @__PURE__ */ React.createElement("span", { key: m.id, className: `ps-ev ${isEvent(m) ? "event" : "meet"}` }, isEvent(m) ? "\u{1F389} " : "", m.time ? timeLabel(m.time).replace(":00", "") + " " : "", m.title)), ms.length > 2 && /* @__PURE__ */ React.createElement("span", { className: "ps-ev more" }, "+", ms.length - 2, " more"));
     })), day && /* @__PURE__ */ React.createElement(DayPanel, { day, db, me, mutate, canEdit, setToast, close: () => setDay(null) }));
   }
   /* Tasks move through the same stages as videos, minus Editing, so the Pipeline
@@ -5849,6 +5874,21 @@ ${lines.join("\n")}`);
 .ps-ev.off{background:var(--warnbg);color:var(--warn)}
 .ps-ev.meet{background:var(--okbg);color:var(--accent);font-weight:600}
 .ps-ev.more{color:var(--muted)}
+.ps-ev.event{background:#EDE4FF;color:#5B2DB8;font-weight:600}
+.ps-root.dark .ps-ev.event{background:#2E2250;color:#C9B2FF}
+.ps-away-row.ps-event-row{background:#F4EEFF;border-color:#D9C8FF}
+.ps-root.dark .ps-away-row.ps-event-row{background:#241B3D;border-color:#3D2E66}
+.ps-day-kind{display:inline-flex;gap:4px;margin:12px 0 0;padding:3px;border-radius:10px;background:var(--paper);border:1px solid var(--line)}
+.ps-day-kind .ps-seg-btn{border:0;background:none;padding:6px 12px;border-radius:7px;cursor:pointer;font-weight:600;color:var(--muted)}
+.ps-day-kind .ps-seg-btn.on{background:var(--card);color:var(--ink);box-shadow:0 1px 3px rgba(0,0,0,.12)}
+.ps-day-check{display:inline-flex;align-items:center;gap:6px;font-size:14px;white-space:nowrap;cursor:pointer}
+.ps-day-whole{display:flex;align-items:center;height:100%;min-height:40px;padding:0 12px;border:1px dashed var(--line);border-radius:10px;color:var(--muted);font-weight:600}
+.ps-day-title{flex:1 1 200px;min-width:0}
+.ps-day-until{margin-top:0}
+.ps-who-all{font-weight:700}
+.ps-day-form .ps-duo.ps-day-time{flex:0 0 165px;min-width:165px}
+.ps-day-form .ps-duo.ps-day-time .ps-pickerwrap{flex:1 1 auto;min-width:0}
+
 .ps-day-form{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:10px 0 6px}
 .ps-day-form input,.ps-day-form select{flex:1 1 150px;min-width:0}
 .ps-day-time{flex:0 0 130px}

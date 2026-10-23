@@ -2464,6 +2464,14 @@
   var gcashOk = (raw) => /^09\d{9}$/.test(gcashNorm(raw));
   var gcashPretty = (raw) => { const d = gcashNorm(raw); return gcashOk(raw) ? `${d.slice(0, 4)} ${d.slice(4, 7)} ${d.slice(7)}` : String(raw || ""); };
   var DED_KEYS = [["sss", "SSS"], ["pagibig", "Pag-IBIG"], ["philhealth", "PhilHealth"], ["tax", "Withholding tax"]];
+  /* Contractors can carry SSS / Pag-IBIG / PhilHealth too; their tax is a % of fees. */
+  var GOV_KEYS = DED_KEYS.filter(([k]) => k !== "tax");
+  var PAY_TYPES = [["employee", "Employee"], ["contractor", "Contractor"], ["intern", "Intern"]];
+  var payTypeLabel = (t) => (PAY_TYPES.find((x) => x[0] === t) || PAY_TYPES[0])[1];
+  /* Interns get their allowance once a month, on the 16th-to-month-end run. */
+  /* 13th month: on by default for employees; contractors and interns only when ticked. */
+  var gets13th = (pr) => pr ? (pr.in13th == null ? (pr.type || "employee") === "employee" : !!pr.in13th) : false;
+  var internInRun = (per) => Number(per.from.slice(8, 10)) >= 16 || (per.from.slice(8, 10) === "01" && Number(per.to.slice(8, 10)) >= 28);
   var WHEN = [["both", "Every payout"], ["first", "1st payout (1–15)"], ["second", "2nd payout (16–end)"]];
   var lastDay = (y, m) => new Date(y, m + 1, 0).getDate();
   var isoOf = (y, m, d) => `${y}-${String(m + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
@@ -2505,11 +2513,11 @@
     const minus = r2(adj.filter((a) => num(a.amount) < 0).reduce((t, a) => t - num(a.amount), 0));
     const unpaidAmt = r2(num(l.unpaidDays) * day);
     const earnings = r2(basic + allowance + otAmt + plus);
-    const gov = l.type === "contractor"
-      ? r2(Math.max(0, earnings - unpaidAmt - minus) * num(l.whtPct) / 100)
-      : r2(num(l.sss) + num(l.philhealth) + num(l.pagibig) + num(l.tax));
+    const benefits = l.type === "intern" ? 0 : r2(num(l.sss) + num(l.philhealth) + num(l.pagibig));
+    const wht = l.type === "contractor" ? r2(Math.max(0, earnings - unpaidAmt - minus) * num(l.whtPct) / 100) : l.type === "intern" ? 0 : num(l.tax);
+    const gov = r2(benefits + wht);
     const deductions = r2(unpaidAmt + minus + gov);
-    return { basic, allowance, ot, otAmt, plus, minus, unpaidAmt, earnings, gov, deductions, net: r2(earnings - deductions), day, hour };
+    return { basic, allowance, ot, otAmt, plus, minus, unpaidAmt, earnings, gov, wht, benefits, deductions, net: r2(earnings - deductions), day, hour };
   };
   var downloadCsv = (name, rows) => {
     const esc = (v) => { const t = String(v == null ? "" : v); return /[",\n]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t; };
@@ -2527,7 +2535,7 @@
     const slip = (l) => {
       const m = lineMath(l, settings);
       const row = (k, note, v) => `<tr><td>${esc(k)}</td><td class="note">${esc(note || "")}</td><td class="amt">${v === "" ? "" : money(v)}</td></tr>`;
-      const earn = [row(l.type === "contractor" ? "FEE" : "BASIC", "", m.basic)];
+      const earn = l.type === "intern" ? [] : [row(l.type === "contractor" ? "FEE" : "BASIC", "", m.basic)];
       if (m.allowance) earn.push(row("ALLOWANCE", "", m.allowance));
       const other = [...(l.adjustments || []).filter((a) => num(a.amount) > 0).map((a) => [a.label || "Other", num(a.amount)]),
         ...m.ot.map((o) => [`OT ${num(o.hours)} hour${num(o.hours) === 1 ? "" : "s"}${o.date ? ` (${longDate(o.date)})` : ""}`, o.amount])];
@@ -2535,19 +2543,22 @@
       const ded = [];
       if (m.unpaidAmt) ded.push(row("Unpaid leave", `${num(l.unpaidDays)} day${num(l.unpaidDays) === 1 ? "" : "s"}`, m.unpaidAmt));
       (l.adjustments || []).filter((a) => num(a.amount) < 0).forEach((a) => ded.push(row(a.label || "Deduction", "", -num(a.amount))));
-      const gov = l.type === "contractor"
-        ? (num(l.whtPct) ? [row("Withholding tax", `${num(l.whtPct)}%`, m.gov)] : [])
-        : DED_KEYS.map(([k, label]) => row(label, num(l[k]) ? longDate(run.to) : "", num(l[k]) || ""));
+      const gov = l.type === "intern" ? []
+        : [...GOV_KEYS.map(([k, label]) => row(label, num(l[k]) ? longDate(run.to) : "", num(l[k]) || "")),
+          l.type === "contractor"
+            ? (num(l.whtPct) ? row("Withholding tax", `${num(l.whtPct)}%`, m.wht) : "")
+            : row("Withholding tax", num(l.tax) ? longDate(run.to) : "", num(l.tax) || "")];
       const paid = l.paidAt ? `<div class="paid">PAID<small>${esc(new Date(l.paidAt).toLocaleDateString("en-PH"))}${l.paidRef ? " · ref " + esc(l.paidRef) : ""}</small></div>` : "";
       return `<section class="slip">
         <div class="top"><div><b>${esc(l.name)}</b>${l.payTo && l.payTo.accountNo ? `<span>${esc(l.payTo.method === "gcash" ? gcashPretty(l.payTo.accountNo) : l.payTo.accountNo)}</span>` : ""}</div><div class="co">${esc(settings.company || "Projeclab Studios")}</div></div>
-        <div class="meta"><span>SSS no. ${esc(l.sssNo || "")}</span><span>PAY FROM: <b>${esc(longDate(run.from))}</b></span><span>TO: <b>${esc(longDate(run.to))}</b></span></div>
+        <div class="meta">${l.type === "intern" ? "" : `<span>SSS no. ${esc(l.sssNo || "")}</span>`}<span>PAY FROM: <b>${esc(longDate(run.from))}</b></span><span>TO: <b>${esc(longDate(run.to))}</b></span>${run.payDate ? `<span>PAY DATE: <b>${esc(longDate(run.payDate))}</b></span>` : ""}</div>
         <h3>EARNINGS</h3><table>${earn.join("")}</table>
-        <h3>DEDUCTIONS</h3><table>${ded.join("")}${l.type === "contractor" ? "" : `<tr><td colspan="3" class="gb">Government Benefits:</td></tr>`}${gov.join("")}</table>
+        <h3>DEDUCTIONS</h3><table>${ded.join("")}${l.type === "intern" ? (ded.length ? "" : `<tr><td>None</td><td></td><td class="amt">0.00</td></tr>`) : `<tr><td colspan="3" class="gb">Government Benefits:</td></tr>`}${gov.join("")}</table>
         <div class="tot"><span>TOTAL EARNINGS</span><b>${money(m.earnings)}</b><span>TOTAL DEDUCTIONS</span><b>${money(m.deductions)}</b><span class="net">NET EARNINGS:</span><b class="net">${money(m.net)}</b></div>
         ${paid}</section>`;
     };
-    return `<!doctype html><html><head><meta charset="utf-8"><title>Payslips · ${esc(periodLabel(run))}</title><style>
+    const docTitle = lines.length === 1 ? `${lines[0].name} - Payslip ${periodLabel(run)}` : `Payslips - ${periodLabel(run)}`;
+    return `<!doctype html><html><head><meta charset="utf-8"><title>${esc(docTitle.replace(/[\\/:*?"<>|]+/g, " ").replace(/\s+/g, " ").trim())}</title><style>
       body{font-family:system-ui,-apple-system,Segoe UI,sans-serif;color:#1A2230;margin:24px}
       .slip{max-width:640px;margin:0 auto 32px;border:1.5px solid #1A2230;padding:18px 20px;page-break-after:always;position:relative}
       .top{display:flex;justify-content:space-between;border-bottom:1.5px solid #1A2230;padding-bottom:6px}.top b{font-size:17px;margin-right:14px}.top span{font-style:italic}.co{color:#5B6676;font-size:13px}
@@ -2562,7 +2573,7 @@
 
   function PayProfileForm({ p, profiles, settings, put, setEditing }) {
     const h = React.createElement;
-    const base = profiles[p.id] || { personId: p.id, type: "employee", monthly: "", allowanceMonthly: "", payTo: { method: "gcash" } };
+    const base = profiles[p.id] || { personId: p.id, type: p.role === "intern" ? "intern" : "employee", monthly: "", allowanceMonthly: "", payTo: { method: "gcash" } };
     const [f, setF] = useState({ ...base, payTo: { ...base.payTo || {} } });
     const set = (k, v) => setF((x) => ({ ...x, [k]: v }));
     const setPay = (k, v) => setF((x) => ({ ...x, payTo: { ...x.payTo, [k]: v } }));
@@ -2571,16 +2582,25 @@
     const gc = f.payTo.method === "gcash";
     const badNo = gc && f.payTo.accountNo && !gcashOk(f.payTo.accountNo);
     const rate = payRates({ monthly: f.monthly, allowanceMonthly: f.allowanceMonthly }, settings);
+    const intern = f.type === "intern", contractor = f.type === "contractor";
+    const dedField = ([k, label]) => h("div", { key: k, className: "ps-pay-ded" },
+      h("label", { className: "ps-field" }, h("span", null, label, " (₱)"), h("input", { inputMode: "decimal", value: f[k] == null ? "" : f[k], placeholder: "0", onChange: (e) => set(k, e.target.value) })),
+      settings.schedule !== "monthly" && h("label", { className: "ps-field" }, h("span", null, "Taken on"),
+        h("select", { value: f[k + "When"] || "both", onChange: (e) => set(k + "When", e.target.value) }, WHEN.map(([v, l]) => h("option", { key: v, value: v }, l)))));
     return h("div", { className: "ps-pay-form" },
       h("div", { className: "ps-pay-grid" },
         h("label", { className: "ps-field" }, h("span", null, "Type"),
-          h("select", { value: f.type, onChange: (e) => set("type", e.target.value) }, h("option", { value: "employee" }, "Employee"), h("option", { value: "contractor" }, "Contractor"))),
-        field("Monthly basic (₱)", "monthly", { money: true, ph: "e.g. 12000" }),
+          h("select", { value: f.type, onChange: (e) => setF((x) => ({ ...x, type: e.target.value, in13th: null })) }, PAY_TYPES.map(([v, l]) => h("option", { key: v, value: v }, l)))),
+        !intern && field(f.type === "contractor" ? "Monthly fee (₱)" : "Monthly basic (₱)", "monthly", { money: true, ph: "e.g. 12000" }),
         field("Monthly allowance (₱)", "allowanceMonthly", { money: true, ph: "0" }),
-        field("Start date", "start", { ph: "YYYY-MM-DD" })),
-      num(f.monthly) > 0 && h("p", { className: "ps-muted ps-pay-hint" }, settings.schedule === "monthly" ? "Each payout: " : "Each payout (half-month): ",
+        !intern && field("Start date", "start", { ph: "YYYY-MM-DD" })),
+      intern && h("p", { className: "ps-muted ps-pay-hint" }, "Interns are paid their allowance once a month, on the 16th–end-of-month payroll run", num(f.allowanceMonthly) > 0 ? ` — ${peso(num(f.allowanceMonthly))} each month.` : "."),
+      !intern && num(f.monthly) > 0 && h("p", { className: "ps-muted ps-pay-hint" }, settings.schedule === "monthly" ? "Each payout: " : "Each payout (half-month): ",
         peso((num(f.monthly)) / (settings.schedule === "monthly" ? 1 : 2)), " basic", num(f.allowanceMonthly) ? ` + ${peso(num(f.allowanceMonthly) / (settings.schedule === "monthly" ? 1 : 2))} allowance` : "",
         " · OT ", peso(rate.hour), "/hour · one day ", peso(rate.day)),
+      h("label", { className: "ps-pay-check" },
+        h("input", { type: "checkbox", checked: gets13th(f), onChange: (e) => set("in13th", e.target.checked) }),
+        h("span", null, "Include in 13th month pay", h("small", { className: "ps-muted" }, intern ? " — counted from their allowance" : contractor ? " — counted from their fee; optional for contractors" : " — required by law for employees"))),
       h("b", { className: "ps-pay-sub" }, "Where to pay"),
       h("div", { className: "ps-pay-grid" },
         h("label", { className: "ps-field" }, h("span", null, "Method"),
@@ -2590,23 +2610,18 @@
           badNo && h("small", null, "A GCash number has 11 digits starting with 09.")),
         h("label", { className: "ps-field" }, h("span", null, gc ? "Name on the GCash account" : "Account name"), h("input", { value: f.payTo.accountName || "", onChange: (e) => setPay("accountName", e.target.value) })),
         !gc && h("label", { className: "ps-field" }, h("span", null, "Bank / provider"), h("input", { value: f.payTo.bank || "", placeholder: "e.g. BPI", onChange: (e) => setPay("bank", e.target.value) }))),
-      f.type === "employee"
-        ? h(React.Fragment, null,
-          h("b", { className: "ps-pay-sub" }, "Government numbers"),
-          h("div", { className: "ps-pay-grid" }, field("TIN", "tin"), field("SSS no.", "sssNo"), field("PhilHealth no.", "philhealthNo"), field("Pag-IBIG no.", "pagibigNo")),
-          h("b", { className: "ps-pay-sub" }, "Deductions"),
-          h("p", { className: "ps-muted ps-pay-hint" }, "Amount taken out, and on which payout. Copy these from a current payslip or get them from your accountant. Each run starts with them and they can still be changed per run."),
-          h("div", { className: "ps-pay-dedgrid" }, DED_KEYS.map(([k, label]) => h("div", { key: k, className: "ps-pay-ded" },
-            h("label", { className: "ps-field" }, h("span", null, label, " (₱)"), h("input", { inputMode: "decimal", value: f[k] == null ? "" : f[k], placeholder: "0", onChange: (e) => set(k, e.target.value) })),
-            settings.schedule !== "monthly" && h("label", { className: "ps-field" }, h("span", null, "Taken on"),
-              h("select", { value: f[k + "When"] || "both", onChange: (e) => set(k + "When", e.target.value) }, WHEN.map(([v, l]) => h("option", { key: v, value: v }, l))))))))
-        : h(React.Fragment, null,
-          h("b", { className: "ps-pay-sub" }, "Tax"),
-          h("div", { className: "ps-pay-grid" }, field("TIN", "tin"), field("Withholding % on fees (if any)", "whtPct", { money: true, ph: "0" })),
-          h("p", { className: "ps-muted ps-pay-hint" }, "Contractors have no SSS, PhilHealth or Pag-IBIG taken out. Ask your accountant whether tax must be withheld on their fees.")),
+      !intern && h(React.Fragment, null,
+        h("b", { className: "ps-pay-sub" }, "Government numbers"),
+        h("div", { className: "ps-pay-grid" }, field("TIN", "tin"), field("SSS no.", "sssNo"), field("PhilHealth no.", "philhealthNo"), field("Pag-IBIG no.", "pagibigNo")),
+        h("b", { className: "ps-pay-sub" }, "Deductions"),
+        h("p", { className: "ps-muted ps-pay-hint" }, contractor
+          ? "SSS, Pag-IBIG and PhilHealth for contractors who have them — leave at 0 if they don't. Each run starts with these and they can still be changed per run."
+          : "Amount taken out, and on which payout. Copy these from a current payslip or get them from your accountant. Each run starts with them and they can still be changed per run."),
+        h("div", { className: "ps-pay-dedgrid" }, (contractor ? GOV_KEYS : DED_KEYS).map(dedField)),
+        contractor && h("div", { className: "ps-pay-grid" }, field("Withholding % on fees (if any)", "whtPct", { money: true, ph: "0" }))),
       h("div", { className: "ps-btnrow" },
         h("button", { className: "ps-btn ghost small", onClick: () => setEditing(null) }, "Cancel"),
-        h("button", { className: "ps-btn small", onClick: () => { put(`profile:${p.id}`, "profile", { ...f, personId: p.id, monthly: num(f.monthly), allowanceMonthly: num(f.allowanceMonthly) }); setEditing(null); } }, "Save pay profile")));
+        h("button", { className: "ps-btn small", onClick: () => { put(`profile:${p.id}`, "profile", { ...f, personId: p.id, monthly: intern ? 0 : num(f.monthly), allowanceMonthly: num(f.allowanceMonthly) }); setEditing(null); } }, "Save pay profile")));
   }
 
   function PayrollPage({ db, me, setToast, confirm }) {
@@ -2618,6 +2633,8 @@
     const [openRun, setOpenRun] = useState(null);
     const [editing, setEditing] = useState(null);
     const [refs, setRefs] = useState({});
+    const [showArchived, setShowArchived] = useState(false);
+    const [newPer, setNewPer] = useState(null);
     const isLead = me.role === "lead";
     const people = db.people.filter((p) => p.role !== "client");
     const nameOf = (id) => (db.people.find((p) => p.id === id) || {}).name || "Someone";
@@ -2637,7 +2654,9 @@
     const settings = { schedule: "semi", workdays: 22, hours: 8, otMultiplier: 1, allowanceInRate: true, company: "Projeclab Studios", ...((rows.find((r) => r.id === "settings") || {}).data || {}) };
     const profiles = {};
     rows.filter((r) => r.kind === "profile").forEach((r) => { profiles[r.data.personId] = r.data; });
-    const runs = rows.filter((r) => r.kind === "run").map((r) => r.data).sort((a, b) => b.from.localeCompare(a.from));
+    const allRuns = rows.filter((r) => r.kind === "run").map((r) => r.data).sort((a, b) => b.from.localeCompare(a.from) || String(b.createdAt || "").localeCompare(String(a.createdAt || "")));
+    const runs = allRuns.filter((r) => !r.archived);
+    const archivedRuns = allRuns.filter((r) => r.archived);
 
     const put = async (id, kind, data, quiet) => {
       setRows((cur) => [...cur.filter((r) => r.id !== id), { id, kind, data }]);
@@ -2678,7 +2697,7 @@
             h(Avatar, { person: p, size: 32 }),
             h("span", { className: "ps-pay-who" }, h("b", null, p.name),
               h("span", { className: "ps-muted" }, pr
-                ? `${pr.type === "contractor" ? "Contractor" : "Employee"} · ${peso(num(pr.monthly) + num(pr.allowanceMonthly))} / month · ${methodLabel(pt.method)}${pt.accountNo ? " " + (pt.method === "gcash" ? gcashPretty(pt.accountNo) : pt.accountNo) : ""}`
+                ? `${payTypeLabel(pr.type)} · ${pr.type === "intern" ? `${peso(num(pr.allowanceMonthly))} allowance / month, paid on the 16th–end run` : `${peso(num(pr.monthly) + num(pr.allowanceMonthly))} / month`} · ${methodLabel(pt.method)}${pt.accountNo ? " " + (pt.method === "gcash" ? gcashPretty(pt.accountNo) : pt.accountNo) : ""}`
                 : "No pay profile yet"),
               pr && pt.method === "gcash" && pt.accountNo && !gcashOk(pt.accountNo) && h("span", { className: "ps-pay-warn" }, "Check this GCash number — it should be 11 digits starting with 09.")),
             h("button", { className: "ps-btn ghost small", onClick: () => setEditing(editing === p.id ? null : p.id) }, editing === p.id ? "Close" : pr ? "Edit" : "Set up pay")),
@@ -2692,24 +2711,41 @@
       const monthly = num(pr.monthly), allowanceMonthly = num(pr.allowanceMonthly);
       const split = settings.schedule === "monthly" ? 1 : 2;
       const half = settings.schedule === "monthly" ? "both" : (Number(per.from.slice(8, 10)) <= 15 ? "first" : "second");
+      const intern = pr.type === "intern";
       const ded = {};
-      DED_KEYS.forEach(([k]) => { const when = pr[k + "When"] || "both"; ded[k] = when === "both" || when === half ? num(pr[k]) : 0; });
+      DED_KEYS.forEach(([k]) => { const when = pr[k + "When"] || "both"; ded[k] = intern || (pr.type === "contractor" && k === "tax") ? 0 : when === "both" || when === half ? num(pr[k]) : 0; });
       return {
-        personId: pid, name: p ? p.name : "Former teammate", type: pr.type, monthly, allowanceMonthly,
-        basic: r2(monthly / split), allowance: r2(allowanceMonthly / split),
+        personId: pid, name: p ? p.name : "Former teammate", type: pr.type || "employee", monthly: intern ? 0 : monthly, allowanceMonthly,
+        basic: intern ? 0 : r2(monthly / split), allowance: intern ? r2(allowanceMonthly) : r2(allowanceMonthly / split),
         unpaidDays: 0, adjustments: [], ot: [],
         ...ded, whtPct: num(pr.whtPct), sssNo: pr.sssNo || "",
         payTo: { ...pr.payTo || {} }, paidAt: null, paidBy: null, paidRef: ""
       };
     };
-    const newRun = () => {
+    /* Any pay period can be picked - the studio pays a month behind, so the
+       period being paid is usually an earlier one than today's. */
+    const suggestPer = () => {
       const after = runs[0] ? new Date(runs[0].to + "T00:00") : null;
       if (after) after.setDate(after.getDate() + 1);
       const per = periodFor(after || new Date(), settings.schedule);
-      const ids = Object.keys(profiles).filter((id) => db.people.some((p) => p.id === id));
-      if (!ids.length) { setToast("Set up at least one pay profile first."); setTab("profiles"); return; }
-      const run = note({ id: `run:${uid("pr")}`, ...per, status: "draft", createdBy: me.name, lines: ids.map((id) => lineFor(id, per)) }, `Started ${periodLabel(per)}`);
+      return { month: per.from.slice(0, 7), half: settings.schedule === "monthly" ? "whole" : per.from.slice(8, 10) === "01" ? "first" : "second", payDate: "" };
+    };
+    const perOf = (np) => {
+      const [y, mo] = np.month.split("-").map(Number);
+      const last = lastDay(y, mo - 1);
+      return np.half === "first" ? { from: isoOf(y, mo - 1, 1), to: isoOf(y, mo - 1, 15) }
+        : np.half === "second" ? { from: isoOf(y, mo - 1, 16), to: isoOf(y, mo - 1, last) }
+        : { from: isoOf(y, mo - 1, 1), to: isoOf(y, mo - 1, last) };
+    };
+    const newRun = (np) => {
+      const per = perOf(np);
+      const dupe = runs.find((r) => r.from === per.from && r.to === per.to);
+      if (dupe) { setToast(`There's already a run for ${periodLabel(per)} — opened it.`); setNewPer(null); setOpenRun(dupe.id); return; }
+      const ids = Object.keys(profiles).filter((id) => db.people.some((p) => p.id === id) && (profiles[id].type !== "intern" || internInRun(per)));
+      if (!ids.length) { setToast(Object.keys(profiles).length ? "Nobody is paid in that period (interns are only on the 16th–end run)." : "Set up at least one pay profile first."); if (!Object.keys(profiles).length) setTab("profiles"); return; }
+      const run = note({ id: `run:${uid("pr")}`, ...per, payDate: np.payDate || "", status: "draft", createdBy: me.name, createdAt: (/* @__PURE__ */ new Date()).toISOString(), lines: ids.map((id) => lineFor(id, per)) }, `Started ${periodLabel(per)}${np.payDate ? `, to be paid ${longDate(np.payDate)}` : ""}`);
       put(run.id, "run", run, true);
+      setNewPer(null);
       setOpenRun(run.id);
     };
     const leaveIn = (run, pid) => (db.timeoff || []).filter((r) => r.personId === pid && r.status === "approved")
@@ -2752,12 +2788,17 @@
         onYes: () => put(run.id, "run", note({ ...run, lines: run.lines.map((x) => ({ ...x, rateLock: payRates({ ...x, rateLock: null }, settings) })), status: "approved", approvedBy: me.name, approvedAt: (/* @__PURE__ */ new Date()).toISOString() }, "Approved"))
       });
       const reopen = () => paidCount ? setToast("Someone has already been paid in this run — undo their PAID mark first.") : put(run.id, "run", note({ ...run, lines: run.lines.map((x) => ({ ...x, rateLock: null })), status: "draft", approvedBy: null, approvedAt: null }, "Reopened for changes"));
-      const del = () => confirm({ title: "Delete this draft?", lines: [periodLabel(run), "This cannot be undone."], confirmLabel: "Delete draft", onYes: () => { drop(run.id); setOpenRun(null); } });
+      const archive = () => confirm({
+        title: `Archive the ${periodLabel(run)} run?`,
+        lines: ["Use this for a run made by mistake. It leaves the list and isn't counted in the 13th month, but stays under Archived runs, where it can be restored or deleted for good."],
+        confirmLabel: "Archive run",
+        onYes: () => { put(run.id, "run", note({ ...run, archived: true, archivedAt: (/* @__PURE__ */ new Date()).toISOString(), archivedBy: me.name }, "Archived"), true); setOpenRun(null); setToast("Run archived. Find it under Archived runs."); }
+      });
       const exportPayout = () => downloadCsv(`payout-${run.from}-to-${run.to}.csv`, [["Name", "Method", "GCash / account no.", "Account name", "Bank / provider", "Net pay", "Paid", "Reference"],
         ...run.lines.map((l) => { const p = l.payTo || {}; return [l.name, methodLabel(p.method), p.method === "gcash" ? gcashNorm(p.accountNo) : p.accountNo || "", p.accountName || "", p.bank || "", lineMath(l, settings).net.toFixed(2), l.paidAt ? "PAID" : "", l.paidRef || ""]; }),
         ["Total to deposit", "", "", "", "", r2(totals.net).toFixed(2), `${paidCount}/${run.lines.length}`, ""]]);
       const exportSummary = () => downloadCsv(`payroll-summary-${run.from}-to-${run.to}.csv`, [["Name", "Type", "Basic", "Allowance", "OT", "Other earnings", "Total earnings", "Unpaid leave", "Other deductions", "SSS", "Pag-IBIG", "PhilHealth", "Withholding tax", "Total deductions", "Net", "Paid"],
-        ...run.lines.map((l) => { const m = lineMath(l, settings); const wht = l.type === "contractor" ? m.gov : num(l.tax);
+        ...run.lines.map((l) => { const m = lineMath(l, settings); const wht = m.wht;
           return [l.name, l.type, m.basic.toFixed(2), m.allowance.toFixed(2), m.otAmt.toFixed(2), m.plus.toFixed(2), m.earnings.toFixed(2), m.unpaidAmt.toFixed(2), m.minus.toFixed(2), num(l.sss).toFixed(2), num(l.pagibig).toFixed(2), num(l.philhealth).toFixed(2), wht.toFixed(2), m.deductions.toFixed(2), m.net.toFixed(2), l.paidAt ? "PAID" : ""]; }),
         ["Total", "", "", "", "", "", r2(totals.earn).toFixed(2), "", "", "", "", "", "", r2(totals.ded).toFixed(2), r2(totals.net).toFixed(2), `${paidCount}/${run.lines.length}`]]);
       const slips = (lines) => {
@@ -2771,20 +2812,20 @@
       const card = (l) => {
         const m = lineMath(l, settings);
         const off = leaveIn(run, l.personId);
-        const contractor = l.type === "contractor";
+        const contractor = l.type === "contractor", intern = l.type === "intern";
         const pt = l.payTo || {};
         const gc = pt.method === "gcash";
         const shownNo = gc ? gcashPretty(pt.accountNo) : pt.accountNo || "";
         const bad = gc && (!pt.accountNo || !gcashOk(pt.accountNo));
         return h("div", { key: l.personId, className: `ps-pay-card ${l.paidAt ? "paid" : ""}` },
           h("div", { className: "ps-pay-cardhead" },
-            h("span", null, h("b", null, l.name), h("span", { className: "ps-muted" }, " · ", contractor ? "Contractor" : "Employee", " · OT ", peso(m.hour), "/h")),
+            h("span", null, h("b", null, l.name), h("span", { className: "ps-muted" }, " · ", payTypeLabel(l.type), intern ? " · paid once a month" : ` · OT ${peso(m.hour)}/h`)),
             h("span", { className: "ps-pay-netbig" }, peso(m.net))),
           h("div", { className: "ps-pay-cols" },
             h("div", { className: "ps-pay-col" },
               h("b", { className: "ps-pay-colh" }, "Earnings"),
-              h("div", { className: "ps-pay-kv" }, h("span", null, contractor ? "Fee" : "Basic"), h("span", null, peso(m.basic))),
-              m.allowance > 0 && h("div", { className: "ps-pay-kv" }, h("span", null, "Allowance"), h("span", null, peso(m.allowance))),
+              !intern && h("div", { className: "ps-pay-kv" }, h("span", null, contractor ? "Fee" : "Basic"), h("span", null, peso(m.basic))),
+              (m.allowance > 0 || intern) && h("div", { className: "ps-pay-kv" }, h("span", null, "Allowance"), h("span", null, peso(m.allowance))),
               (l.ot || []).map((o, i) => h("div", { key: o.id, className: "ps-pay-kv" },
                 draft ? h("span", { className: "ps-pay-ot" }, "OT ",
                   h("input", { className: "ps-pay-num tiny", inputMode: "decimal", value: o.hours, placeholder: "h", onChange: (e) => setLine(l.personId, { ot: l.ot.map((x) => x.id === o.id ? { ...x, hours: e.target.value } : x) }) }), " h on ",
@@ -2800,19 +2841,22 @@
                   : h("span", null, a.label || "Other"),
                 draft ? null : h("span", null, peso(a.amount)))),
               draft && h("div", { className: "ps-pay-adds" },
-                h("button", { className: "ps-pay-link", onClick: () => setLine(l.personId, { ot: [...l.ot || [], { id: uid("ot"), hours: 1, date: run.from }] }) }, "+ overtime"),
+                !intern && h("button", { className: "ps-pay-link", onClick: () => setLine(l.personId, { ot: [...l.ot || [], { id: uid("ot"), hours: 1, date: run.from }] }) }, "+ overtime"),
                 h("button", { className: "ps-pay-link", onClick: () => setLine(l.personId, { adjustments: [...l.adjustments || [], { id: uid("aj"), label: "", amount: "" }] }) }, "+ other pay or deduction")),
               h("div", { className: "ps-pay-kv total" }, h("span", null, "Total earnings"), h("span", null, peso(m.earnings)))),
             h("div", { className: "ps-pay-col" },
               h("b", { className: "ps-pay-colh" }, "Deductions"),
-              h("div", { className: "ps-pay-kv" }, h("span", null, "Unpaid days ",
+              !intern && h("div", { className: "ps-pay-kv" }, h("span", null, "Unpaid days ",
                 draft ? h("input", { className: "ps-pay-num tiny", inputMode: "decimal", value: l.unpaidDays || "", placeholder: "0", onChange: (e) => setLine(l.personId, { unpaidDays: e.target.value }) }) : num(l.unpaidDays) || "—",
                 off > 0 && h("span", { className: "ps-pay-leave", title: "Approved time off in this period (weekdays). Count it only if it's unpaid." }, off, " day", off === 1 ? "" : "s", " approved leave",
                   draft && num(l.unpaidDays) !== off ? h("button", { className: "ps-pay-link", onClick: () => setLine(l.personId, { unpaidDays: off }) }, "use") : null)),
                 h("span", null, m.unpaidAmt ? "−" + peso(m.unpaidAmt) : "—")),
               (l.adjustments || []).filter((a) => !draft && num(a.amount) < 0).map((a) => h("div", { key: a.id, className: "ps-pay-kv" }, h("span", null, a.label || "Deduction"), h("span", null, "−" + peso(-num(a.amount))))),
-              contractor
-                ? h("div", { className: "ps-pay-kv" }, h("span", null, "Withholding ", draft ? h("span", { className: "ps-pay-pct" }, h("input", { className: "ps-pay-num tiny", inputMode: "decimal", value: l.whtPct || "", placeholder: "0", onChange: (e) => setLine(l.personId, { whtPct: e.target.value }) }), "%") : `${num(l.whtPct)}%`), h("span", null, m.gov ? "−" + peso(m.gov) : "—"))
+              intern ? (m.deductions ? null : h("div", { className: "ps-pay-kv" }, h("span", { className: "ps-muted" }, "No government deductions for interns"), h("span", null, "—")))
+                : contractor
+                ? h(React.Fragment, null,
+                  GOV_KEYS.map(([k, label]) => h("div", { key: k, className: "ps-pay-kv" }, h("span", null, label), inp(l, k))),
+                  h("div", { className: "ps-pay-kv" }, h("span", null, "Withholding ", draft ? h("span", { className: "ps-pay-pct" }, h("input", { className: "ps-pay-num tiny", inputMode: "decimal", value: l.whtPct || "", placeholder: "0", onChange: (e) => setLine(l.personId, { whtPct: e.target.value }) }), "%") : `${num(l.whtPct)}%`), h("span", null, m.wht ? "−" + peso(m.wht) : "—")))
                 : DED_KEYS.map(([k, label]) => h("div", { key: k, className: "ps-pay-kv" }, h("span", null, label), inp(l, k))),
               m.minus > 0 && draft && h("div", { className: "ps-pay-kv" }, h("span", null, "Deductions from the list on the left"), h("span", null, "−" + peso(m.minus))),
               h("div", { className: "ps-pay-kv total" }, h("span", null, "Total deductions"), h("span", null, peso(m.deductions)))),
@@ -2840,11 +2884,12 @@
         h("div", { className: "ps-pay-runhead" },
           h("button", { className: "ps-st-back", onClick: () => setOpenRun(null) }, "← All runs"),
           h("h2", { className: "ps-h2" }, periodLabel(run)),
+          run.payDate && h("span", { className: "ps-muted" }, "Paid out ", longDate(run.payDate)),
           h("span", { className: `ps-chip ps-pay-st ${run.status}` }, run.status === "draft" ? "Draft" : run.status === "approved" ? `Approved · ${paidCount} of ${run.lines.length} paid` : "All paid")),
         fund,
         run.lines.map(card),
         h("div", { className: "ps-btnrow ps-pay-actions" },
-          draft && h("button", { className: "ps-btn ghost small danger-text", onClick: del }, "Delete draft"),
+          h("button", { className: "ps-btn ghost small danger-text", onClick: archive }, "Archive run"),
           !draft && isLead && paidCount === 0 && h("button", { className: "ps-btn ghost small", onClick: reopen }, "Reopen to edit"),
           h("button", { className: "ps-btn ghost small", onClick: () => slips(run.lines) }, "Print all payslips"),
           h("button", { className: "ps-btn ghost small", onClick: exportPayout }, "Payout list (CSV)"),
@@ -2856,7 +2901,34 @@
     const runsTab = openRun && runs.find((r) => r.id === openRun)
       ? RunView({ run: runs.find((r) => r.id === openRun) })
       : h("div", null,
-        h("div", { className: "ps-btnrow ps-pay-top" }, h("button", { className: "ps-btn", onClick: newRun }, "New payroll run")),
+        newPer ? (() => {
+          const months = [];
+          const base = new Date(); base.setDate(1);
+          for (let i = -12; i <= 2; i++) { const d = new Date(base.getFullYear(), base.getMonth() + i, 1); months.push(isoOf(d.getFullYear(), d.getMonth(), 1).slice(0, 7)); }
+          if (!months.includes(newPer.month)) months.push(newPer.month);
+          months.sort().reverse();
+          const per = perOf(newPer);
+          const dupe = runs.find((r) => r.from === per.from && r.to === per.to);
+          const interns = Object.values(profiles).filter((x) => x.type === "intern").length;
+          return h("div", { className: "ps-pay-newrun" },
+            h("b", null, "Which period are you paying?"),
+            h("div", { className: "ps-pay-grid" },
+              h("label", { className: "ps-field" }, h("span", null, "Month worked"),
+                h("select", { value: newPer.month, onChange: (e) => setNewPer({ ...newPer, month: e.target.value }) },
+                  months.map((m) => h("option", { key: m, value: m }, new Date(m + "-01T00:00").toLocaleDateString("en-PH", { month: "long", year: "numeric" }))))),
+              h("label", { className: "ps-field" }, h("span", null, "Period"),
+                h("select", { value: newPer.half, onChange: (e) => setNewPer({ ...newPer, half: e.target.value }) },
+                  h("option", { value: "first" }, "1st – 15th"), h("option", { value: "second" }, "16th – end of month"), h("option", { value: "whole" }, "Whole month"))),
+              h("label", { className: "ps-field" }, h("span", null, "Pay date (optional)"),
+                h(PickerInput, { type: "date", value: newPer.payDate, onChange: (e) => setNewPer({ ...newPer, payDate: e.target.value }), ariaLabel: "Pay date" }))),
+            h("p", { className: "ps-muted ps-pay-hint" }, "Paying ", h("b", null, periodLabel(per)),
+              newPer.payDate ? ` on ${longDate(newPer.payDate)}` : "", ". ",
+              interns ? (internInRun(per) ? "Interns are included (their monthly allowance)." : "Interns aren't included — they're paid on the 16th–end run.") : "",
+              dupe ? " A run for this period already exists — starting will open it." : ""),
+            h("div", { className: "ps-btnrow" },
+              h("button", { className: "ps-btn ghost small", onClick: () => setNewPer(null) }, "Cancel"),
+              h("button", { className: "ps-btn small", onClick: () => newRun(newPer) }, dupe ? "Open existing run" : "Start run")));
+        })() : h("div", { className: "ps-btnrow ps-pay-top" }, h("button", { className: "ps-btn", onClick: () => setNewPer(suggestPer()) }, "New payroll run")),
         runs.length === 0
           ? h("p", { className: "ps-empty" }, "No payroll runs yet. Set up pay profiles, then start the first run.")
           : runs.map((run) => {
@@ -2864,25 +2936,34 @@
             const pc = run.lines.filter((l) => l.paidAt).length;
             return h("button", { key: run.id, className: "ps-pay-runrow", onClick: () => setOpenRun(run.id) },
               h("b", null, periodLabel(run)),
-              h("span", { className: "ps-muted" }, run.lines.length, " people · deposit ", peso(net)),
+              h("span", { className: "ps-muted" }, run.lines.length, " people · deposit ", peso(net), run.payDate ? ` · paid out ${longDate(run.payDate)}` : ""),
               h("span", { className: `ps-chip ps-pay-st ${run.status}` }, run.status === "draft" ? "Draft" : run.status === "approved" ? `${pc} of ${run.lines.length} paid` : "All paid"));
-          }));
+          }),
+        archivedRuns.length > 0 && h("div", { className: "ps-pay-archived" },
+          h("button", { className: "ps-pay-link", onClick: () => setShowArchived(!showArchived) }, showArchived ? "Hide" : "Show", " archived runs (", archivedRuns.length, ")"),
+          showArchived && archivedRuns.map((run) => h("div", { key: run.id, className: "ps-pay-runrow archived" },
+            h("b", null, periodLabel(run)),
+            h("span", { className: "ps-muted" }, run.lines.length, " people · archived ", run.archivedAt ? shortDate(run.archivedAt) : "", run.archivedBy ? ` by ${run.archivedBy}` : ""),
+            h("span", { className: "ps-btnrow" },
+              h("button", { className: "ps-btn ghost small", onClick: () => { put(run.id, "run", note({ ...run, archived: false, archivedAt: null, archivedBy: null }, "Restored from archive"), true); setToast("Run restored."); } }, "Restore"),
+              h("button", { className: "ps-btn ghost small danger-text", onClick: () => confirm({ title: `Delete the ${periodLabel(run)} run for good?`, lines: ["This can't be undone."], confirmLabel: "Delete for good", onYes: () => drop(run.id) }) }, "Delete for good"))))));
 
     /* ---------- 13th month: basic salary only (no allowance, OT or bonuses) ---------- */
     const year = new Date().getFullYear();
     const thirteenth = {};
     runs.filter((r) => r.status !== "draft" && r.from.slice(0, 4) === String(year)).forEach((r) => r.lines.forEach((l) => {
-      if (l.type === "contractor") return;
-      const basicDay = num(l.monthly) / Math.max(1, num(settings.workdays) || 22);
-      thirteenth[l.personId] = r2((thirteenth[l.personId] || 0) + num(l.basic) - num(l.unpaidDays) * basicDay);
+      if (!gets13th(profiles[l.personId] || { type: l.type })) return;
+      const intern = l.type === "intern";
+      const basicDay = (intern ? num(l.allowanceMonthly) : num(l.monthly)) / Math.max(1, num(settings.workdays) || 22);
+      thirteenth[l.personId] = r2((thirteenth[l.personId] || 0) + (intern ? num(l.allowance) : num(l.basic)) - num(l.unpaidDays) * basicDay);
     }));
     const thirteenthTab = h("div", null,
-      h("p", { className: "ps-muted" }, "Basic salary earned in approved or paid runs this year ÷ 12, for employees (allowances, OT and bonuses aren't counted). By law it's due on or before December 24. Contractors aren't included."),
+      h("p", { className: "ps-muted" }, "Basic salary (or a contractor's fee) earned in approved or paid runs this year ÷ 12, for everyone whose pay profile has \u201CInclude in 13th month pay\u201D ticked — on for employees by default, optional for contractors and interns. Allowances, OT and bonuses aren't counted. Due on or before December 24."),
       h("div", { className: "ps-pay-tablewrap" }, h("table", { className: "ps-pay-table" },
-        h("thead", null, h("tr", null, h("th", null, "Employee"), h("th", null, `Basic earned in ${year}`), h("th", null, "13th month so far"))),
+        h("thead", null, h("tr", null, h("th", null, "Name"), h("th", null, `Basic earned in ${year}`), h("th", null, "13th month so far"))),
         h("tbody", null, Object.keys(thirteenth).length === 0
           ? h("tr", null, h("td", { colSpan: 3, className: "ps-muted" }, "Nothing yet — it fills in as runs are approved."))
-          : Object.entries(thirteenth).map(([pid, basic]) => h("tr", { key: pid }, h("td", null, nameOf(pid)), h("td", null, peso(basic)), h("td", { className: "ps-pay-net" }, peso(basic / 12))))))));
+          : Object.entries(thirteenth).map(([pid, basic]) => h("tr", { key: pid }, h("td", null, nameOf(pid), h("span", { className: "ps-muted" }, " · ", payTypeLabel((profiles[pid] || {}).type))), h("td", null, peso(basic)), h("td", { className: "ps-pay-net" }, peso(basic / 12))))))));
 
     /* ---------- settings ---------- */
     const sset = (patch, quiet) => put("settings", "settings", { ...settings, ...patch }, quiet);
@@ -5555,6 +5636,11 @@ ${lines.join("\n")}`);
 .ps-pay-hint{margin:0;font-size:12.5px}
 .ps-pay-form .ps-btnrow{justify-content:flex-end}
 .ps-pay-top{margin-bottom:10px}
+.ps-pay-check{display:flex;align-items:flex-start;gap:8px;margin:10px 0 4px;cursor:pointer;font-weight:600}.ps-pay-check input{margin-top:3px}.ps-pay-check small{font-weight:400}
+.ps-pay-newrun{border:1px solid var(--line);background:var(--card);border-radius:12px;padding:14px 16px;margin-bottom:14px;display:flex;flex-direction:column;gap:10px}
+.ps-pay-archived{margin-top:14px}
+.ps-root .ps-pay-runrow.archived{cursor:default;opacity:.85;flex-wrap:wrap;margin-top:8px}
+.ps-pay-runrow.archived .ps-btnrow{margin-left:auto}
 .ps-root .ps-pay-runrow{display:flex;align-items:center;gap:14px;width:100%;text-align:left;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px 14px;margin-bottom:8px;cursor:pointer}
 .ps-root .ps-pay-runrow:hover{border-color:var(--accent)}
 .ps-pay-runrow .ps-muted{flex:1}

@@ -704,7 +704,7 @@
   var STORE_KEY = "cutline-state-v2";
   /* Every list in the saved file. Each row carries an id, which is how two
      people's edits are reconciled instead of one flattening the other. */
-  var COLLECTIONS = ["clients", "people", "videos", "invoices", "tasks", "meetings", "timeoff", "templates", "archive", "trash"];
+  var COLLECTIONS = ["clients", "people", "videos", "invoices", "tasks", "meetings", "timeoff", "templates", "archive", "trash", "billboards"];
   /* Archive and Trash. A task moves out of `tasks` into one of these, so every
      list, count, notification and the Studio leave it out without being told.
      Trash empties itself after TRASH_DAYS; the archive keeps things. */
@@ -2313,7 +2313,20 @@
   /* ---- Popup announcement -----------------------------------------------
      The Lead puts up one picture. Everyone on the team sees it the next time
      they open the app, closes it, and never sees that one again. */
-  function AnnouncePopup({ a, close }) {
+  /* ---- Studio billboard -------------------------------------------------
+     Posters scheduled by date (Manila time). The one showing today stands on
+     the billboard behind the office in the Studio, and pops up once a day for
+     the team. If two overlap, the one that started most recently wins. */
+  var manilaDay = () => (/* @__PURE__ */ new Date()).toLocaleDateString("en-CA", { timeZone: "Asia/Manila" });
+  var boardOn = (b, day) => !!(b && b.url && b.from && b.from <= day && (!b.to || b.to >= day));
+  var boardToday = (db, day) => {
+    const d = day || manilaDay();
+    const live = ((db && db.billboards) || []).filter((b) => boardOn(b, d));
+    live.sort((a, b) => a.from === b.from ? String(b.at || "").localeCompare(String(a.at || "")) : b.from.localeCompare(a.from));
+    return live[0] || null;
+  };
+  var boardDates = (b) => `${shortDate(fromIso(b.from))} – ${b.to ? shortDate(fromIso(b.to)) : "until replaced"}`;
+  function AnnouncePopup({ a, close, title }) {
     const h = React.createElement;
     useEffect(() => {
       const k = (e) => { if (e.key === "Escape") close(); };
@@ -2321,8 +2334,9 @@
       return () => window.removeEventListener("keydown", k);
     }, []);
     return h("div", { className: "ps-overlay ps-ann-overlay", onClick: (e) => e.target === e.currentTarget && close() },
-      h("div", { className: "ps-ann", role: "dialog", "aria-modal": "true", "aria-label": "Announcement" },
+      h("div", { className: "ps-ann", role: "dialog", "aria-modal": "true", "aria-label": title || "Announcement" },
         h("button", { className: "ps-ann-x", onClick: close, "aria-label": "Close" }, "\xD7"),
+        title && h("p", { className: "ps-ann-title" }, title),
         h("img", { className: "ps-ann-img", src: a.url, alt: a.text || "Announcement" }),
         a.text && h("p", { className: "ps-ann-text" }, a.text),
         h("button", { className: "ps-btn ps-ann-ok", onClick: close }, "Got it")));
@@ -2358,6 +2372,66 @@
           h(PhotoPicker, { label: draft.url ? "Choose a different image" : "Choose an image", setToast, onAdd: (rows) => rows[0] && setDraft((d) => ({ ...d, url: rows[0].url })) }),
           h("input", { placeholder: "Optional message under the picture", maxLength: 300, value: draft.text, onChange: (e) => setDraft({ ...draft, text: e.target.value }) }),
           h("button", { className: "ps-btn", disabled: !draft.url, onClick: publish }, a ? "Replace the current popup" : "Show to everyone"))));
+  }
+  function BillboardSettings({ db, me, mutate, setToast }) {
+    const h = React.createElement;
+    const today = manilaDay();
+    const all = (db.billboards || []).filter((b) => b && b.url);
+    const now = boardToday(db, today);
+    const coming = all.filter((b) => b.from > today).sort((a, b) => a.from.localeCompare(b.from));
+    const ended = all.filter((b) => b.to && b.to < today).sort((a, b) => b.to.localeCompare(a.to));
+    const waiting = all.filter((b) => b !== now && boardOn(b, today));
+    const blank = { url: "", text: "", from: today, to: "" };
+    const [draft, setDraft] = useState(blank);
+    const crew = db.people.filter((p) => p.role !== "client");
+    const seenKey = now ? today + ":" + now.id : "";
+    const seenBy = now ? crew.filter((p) => p.seenBoard === seenKey) : [];
+    const bad = !draft.url ? "" : !draft.from ? "Pick a start date." : draft.to && draft.to < draft.from ? "The end date is before the start date." : "";
+    const startsNow = draft.from && draft.from <= today;
+    const publish = () => {
+      if (!draft.url || bad) return;
+      const id = uid("bb");
+      mutate((n) => {
+        n.billboards = [...(n.billboards || []), { id, url: draft.url, text: draft.text.trim().slice(0, 300), from: draft.from, to: draft.to || "", by: me.id, at: (/* @__PURE__ */ new Date()).toISOString() }];
+        /* whoever puts it up has obviously seen it today */
+        if (startsNow) { const p = n.people.find((x) => x.id === me.id); if (p) p.seenBoard = today + ":" + id; }
+      });
+      setDraft(blank);
+      setToast(startsNow ? "Poster is up. It's on the Studio billboard and pops up for the team today." : `Poster scheduled for ${shortDate(fromIso(draft.from))}.`);
+    };
+    const remove = (b, msg) => { mutate((n) => { n.billboards = (n.billboards || []).filter((x) => x.id !== b.id); }); setToast(msg); };
+    const row = (b, label, msg) => h("div", { key: b.id, className: "ps-bb-row" },
+      h("img", { src: b.url, alt: "" }),
+      h("div", null, h("b", null, boardDates(b)), b.text && h("p", null, b.text)),
+      h("button", { className: "ps-btn ghost small", onClick: () => remove(b, msg) }, label));
+    return h(React.Fragment, null,
+      h("h3", { className: "ps-h3" }, "Studio billboard"),
+      h("p", { className: "ps-muted", style: { marginBottom: 10 } }, "A poster on the billboard outside the office in the Studio tab. While it's running it also pops up once a day for the whole team (not clients). Schedule posters ahead with a start and end date; if two overlap, the one that started most recently shows."),
+      now ? h("div", { className: "ps-ann-current" },
+        h("img", { src: now.url, alt: "" }),
+        h("div", null,
+          h("b", null, "On the billboard today"),
+          h("p", { className: "ps-muted" }, boardDates(now)),
+          now.text && h("p", null, now.text),
+          h("p", { className: "ps-muted" }, `Seen today by ${seenBy.length} of ${crew.length}`, seenBy.length ? ` — ${seenBy.map((p) => p.name.split(/\s+/)[0]).join(", ")}` : ""),
+          h("button", { className: "ps-btn ghost small", onClick: () => remove(now, "Poster taken down.") }, "Take it down")))
+        : h("p", { className: "ps-muted", style: { marginBottom: 10 } }, "Nothing on the billboard today."),
+      (waiting.length > 0 || coming.length > 0) && h("div", { className: "ps-bb-list" },
+        h("b", null, "Coming up"),
+        [...waiting.map((b) => row(b, "Remove", "Removed.")), ...coming.map((b) => row(b, "Cancel", "Scheduled poster cancelled."))]),
+      h("div", { className: "ps-ann-new" },
+        draft.url && h("img", { className: "ps-ann-thumb", src: draft.url, alt: "" }),
+        h("div", { className: "ps-ann-fields" },
+          h(PhotoPicker, { label: draft.url ? "Choose a different poster" : "Choose a poster", setToast, onAdd: (rows) => rows[0] && setDraft((d) => ({ ...d, url: rows[0].url })) }),
+          h("input", { placeholder: "Optional message under the poster", maxLength: 300, value: draft.text, onChange: (e) => setDraft({ ...draft, text: e.target.value }) }),
+          h("div", { className: "ps-bb-dates" },
+            h("label", null, "Starts", h("input", { type: "date", value: draft.from, onChange: (e) => setDraft({ ...draft, from: e.target.value }) })),
+            h("label", null, "Ends (optional)", h("input", { type: "date", value: draft.to, min: draft.from || void 0, onChange: (e) => setDraft({ ...draft, to: e.target.value }) }))),
+          bad && h("p", { className: "ps-bb-bad" }, bad),
+          h("button", { className: "ps-btn", disabled: !draft.url || !!bad, onClick: publish }, startsNow ? "Put it up now" : "Schedule poster"))),
+      ended.length > 0 && h("details", { className: "ps-bb-list" },
+        h("summary", null, `Ended (${ended.length})`),
+        ended.slice(0, 12).map((b) => row(b, "Delete", "Deleted."))));
   }
   /* ---- Archive & Trash page ------------------------------------------- */
   function ArchivePage({ db, me, mutate, setToast, confirm }) {
@@ -4053,6 +4127,7 @@ ${lines.join("\n")}`);
     /* Popup announcement: closed popups are remembered on the person (so it
        stays closed on every device) and in this browser as a fallback. */
     const [annLocal, setAnnLocal] = useState(() => { try { return localStorage.getItem("ps-ann-seen") || ""; } catch (e) { return ""; } });
+    const [boardLocal, setBoardLocal] = useState(() => { try { return localStorage.getItem("ps-board-seen") || ""; } catch (e) { return ""; } });
     /* Who's online right now, and when everyone else was last around. Only a
        real sign-in counts - "viewing as" someone never marks them online. */
     const [online, setOnline] = useState([]);
@@ -4407,6 +4482,17 @@ ${lines.join("\n")}`);
       const signedIn = typeof window !== "undefined" && window.cutlineAuth;
       if (!signedIn || authLock === me.id) mutate((n) => { const p = n.people.find((x) => x.id === me.id); if (p) p.seenAnnounce = annNow.id; });
     };
+    /* The billboard poster pops up once a day (after any announcement). */
+    const boardNow = boardToday(db);
+    const boardKey = boardNow ? manilaDay() + ":" + boardNow.id : "";
+    const showBoard = !!boardNow && !showAnn && me.role !== "client" && me.seenBoard !== boardKey && boardLocal !== boardKey;
+    const closeBoard = () => {
+      if (!boardKey) return;
+      setBoardLocal(boardKey);
+      try { localStorage.setItem("ps-board-seen", boardKey); } catch (e) {}
+      const signedIn = typeof window !== "undefined" && window.cutlineAuth;
+      if (!signedIn || authLock === me.id) mutate((n) => { const p = n.people.find((x) => x.id === me.id); if (p) p.seenBoard = boardKey; });
+    };
     const nav = [
       ["queue", me.role === "client" ? "Your videos" : "My tasks", mine.length + (canApproveTimeoff(db, me) ? pendingTimeoff(db).filter((r) => r.personId !== me.id && ((approverFor(db, r.personId) || {}).id === me.id || (!approverFor(db, r.personId) && me.role === "lead"))).length : 0)],
       ...lead ? [
@@ -4482,7 +4568,7 @@ ${lines.join("\n")}`);
       if (typeof window === "undefined" || typeof window.notifySlack !== "function") return setToast("Slack only works on your own site, not in this preview.");
       window.notifySlack(`✅ Test message from Projeclab Studios — sent by ${me.name}.`);
       setToast("Test sent. Have a look at your Slack channel.");
-    } }, "Send a test message"), /* @__PURE__ */ React.createElement(AnnounceSettings, { db, me, mutate, setToast }), /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Backups"), /* @__PURE__ */ React.createElement("p", { className: "ps-muted", style: { marginBottom: 10 } }, "Every change saves automatically for the whole team. Download a copy now and then so you have one outside the system."), /* @__PURE__ */ React.createElement("div", { className: "ps-form" }, /* @__PURE__ */ React.createElement("button", { className: "ps-btn", onClick: downloadBackup }, "Download a backup"), /* @__PURE__ */ React.createElement("label", { className: "ps-btn ghost ps-filebtn" }, "Restore from a backup", /* @__PURE__ */ React.createElement("input", { type: "file", accept: "application/json,.json", hidden: true, onChange: (e) => { const f = e.target.files && e.target.files[0]; e.target.value = ""; restoreBackup(f); } }))), /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Data"), /* @__PURE__ */ React.createElement("p", { className: "ps-muted", style: { marginBottom: 8 } }, "Replaces everything with the sample studio. Only for testing."), /* @__PURE__ */ React.createElement("button", { className: "ps-btn ghost", onClick: reset }, "Restore demo data"));
+    } }, "Send a test message"), /* @__PURE__ */ React.createElement(AnnounceSettings, { db, me, mutate, setToast }), /* @__PURE__ */ React.createElement(BillboardSettings, { db, me, mutate, setToast }), /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Backups"), /* @__PURE__ */ React.createElement("p", { className: "ps-muted", style: { marginBottom: 10 } }, "Every change saves automatically for the whole team. Download a copy now and then so you have one outside the system."), /* @__PURE__ */ React.createElement("div", { className: "ps-form" }, /* @__PURE__ */ React.createElement("button", { className: "ps-btn", onClick: downloadBackup }, "Download a backup"), /* @__PURE__ */ React.createElement("label", { className: "ps-btn ghost ps-filebtn" }, "Restore from a backup", /* @__PURE__ */ React.createElement("input", { type: "file", accept: "application/json,.json", hidden: true, onChange: (e) => { const f = e.target.files && e.target.files[0]; e.target.value = ""; restoreBackup(f); } }))), /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Data"), /* @__PURE__ */ React.createElement("p", { className: "ps-muted", style: { marginBottom: 8 } }, "Replaces everything with the sample studio. Only for testing."), /* @__PURE__ */ React.createElement("button", { className: "ps-btn ghost", onClick: reset }, "Restore demo data"));
     } else {
       const client = me.role === "client" ? db.clients.find((c) => c.id === me.clientId) : null;
       const waiting = client ? active.filter((v) => !isMine(v, me)) : [];
@@ -4573,7 +4659,7 @@ ${lines.join("\n")}`);
         mutate,
         close: () => setOpenId(null)
       }
-    ), showAnn && /* @__PURE__ */ React.createElement(AnnouncePopup, { a: db.announce, close: closeAnn }), openTaskRow && /* @__PURE__ */ React.createElement(TaskModal, { t: openTaskRow, db, me, lead, updateTask, mutate, setToast, close: () => setTaskId(null), confirm: setConfirming, openTask: setTaskId }), personId && db.people.find((p) => p.id === personId) && /* @__PURE__ */ React.createElement(PersonModal, { person: db.people.find((p) => p.id === personId), db, me, mutate, picker, close: () => setPersonId(null) }), confirming && /* @__PURE__ */ React.createElement("div", { className: "ps-overlay", onClick: (e) => e.target === e.currentTarget && setConfirming(null) }, /* @__PURE__ */ React.createElement("div", { className: "ps-modal ps-confirm", role: "dialog", "aria-modal": "true" }, /* @__PURE__ */ React.createElement("h2", { className: "ps-h2" }, confirming.title), (confirming.lines || []).map((l, i) => /* @__PURE__ */ React.createElement("p", { key: i, className: "ps-muted ps-confirm-line" }, l)), confirming.pick && /* @__PURE__ */ React.createElement("label", { className: "ps-field ps-confirm-pick" }, /* @__PURE__ */ React.createElement("span", null, confirming.pick.label), /* @__PURE__ */ React.createElement("select", { value: handover, onChange: (e) => setHandover(e.target.value) }, confirming.pick.options.map((o) => /* @__PURE__ */ React.createElement("option", { key: o.value || "none", value: o.value }, o.label)))), /* @__PURE__ */ React.createElement("div", { className: "ps-confirm-btns" }, /* @__PURE__ */ React.createElement("button", { className: "ps-btn ghost", onClick: () => setConfirming(null) }, "Cancel"), /* @__PURE__ */ React.createElement("button", { className: "ps-btn danger", onClick: () => {
+    ), showAnn && /* @__PURE__ */ React.createElement(AnnouncePopup, { a: db.announce, close: closeAnn }), showBoard && /* @__PURE__ */ React.createElement(AnnouncePopup, { a: boardNow, close: closeBoard, title: "Today on the billboard" }), openTaskRow && /* @__PURE__ */ React.createElement(TaskModal, { t: openTaskRow, db, me, lead, updateTask, mutate, setToast, close: () => setTaskId(null), confirm: setConfirming, openTask: setTaskId }), personId && db.people.find((p) => p.id === personId) && /* @__PURE__ */ React.createElement(PersonModal, { person: db.people.find((p) => p.id === personId), db, me, mutate, picker, close: () => setPersonId(null) }), confirming && /* @__PURE__ */ React.createElement("div", { className: "ps-overlay", onClick: (e) => e.target === e.currentTarget && setConfirming(null) }, /* @__PURE__ */ React.createElement("div", { className: "ps-modal ps-confirm", role: "dialog", "aria-modal": "true" }, /* @__PURE__ */ React.createElement("h2", { className: "ps-h2" }, confirming.title), (confirming.lines || []).map((l, i) => /* @__PURE__ */ React.createElement("p", { key: i, className: "ps-muted ps-confirm-line" }, l)), confirming.pick && /* @__PURE__ */ React.createElement("label", { className: "ps-field ps-confirm-pick" }, /* @__PURE__ */ React.createElement("span", null, confirming.pick.label), /* @__PURE__ */ React.createElement("select", { value: handover, onChange: (e) => setHandover(e.target.value) }, confirming.pick.options.map((o) => /* @__PURE__ */ React.createElement("option", { key: o.value || "none", value: o.value }, o.label)))), /* @__PURE__ */ React.createElement("div", { className: "ps-confirm-btns" }, /* @__PURE__ */ React.createElement("button", { className: "ps-btn ghost", onClick: () => setConfirming(null) }, "Cancel"), /* @__PURE__ */ React.createElement("button", { className: "ps-btn danger", onClick: () => {
       const f = confirming.onYes;
       setConfirming(null);
       f();
@@ -4675,7 +4761,9 @@ ${lines.join("\n")}`);
     const selRef = useRef(sel);
     selRef.current = sel;
     const HW = halloOn();
-    const layoutKey = rows.map((r) => r.p.id).join(",") + (dark ? ":d" : ":l") + (HW ? ":hw" : "");
+    const board = boardToday(db);
+    const [boardOpen, setBoardOpen] = useState(false);
+    const layoutKey = rows.map((r) => r.p.id).join(",") + (dark ? ":d" : ":l") + (HW ? ":hw" : "") + (board ? ":bb" + board.id + board.url : "");
     const bubble = useRef(null);
 
     /* Build the office. Only rebuilt when people join/leave or the theme flips. */
@@ -4812,6 +4900,55 @@ ${lines.join("\n")}`);
         };
         plant(...u(1295, 262));
         plant(...u(305, 262));
+
+        /* ---------- The billboard behind the office ----------
+           Shows today's poster (Settings -> Studio billboard). The board takes
+           the poster's shape, up to BBW x BBH; click it to see it full size. */
+        const bPicks = [], fitExtra = [];
+        if (board) {
+          const BBW = 5.6, BBH = 3.0, BZ = -D / 2 - 3.6, BY = 1.3;
+          const bb = new THREE.Group();
+          bb.position.set(0.6, 0, BZ);
+          scene.add(bb);
+          const frameC = dark ? "#2B3038" : "#3A3F48";
+          const frame = box(1, 1, 0.16, frameC, 0, 0, 0, bb);
+          const postL = box(0.2, BY, 0.2, frameC, 0, BY / 2, -0.05, bb);
+          const postR = box(0.2, BY, 0.2, frameC, 0, BY / 2, -0.05, bb);
+          const ledge = box(1, 0.06, 0.45, C.trim, 0, BY - 0.06, 0.18, bb);
+          const lampL = box(0.22, 0.1, 0.3, frameC, 0, 0, 0.3, bb);
+          const lampR = box(0.22, 0.1, 0.3, frameC, 0, 0, 0.3, bb);
+          const pg = new THREE.PlaneGeometry(1, 1);
+          geos.push(pg);
+          const pm = new THREE.MeshBasicMaterial({ color: dark ? "#2A2E36" : "#E9E4DA" });
+          extraMats.push(pm);
+          const panel = new THREE.Mesh(pg, pm);
+          panel.position.z = 0.085;
+          bb.add(panel);
+          const shape = (ar) => {
+            const w = ar > BBW / BBH ? BBW : BBH * ar, hh = ar > BBW / BBH ? BBW / ar : BBH;
+            const cy = BY + 0.1 + hh / 2;
+            panel.scale.set(w, hh, 1); panel.position.y = cy;
+            frame.scale.set(w + 0.24, hh + 0.24, 1); frame.position.y = cy;
+            const px = Math.max(0.5, w / 2 - 0.55);
+            postL.position.x = -px; postR.position.x = px;
+            ledge.scale.set(w + 0.24, 1, 1);
+            lampL.position.set(-w / 4, cy + hh / 2 + 0.17, 0.3); lampR.position.set(w / 4, cy + hh / 2 + 0.17, 0.3);
+          };
+          shape(16 / 9);
+          const tl = new THREE.TextureLoader();
+          tl.setCrossOrigin("anonymous");
+          tl.load(board.url, (tex) => {
+            if (dead) { tex.dispose(); return; }
+            texs.push(tex);
+            const img = tex.image;
+            if (img && img.width && img.height) shape(img.width / img.height);
+            pm.map = tex; pm.color.set("#ffffff"); pm.needsUpdate = true;
+          }, undefined, () => {});
+          [frame, panel].forEach((m) => { m.userData.board = true; bPicks.push(m); });
+          /* keep the tallest the board can be in view */
+          const top = BY + 0.1 + BBH + 0.4;
+          fitExtra.push([0.6 - BBW / 2, top, BZ], [0.6 + BBW / 2, top, BZ]);
+        }
 
         /* ---------- Halloween props: pumpkins, gravestones, string lights ---------- */
         const glow = mat("#2A1400", { emissive: "#FFB020", emissiveIntensity: 1.2 });
@@ -5084,7 +5221,10 @@ ${lines.join("\n")}`);
           let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
           const v = new THREE.Vector3();
           const mg = HW ? 1.4 : 0.6;
-          for (const x of [-W / 2 - mg, W / 2 + mg]) for (const z of [-D / 2 - mg, D / 2 + mg]) for (const y of [0, 2.6]) {
+          const pts = [];
+          for (const x of [-W / 2 - mg, W / 2 + mg]) for (const z of [-D / 2 - mg, D / 2 + mg]) for (const y of [0, 2.6]) pts.push([x, y, z]);
+          pts.push(...fitExtra);
+          for (const [x, y, z] of pts) {
             v.set(x, y, z).applyMatrix4(inv);
             x0 = Math.min(x0, v.x); x1 = Math.max(x1, v.x); y0 = Math.min(y0, v.y); y1 = Math.max(y1, v.y);
           }
@@ -5135,8 +5275,10 @@ ${lines.join("\n")}`);
           ray.setFromCamera({ x: (e.clientX - rect.left) / rect.width * 2 - 1, y: -((e.clientY - rect.top) / rect.height) * 2 + 1 }, cam);
           const zh = zPicks.length && ray.intersectObjects(zPicks, false)[0];
           if (zh) { pokeZombie(zh.object.userData.zid); return; }
-          const hit = ray.intersectObjects(pickables, false)[0];
-          setSel(hit ? hit.object.userData.pid : null);
+          const bh = bPicks.length && ray.intersectObjects(bPicks, false)[0];
+          const ph = ray.intersectObjects(pickables, false)[0];
+          if (bh && (!ph || bh.distance < ph.distance)) { setBoardOpen(true); return; }
+          setSel(ph ? ph.object.userData.pid : null);
         };
         const wheel = (e) => { e.preventDefault(); view.zoom = Math.min(3, Math.max(0.6, view.zoom * (e.deltaY > 0 ? 0.9 : 1.1))); size(); };
         cv.addEventListener("pointerdown", down);
@@ -5329,8 +5471,9 @@ ${lines.join("\n")}`);
 
     return h(React.Fragment, null,
       h("div", { className: "ps-ovhead" }, h("span", { className: "ps-ovicon", "aria-hidden": "true" }, "\u{1F3E2}"), h("h1", { className: "ps-h1" }, "Studio")),
-      h("p", { className: "ps-lede" }, "Everyone at their desk, live from the task list. Drag to look around, scroll to zoom, click someone to see their work.", HW ? " \u{1F383} Zombies are prowling outside this week \u2014 click one." : ""),
+      h("p", { className: "ps-lede" }, "Everyone at their desk, live from the task list. Drag to look around, scroll to zoom, click someone to see their work.", board ? " Click the billboard to see today's poster." : "", HW ? " \u{1F383} Zombies are prowling outside this week \u2014 click one." : ""),
       h("div", { className: "ps-st", ref: wrap },
+        boardOpen && board && h(AnnouncePopup, { a: board, close: () => setBoardOpen(false), title: "Today on the billboard" }),
         h("div", { className: `ps-st-stage ${HW ? "hw" : ""}` },
           h("div", { className: "ps-st-canvas", ref: mount }),
           HW && h("div", { className: "ps-st-bubble", ref: bubble, "aria-live": "polite" }),
@@ -5575,6 +5718,16 @@ ${lines.join("\n")}`);
 .ps-ann-fields{display:flex;flex-direction:column;gap:8px;flex:1;min-width:240px;align-items:flex-start}
 .ps-ann-fields input{width:100%}
 @media (prefers-reduced-motion:reduce){.ps-ann{animation:none}}
+.ps-ann-title{margin:0;font-weight:700;font-size:13px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+.ps-bb-list{display:flex;flex-direction:column;gap:8px;margin-bottom:12px}
+.ps-bb-list summary{cursor:pointer;font-weight:600}
+.ps-bb-row{display:flex;gap:12px;align-items:center;border:1px solid var(--line);border-radius:10px;padding:8px;background:var(--card)}
+.ps-bb-row img{width:72px;height:48px;object-fit:cover;border-radius:6px;flex:0 0 auto}
+.ps-bb-row>div{flex:1;min-width:0}
+.ps-bb-row p{margin:2px 0 0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ps-bb-dates{display:flex;gap:10px;flex-wrap:wrap}
+.ps-bb-dates label{display:flex;flex-direction:column;gap:4px;font-size:13px}
+.ps-bb-bad{margin:0;color:var(--late);font-size:13px}
 .ps-bellrow.read .ps-bell-go{opacity:.5}
 .ps-bellrow.read .ps-bell-go:hover{opacity:.85}
 .ps-bellrow.unread .ps-bell-t{font-weight:600}

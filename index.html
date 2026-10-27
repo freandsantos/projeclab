@@ -2466,6 +2466,8 @@
   var DED_KEYS = [["sss", "SSS"], ["pagibig", "Pag-IBIG"], ["philhealth", "PhilHealth"], ["tax", "Withholding tax"]];
   /* Contractors can carry SSS / Pag-IBIG / PhilHealth too; their tax is a % of fees. */
   var GOV_KEYS = DED_KEYS.filter(([k]) => k !== "tax");
+  /* Employer share of SSS / Pag-IBIG / PhilHealth: paid by the studio on top of pay, never deducted. */
+  var ER_KEYS = [["erSss", "SSS"], ["erPagibig", "Pag-IBIG"], ["erPhilhealth", "PhilHealth"]];
   var PAY_TYPES = [["employee", "Employee"], ["contractor", "Contractor"], ["intern", "Intern"]];
   var payTypeLabel = (t) => (PAY_TYPES.find((x) => x[0] === t) || PAY_TYPES[0])[1];
   /* Interns get their allowance once a month, on the 16th-to-month-end run. */
@@ -2517,7 +2519,11 @@
     const wht = l.type === "contractor" ? r2(Math.max(0, earnings - unpaidAmt - minus) * num(l.whtPct) / 100) : l.type === "intern" ? 0 : num(l.tax);
     const gov = r2(benefits + wht);
     const deductions = r2(unpaidAmt + minus + gov);
-    return { basic, allowance, ot, otAmt, plus, minus, unpaidAmt, earnings, gov, wht, benefits, deductions, net: r2(earnings - deductions), day, hour };
+    const net = r2(earnings - deductions);
+    const er = l.type === "intern" ? 0 : r2(ER_KEYS.reduce((t, [k]) => t + num(l[k]), 0));
+    /* What this person costs the studio: their pay-out + gov't deductions to remit + employer share. */
+    const cost = r2(net + gov + er);
+    return { basic, allowance, ot, otAmt, plus, minus, unpaidAmt, earnings, gov, wht, benefits, deductions, net, er, cost, day, hour };
   };
   var downloadCsv = (name, rows) => {
     const esc = (v) => { const t = String(v == null ? "" : v); return /[",\n]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t; };
@@ -2714,6 +2720,11 @@
       const intern = pr.type === "intern";
       const ded = {};
       DED_KEYS.forEach(([k]) => { const when = pr[k + "When"] || "both"; ded[k] = intern || (pr.type === "contractor" && k === "tax") ? 0 : when === "both" || when === half ? num(pr[k]) : 0; });
+      /* Employer share starts from this person's last run for the same payout (1st or 2nd half). */
+      const sameHalf = (r) => settings.schedule === "monthly" || (Number(r.from.slice(8, 10)) <= 15) === (half === "first");
+      const prevRun = runs.find((r) => sameHalf(r) && r.lines.some((x) => x.personId === pid));
+      const prevLine = prevRun ? prevRun.lines.find((x) => x.personId === pid) : {};
+      ER_KEYS.forEach(([k]) => { ded[k] = intern ? 0 : num(prevLine[k]); });
       return {
         personId: pid, name: p ? p.name : "Former teammate", type: pr.type || "employee", monthly: intern ? 0 : monthly, allowanceMonthly,
         basic: intern ? 0 : r2(monthly / split), allowance: intern ? r2(allowanceMonthly) : r2(allowanceMonthly / split),
@@ -2760,12 +2771,24 @@
       const locked = !draft;
       const paidCount = run.lines.filter((l) => l.paidAt).length;
       const setLine = (pid, patch) => putRun({ ...run, lines: run.lines.map((l) => l.personId === pid ? { ...l, ...patch } : l) });
-      const totals = run.lines.reduce((t, l) => { const m = lineMath(l, settings); const meth = (l.payTo || {}).method || "gcash"; t.earn += m.earnings; t.ded += m.deductions; t.net += m.net; if (l.paidAt) t.sent += m.net; t.by[meth] = (t.by[meth] || 0) + m.net; return t; }, { earn: 0, ded: 0, net: 0, sent: 0, by: {} });
+      const totals = run.lines.reduce((t, l) => { const m = lineMath(l, settings); const meth = (l.payTo || {}).method || "gcash"; t.earn += m.earnings; t.ded += m.deductions; t.net += m.net; if (l.paidAt) t.sent += m.net; t.by[meth] = (t.by[meth] || 0) + m.net;
+        t.er += m.er; t.wht += m.wht; t.cost += m.cost;
+        if (l.type !== "intern") GOV_KEYS.forEach(([k], i) => { t.ag[k].ee += num(l[k]); t.ag[k].er += num(l[ER_KEYS[i][0]]); });
+        return t; }, { earn: 0, ded: 0, net: 0, sent: 0, by: {}, er: 0, wht: 0, cost: 0, ag: { sss: { ee: 0, er: 0 }, pagibig: { ee: 0, er: 0 }, philhealth: { ee: 0, er: 0 } } });
+      const remit = r2(totals.cost - totals.net);
       const toSend = r2(totals.net - totals.sent);
       const fund = h("div", { className: "ps-pay-fund" },
         h("div", { className: "ps-pay-fundmain" }, h("span", { className: "ps-muted" }, "Deposit to cover this payroll"), h("b", { className: "ps-pay-fundamt" }, peso(totals.net)),
           h("button", { className: "ps-pay-link", onClick: () => copy(r2(totals.net).toFixed(2), "Total") }, "Copy")),
         Object.keys(totals.by).length > 1 && h("div", { className: "ps-pay-fundby" }, Object.keys(totals.by).map((k) => h("span", { key: k }, methodLabel(k), " ", h("b", null, peso(totals.by[k]))))),
+        remit > 0 && h("div", { className: "ps-pay-fundgov" },
+          h("div", { className: "ps-pay-fundgovh" }, h("span", { className: "ps-muted" }, "Government contributions to remit"), h("b", null, peso(remit))),
+          h("div", { className: "ps-pay-fundby" },
+            GOV_KEYS.map(([k, label]) => { const a = totals.ag[k]; const all = r2(a.ee + a.er); return all > 0 && h("span", { key: k }, label, " ", h("b", null, peso(all)), h("small", { className: "ps-muted" }, ` (employee ${peso(a.ee)} + employer ${peso(a.er)})`)); }),
+            totals.wht > 0 && h("span", null, "Withholding tax ", h("b", null, peso(totals.wht))))),
+        remit > 0 && h("div", { className: "ps-pay-fundcost" },
+          h("span", null, "Employer share ", h("b", null, peso(totals.er))),
+          h("span", null, "Total payroll cost ", h("b", { className: "ps-pay-costamt" }, peso(totals.cost)), h("small", { className: "ps-muted" }, " — pay-outs + everything to remit"))),
         !draft && h("div", { className: "ps-pay-fundprog" },
           h("span", null, "Sent ", h("b", null, peso(totals.sent))),
           h("span", { className: toSend > 0 ? "left" : "done" }, toSend > 0 ? h(React.Fragment, null, "Still to send ", h("b", null, peso(toSend))) : "Everything sent"),
@@ -2783,7 +2806,7 @@
       });
       const approve = () => confirm({
         title: `Approve payroll for ${periodLabel(run)}?`,
-        lines: [`${run.lines.length} people · net total ${peso(totals.net)}.`, "Approved runs are locked, and then each person can be marked as paid."],
+        lines: [`${run.lines.length} people · net total ${peso(totals.net)}.`, ...(remit > 0 ? [`Employer share ${peso(totals.er)} · total payroll cost ${peso(totals.cost)}.`] : []), "Approved runs are locked, and then each person can be marked as paid."],
         confirmLabel: "Approve",
         onYes: () => put(run.id, "run", note({ ...run, lines: run.lines.map((x) => ({ ...x, rateLock: payRates({ ...x, rateLock: null }, settings) })), status: "approved", approvedBy: me.name, approvedAt: (/* @__PURE__ */ new Date()).toISOString() }, "Approved"))
       });
@@ -2797,10 +2820,10 @@
       const exportPayout = () => downloadCsv(`payout-${run.from}-to-${run.to}.csv`, [["Name", "Method", "GCash / account no.", "Account name", "Bank / provider", "Net pay", "Paid", "Reference"],
         ...run.lines.map((l) => { const p = l.payTo || {}; return [l.name, methodLabel(p.method), p.method === "gcash" ? gcashNorm(p.accountNo) : p.accountNo || "", p.accountName || "", p.bank || "", lineMath(l, settings).net.toFixed(2), l.paidAt ? "PAID" : "", l.paidRef || ""]; }),
         ["Total to deposit", "", "", "", "", r2(totals.net).toFixed(2), `${paidCount}/${run.lines.length}`, ""]]);
-      const exportSummary = () => downloadCsv(`payroll-summary-${run.from}-to-${run.to}.csv`, [["Name", "Type", "Basic", "Allowance", "OT", "Other earnings", "Total earnings", "Unpaid leave", "Other deductions", "SSS", "Pag-IBIG", "PhilHealth", "Withholding tax", "Total deductions", "Net", "Paid"],
+      const exportSummary = () => downloadCsv(`payroll-summary-${run.from}-to-${run.to}.csv`, [["Name", "Type", "Basic", "Allowance", "OT", "Other earnings", "Total earnings", "Unpaid leave", "Other deductions", "SSS", "Pag-IBIG", "PhilHealth", "Withholding tax", "Total deductions", "Net", "SSS (employer)", "Pag-IBIG (employer)", "PhilHealth (employer)", "Employer share total", "Total cost", "Paid"],
         ...run.lines.map((l) => { const m = lineMath(l, settings); const wht = m.wht;
-          return [l.name, l.type, m.basic.toFixed(2), m.allowance.toFixed(2), m.otAmt.toFixed(2), m.plus.toFixed(2), m.earnings.toFixed(2), m.unpaidAmt.toFixed(2), m.minus.toFixed(2), num(l.sss).toFixed(2), num(l.pagibig).toFixed(2), num(l.philhealth).toFixed(2), wht.toFixed(2), m.deductions.toFixed(2), m.net.toFixed(2), l.paidAt ? "PAID" : ""]; }),
-        ["Total", "", "", "", "", "", r2(totals.earn).toFixed(2), "", "", "", "", "", "", r2(totals.ded).toFixed(2), r2(totals.net).toFixed(2), `${paidCount}/${run.lines.length}`]]);
+          return [l.name, l.type, m.basic.toFixed(2), m.allowance.toFixed(2), m.otAmt.toFixed(2), m.plus.toFixed(2), m.earnings.toFixed(2), m.unpaidAmt.toFixed(2), m.minus.toFixed(2), num(l.sss).toFixed(2), num(l.pagibig).toFixed(2), num(l.philhealth).toFixed(2), wht.toFixed(2), m.deductions.toFixed(2), m.net.toFixed(2), ...ER_KEYS.map(([k]) => (l.type === "intern" ? 0 : num(l[k])).toFixed(2)), m.er.toFixed(2), m.cost.toFixed(2), l.paidAt ? "PAID" : ""]; }),
+        ["Total", "", "", "", "", "", r2(totals.earn).toFixed(2), "", "", "", "", "", "", r2(totals.ded).toFixed(2), r2(totals.net).toFixed(2), "", "", "", r2(totals.er).toFixed(2), r2(totals.cost).toFixed(2), `${paidCount}/${run.lines.length}`]]);
       const slips = (lines) => {
         const w = window.open("", "_blank");
         if (!w) { setToast("Your browser blocked the payslip window. Allow pop-ups for this site and try again."); return; }
@@ -2859,7 +2882,11 @@
                   h("div", { className: "ps-pay-kv" }, h("span", null, "Withholding ", draft ? h("span", { className: "ps-pay-pct" }, h("input", { className: "ps-pay-num tiny", inputMode: "decimal", value: l.whtPct || "", placeholder: "0", onChange: (e) => setLine(l.personId, { whtPct: e.target.value }) }), "%") : `${num(l.whtPct)}%`), h("span", null, m.wht ? "−" + peso(m.wht) : "—")))
                 : DED_KEYS.map(([k, label]) => h("div", { key: k, className: "ps-pay-kv" }, h("span", null, label), inp(l, k))),
               m.minus > 0 && draft && h("div", { className: "ps-pay-kv" }, h("span", null, "Deductions from the list on the left"), h("span", null, "−" + peso(m.minus))),
-              h("div", { className: "ps-pay-kv total" }, h("span", null, "Total deductions"), h("span", null, peso(m.deductions)))),
+              h("div", { className: "ps-pay-kv total" }, h("span", null, "Total deductions"), h("span", null, peso(m.deductions))),
+              !intern && (draft || m.er > 0) && h("div", { className: "ps-pay-er" },
+                h("b", { className: "ps-pay-erh" }, "Employer share", h("small", { className: "ps-muted" }, " — paid by the studio, not deducted")),
+                ER_KEYS.map(([k, label]) => h("div", { key: k, className: "ps-pay-kv" }, h("span", null, label), inp(l, k))),
+                h("div", { className: "ps-pay-kv total" }, h("span", null, "Employer share total"), h("span", null, peso(m.er))))),
             h("div", { className: "ps-pay-col ps-pay-payto" },
               h("b", { className: "ps-pay-colh" }, "Pay to"),
               h("div", { className: "ps-pay-method" }, methodLabel(pt.method), pt.bank && pt.method !== "gcash" ? ` · ${pt.bank}` : ""),
@@ -2933,10 +2960,11 @@
           ? h("p", { className: "ps-empty" }, "No payroll runs yet. Set up pay profiles, then start the first run.")
           : runs.map((run) => {
             const net = run.lines.reduce((t, l) => t + lineMath(l, settings).net, 0);
+            const cost = run.lines.reduce((t, l) => t + lineMath(l, settings).cost, 0);
             const pc = run.lines.filter((l) => l.paidAt).length;
             return h("button", { key: run.id, className: "ps-pay-runrow", onClick: () => setOpenRun(run.id) },
               h("b", null, periodLabel(run)),
-              h("span", { className: "ps-muted" }, run.lines.length, " people · deposit ", peso(net), run.payDate ? ` · paid out ${longDate(run.payDate)}` : ""),
+              h("span", { className: "ps-muted" }, run.lines.length, " people · deposit ", peso(net), r2(cost) > r2(net) ? ` · total cost ${peso(cost)}` : "", run.payDate ? ` · paid out ${longDate(run.payDate)}` : ""),
               h("span", { className: `ps-chip ps-pay-st ${run.status}` }, run.status === "draft" ? "Draft" : run.status === "approved" ? `${pc} of ${run.lines.length} paid` : "All paid"));
           }),
         archivedRuns.length > 0 && h("div", { className: "ps-pay-archived" },
@@ -5696,7 +5724,7 @@ ${lines.join("\n")}`);
 .ps-pay-paid{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-top:4px;font-size:12.5px}
 .ps-pay-stamp{background:#6BF05A;color:#0B3B07;font-weight:800;letter-spacing:.08em;padding:3px 12px;border-radius:4px}
 .ps-pay-slip{align-self:flex-start;padding:0 !important}
-.ps-pay-runtot{margin-left:auto;font-size:14px}.ps-pay-fund{border:1px solid var(--ps-line,#ddd);border-radius:12px;padding:12px 14px;margin:10px 0 14px;display:flex;flex-direction:column;gap:6px;background:var(--ps-card,transparent)}.ps-pay-fundmain{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}.ps-pay-fundamt{font-size:24px;font-variant-numeric:tabular-nums}.ps-pay-fundby{display:flex;gap:14px;flex-wrap:wrap;font-size:13px}.ps-pay-fundprog{display:flex;gap:14px;flex-wrap:wrap;align-items:center;font-size:13px}.ps-pay-fundprog .left b{color:#c2410c}.ps-pay-fundprog .done{color:#15803d;font-weight:600}.ps-pay-bar{flex-basis:100%;height:6px;border-radius:4px;background:rgba(127,127,127,.2);overflow:hidden}.ps-pay-bar i{display:block;height:100%;background:#16a34a}
+.ps-pay-runtot{margin-left:auto;font-size:14px}.ps-pay-fund{border:1px solid var(--ps-line,#ddd);border-radius:12px;padding:12px 14px;margin:10px 0 14px;display:flex;flex-direction:column;gap:6px;background:var(--ps-card,transparent)}.ps-pay-fundmain{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}.ps-pay-fundamt{font-size:24px;font-variant-numeric:tabular-nums}.ps-pay-fundby{display:flex;gap:14px;flex-wrap:wrap;font-size:13px}.ps-pay-fundprog{display:flex;gap:14px;flex-wrap:wrap;align-items:center;font-size:13px}.ps-pay-fundprog .left b{color:#c2410c}.ps-pay-fundprog .done{color:#15803d;font-weight:600}.ps-pay-bar{flex-basis:100%;height:6px;border-radius:4px;background:rgba(127,127,127,.2);overflow:hidden}.ps-pay-bar i{display:block;height:100%;background:#16a34a}.ps-pay-fundgov{border-top:1px dashed var(--ps-line,#ddd);padding-top:6px;display:flex;flex-direction:column;gap:4px}.ps-pay-fundgovh{display:flex;gap:10px;align-items:baseline;flex-wrap:wrap}.ps-pay-fundgovh b{font-size:17px;font-variant-numeric:tabular-nums}.ps-pay-fundcost{display:flex;gap:18px;flex-wrap:wrap;align-items:baseline;font-size:13.5px}.ps-pay-costamt{font-size:17px;font-variant-numeric:tabular-nums}.ps-pay-er{margin-top:10px;padding-top:6px;border-top:1px dashed var(--line,#ddd);display:flex;flex-direction:column;gap:4px}.ps-pay-erh{font-size:13px}.ps-pay-erh small{font-weight:400}
 .ps-pay-val{font-variant-numeric:tabular-nums}
 .ps-pay-bad input{border-color:var(--late)}
 .ps-pay-bad small{color:var(--late)}

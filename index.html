@@ -157,14 +157,19 @@
   var MATRIX = [].concat(u32(0x10000), u32(0), u32(0), u32(0), u32(0x10000), u32(0), u32(0), u32(0), u32(0x40000000));
   function zeros(n) { var a = []; for (var i = 0; i < n; i++) a.push(0); return a; }
 
-  function buildMov(pngBlobs, width, height, fps) {
+  // share = true: a frame that is the same picture as the one before points at the same bytes instead of
+  // storing them again (much smaller files for long holds; every frame still has its own entry).
+  function buildMov(pngBlobs, width, height, fps, share) {
     var timescale = fps * 1000, frameDur = 1000; // integer fps
     var n = pngBlobs.length, dur = n * frameDur;
     var sizes = pngBlobs.map(function (b) { return b.size; });
     var ftyp = atom('ftyp', str('qt  ').concat(u32(0x20050300), str('qt  ')));
-    var mdatLen = 8 + sizes.reduce(function (a, b) { return a + b; }, 0);
-    var offsets = [], off = ftyp.length + 8;
-    sizes.forEach(function (s) { offsets.push(off); off += s; });
+    var offsets = [], off = ftyp.length + 8, stored = [];
+    pngBlobs.forEach(function (b, i) {
+      if (share && i > 0 && b === pngBlobs[i - 1]) { offsets.push(offsets[i - 1]); return; }
+      offsets.push(off); off += b.size; stored.push(b);
+    });
+    var mdatLen = 8 + stored.reduce(function (a, b) { return a + b.size; }, 0);
 
     var mvhd = atom('mvhd', [0, 0, 0, 0].concat(u32(0), u32(0), u32(timescale), u32(dur), fixed(1), u16(0x0100), zeros(10), MATRIX, u32(0), u32(0), u32(0), u32(0), u32(0), u32(0), u32(2)));
     var tkhd = atom('tkhd', [0, 0, 0, 0x0f].concat(u32(0), u32(0), u32(1), u32(0), u32(dur), zeros(8), u16(0), u16(0), u16(0), u16(0), MATRIX, fixed(width), fixed(height)));
@@ -187,7 +192,7 @@
     var mdia = atom('mdia', mdhd.concat(hdlrM, minf));
     var trak = atom('trak', tkhd.concat(mdia));
     var moov = atom('moov', mvhd.concat(trak));
-    var parts = [new Uint8Array(ftyp), new Uint8Array(u32(mdatLen).concat(str('mdat')))].concat(pngBlobs, [new Uint8Array(moov)]);
+    var parts = [new Uint8Array(ftyp), new Uint8Array(u32(mdatLen).concat(str('mdat')))].concat(stored, [new Uint8Array(moov)]);
     return new Blob(parts, { type: 'video/quicktime' });
   }
 
@@ -573,7 +578,550 @@
   }
 
   window.mountWordSummary = mount;
-  window.WordSummaryCore = { stateAt: stateAt, drawFrame: drawFrame, buildMov: buildMov, renderClip: renderClip, L: L };
+  window.WordSummaryCore = { stateAt: stateAt, drawFrame: drawFrame, buildMov: buildMov, buildZip: buildZip, renderClip: renderClip, L: L, ensureCss: function () { if (!document.getElementById('ws-css')) { var st = document.createElement('style'); st.id = 'ws-css'; st.textContent = CSS; document.head.appendChild(st); } } };
+})();
+
+</script>
+
+<!-- Editor tools: Shadowing Segment (Volk English teleprompter scroller). Uses WordSummaryCore above. -->
+<script>
+/* Projeclab — Shadowing Segment tool (Volk English)
+   mountShadowing(rootEl, cfg) renders the tool. Needs window.WordSummaryCore (buildMov, buildZip, ensureCss).
+   A teleprompter-style scroller: the current part of the script is big and yellow in the middle, the next
+   part waits small and faint below. On each change the current part tips into italic word by word, dims,
+   the next part lights up, then both slide (old one shrinks up and fades, new one grows into the middle). */
+(function () {
+  'use strict';
+  var W = 1920, H = 1080, FPS = 24, FONT = 'InterWS';
+  var S = {
+    CY: 520,            // middle of the current block
+    maxW: 1780,         // widest a line may be
+    size: 90,           // base font size (1080p px)
+    track: -0.03,       // letter spacing (em)
+    lh: 1.08,           // line height (x font size)
+    gap: 22,            // space between blocks
+    nextScale: 0.52, prevScale: 0.5,
+    nextOp: 0.08, prevOp: 0.15,
+    skew: 0.21          // italic slant (tan 12deg)
+  };
+  // Timing (seconds) around a change at time D (the moment the slide starts)
+  var TM = { waveStart: 1.2, waveStep: 0.22, waveRamp: 0.15, dimStart: 0.55, dimTo: 0.22, lightStart: 0.35, lightEnd: 0.1, move: 0.45, prevFade: 1.2, nextIn0: 0.2, nextIn1: 0.7, enterStep: 0.05, enterUp: 0.1, enterDown: 0.25 };
+
+  function clamp(v, a, b) { return v < a ? a : v > b ? b : v; }
+  function ease(p) { p = clamp(p, 0, 1); return p < 0.5 ? 4 * p * p * p : 1 - Math.pow(-2 * p + 2, 3) / 2; }
+  function lerp(a, b, p) { return a + (b - a) * p; }
+  function ramp(t, a, b) { return b <= a ? (t >= b ? 1 : 0) : clamp((t - a) / (b - a), 0, 1); }
+
+  // ---------- script parsing ----------
+  // Blank lines split parts; line breaks inside a part are kept. With no blank lines, each line is a part.
+  function parseScript(text) {
+    var t = String(text || '').replace(/\r/g, '').trim();
+    if (!t) return [];
+    var parts = /\n\s*\n/.test(t) ? t.split(/\n\s*\n+/) : t.split(/\n/);
+    return parts.map(function (p) { return p.split('\n').map(function (l) { return l.trim().replace(/\s+/g, ' '); }).filter(Boolean); }).filter(function (p) { return p.length; });
+  }
+
+  // ---------- layout (cached per part) ----------
+  var mctx = document.createElement('canvas').getContext('2d');
+  function setFont(ctx, size) { ctx.font = '700 ' + size + 'px ' + FONT; if ('letterSpacing' in ctx) ctx.letterSpacing = (S.track * size) + 'px'; }
+  function layoutPart(lines, scale) {
+    var size = S.size * (scale || 1);
+    setFont(mctx, size);
+    // a one-line part that is too wide gets wrapped; parts with your own line breaks are shrunk to fit instead
+    var out = [];
+    if (lines.length > 1) out = lines.slice();
+    else lines.forEach(function (line) {
+      var words = line.split(' '), cur = '';
+      words.forEach(function (w) {
+        var test = cur ? cur + ' ' + w : w;
+        if (cur && mctx.measureText(test).width > S.maxW) { out.push(cur); cur = w; } else cur = test;
+      });
+      if (cur) out.push(cur);
+    });
+    var widest = Math.max.apply(null, out.map(function (l) { return mctx.measureText(l).width; }).concat([1]));
+    if (widest > S.maxW) { size = size * S.maxW / widest; setFont(mctx, size); }
+    var space = mctx.measureText(' ').width, lh = size * S.lh, wi = 0;
+    var rows = out.map(function (l) {
+      var ws = l.split(' ').map(function (w) { var m = mctx.measureText(w).width; return { t: w, w: m, i: wi++ }; });
+      var total = ws.reduce(function (a, b) { return a + b.w; }, 0) + space * (ws.length - 1);
+      var x = -total / 2;
+      ws.forEach(function (w) { w.x = x; x += w.w + space; });
+      return ws;
+    });
+    return { size: size, lh: lh, h: rows.length * lh, rows: rows, words: wi };
+  }
+
+  // ---------- state of every part at time t ----------
+  // parts: [{lines}], times: arrival time of each part (times[0] = 0)
+  function slotY(kind, curH, h) {
+    if (kind === 'center') return S.CY;
+    if (kind === 'next') return S.CY + curH / 2 + S.gap + h / 2;
+    return S.CY - curH / 2 - S.gap - h / 2; // prev
+  }
+  function partsAt(t, L, times) {
+    var n = L.length, out = [];
+    if (!n) return out;
+    var k = 0;
+    for (var i = 1; i < n; i++) if (times[i] <= t) k = i;
+    for (var j = Math.max(0, k - 1); j <= Math.min(n - 1, k + 1); j++) {
+      var A = j === 0 ? -1e9 : times[j], D = j + 1 < n ? times[j + 1] : 1e9, Aprev = j - 1 >= 1 ? times[j - 1] : (j === 1 ? -1e9 : null);
+      var lay = L[j], st = { j: j, lay: lay, skew: [] };
+      if (t < A) {
+        // waiting below as "next" (only when it's the one right after the current part)
+        var curH = L[j - 1].h;
+        st.y = slotY('next', curH, lay.h * S.nextScale); st.s = S.nextScale;
+        var fadeIn = Aprev === null ? 1 : (Aprev < -1e8 ? 1 : ramp(t, Aprev + TM.nextIn0, Aprev + TM.nextIn1));
+        var light = ramp(t, A - TM.lightStart, A - TM.lightEnd);
+        st.o = lerp(S.nextOp * fadeIn, 1, light);
+      } else if (t < D) {
+        // arriving / current
+        var p = ease(ramp(t, A, A + TM.move));
+        var fromH = j > 0 ? L[j - 1].h : lay.h;
+        st.y = lerp(slotY('next', fromH, lay.h * S.nextScale), S.CY, p); st.s = lerp(S.nextScale, 1, p); st.o = 1;
+        if (j === 0) { st.y = S.CY; st.s = 1; }
+        // dim before leaving
+        st.o = lerp(1, TM.dimTo, ramp(t, D - TM.dimStart, D));
+      } else {
+        // leaving: slide up to "prev" and fade out
+        var q = ease(ramp(t, D, D + TM.move));
+        var nextH = j + 1 < n ? L[j + 1].h : lay.h;
+        st.y = lerp(S.CY, slotY('prev', nextH, lay.h * S.prevScale), q);
+        st.s = lerp(1, S.prevScale, q);
+        st.o = t < D + TM.move ? lerp(TM.dimTo, S.prevOp, q) : lerp(S.prevOp, 0, ramp(t, D + TM.move, D + TM.prevFade));
+      }
+      // per-word italic: tip in word by word before leaving
+      for (var w = 0; w < lay.words; w++) {
+        var out1 = D < 1e8 ? ramp(t, D - TM.waveStart + w * TM.waveStep, D - TM.waveStart + w * TM.waveStep + TM.waveRamp) : 0;
+        st.skew.push(out1); // no italic wiggle after arriving (that was an editing slip in the sample)
+      }
+      if (st.o > 0.002) out.push(st);
+    }
+    return out;
+  }
+  function sigOf(list) { return list.map(function (s) { return [s.j, s.y.toFixed(2), s.s.toFixed(4), s.o.toFixed(3), s.skew.map(function (k) { return k.toFixed(2); }).join(',')].join(':'); }).join('|'); }
+
+  function hexRgb(hx) { var m = /^#?([0-9a-f]{6})$/i.exec(hx || ''); var v = m ? parseInt(m[1], 16) : 0xFED834; return [(v >> 16) & 255, (v >> 8) & 255, v & 255]; }
+  function drawAt(ctx, list, color, k) {
+    ctx.setTransform(k, 0, 0, k, 0, 0);
+    ctx.clearRect(0, 0, W, H);
+    var c = hexRgb(color);
+    list.forEach(function (st) {
+      var lay = st.lay;
+      ctx.save();
+      ctx.translate(W / 2, st.y); ctx.scale(st.s, st.s);
+      ctx.fillStyle = 'rgba(' + c[0] + ',' + c[1] + ',' + c[2] + ',' + st.o.toFixed(4) + ')';
+      setFont(ctx, lay.size); ctx.textBaseline = 'alphabetic';
+      var top = -lay.h / 2;
+      lay.rows.forEach(function (row, r) {
+        var base = top + r * lay.lh + lay.lh * 0.5 + lay.size * 0.36;
+        row.forEach(function (w) {
+          var sk = st.skew[w.i] || 0;
+          if (sk > 0.001) { ctx.save(); ctx.translate(w.x, base); ctx.transform(1, 0, -S.skew * sk, 1, 0, 0); ctx.fillText(w.t, 0, 0); ctx.restore(); }
+          else ctx.fillText(w.t, w.x, base);
+        });
+      });
+      ctx.restore();
+    });
+  }
+
+  // ---------- audio helpers ----------
+  function envelope(buf) {
+    var ch = buf.numberOfChannels, sr = buf.sampleRate, hop = Math.round(sr * 0.02), n = Math.floor(buf.length / hop), env = new Float32Array(n);
+    var data = []; for (var c = 0; c < ch; c++) data.push(buf.getChannelData(c));
+    for (var i = 0; i < n; i++) { var s = 0; for (var c2 = 0; c2 < ch; c2++) { var d = data[c2]; for (var k = i * hop; k < (i + 1) * hop; k += 4) s += d[k] * d[k]; } env[i] = Math.sqrt(s / (ch * hop / 4)); }
+    return { env: env, step: 0.02 };
+  }
+  // Pick part changes from the pauses in the voice: the N-1 longest pauses, each change just before speech resumes.
+  function autoTimes(envObj, count, lead, weights) {
+    var env = envObj.env, step = envObj.step, sorted = Array.prototype.slice.call(env).sort(function (a, b) { return a - b; });
+    var lo = sorted[Math.floor(sorted.length * 0.1)] || 0, hi = sorted[Math.floor(sorted.length * 0.9)] || 1;
+    var thr = lo + (hi - lo) * 0.12, gaps = [], start = null, firstVoice = null;
+    for (var i = 0; i < env.length; i++) {
+      var quiet = env[i] < thr;
+      if (!quiet && firstVoice === null) firstVoice = i * step;
+      if (quiet && start === null) start = i;
+      if (!quiet && start !== null) { if ((i - start) * step >= 0.3 && firstVoice !== null && start * step > firstVoice) gaps.push({ a: start * step, b: i * step, len: (i - start) * step }); start = null; }
+    }
+    if (gaps.length < count - 1) return null;
+    lead = lead == null ? 0.25 : lead;
+    var times;
+    if (weights && weights.length === count) {
+      // Expected change points from how long each part is, then pick one pause per change (in order),
+      // favouring long pauses close to where the change is expected.
+      var lastVoice = 0; for (var q = env.length - 1; q >= 0; q--) if (env[q] >= thr) { lastVoice = q * step; break; }
+      var span = Math.max(1, lastVoice - (firstVoice || 0)), tot = weights.reduce(function (a, b) { return a + b; }, 0), acc = 0, E = [];
+      for (var e = 0; e < count - 1; e++) { acc += weights[e]; E.push((firstVoice || 0) + span * acc / tot); }
+      var avg = span / count, K = gaps.length, M = count - 1, INF = 1e18;
+      var cost = function (m, k) { return -Math.min(gaps[k].len, 3) + 1.6 * Math.abs(gaps[k].b - E[m]) / avg; };
+      var dp = [], from = [];
+      for (var m = 0; m < M; m++) { dp.push(new Array(K).fill(INF)); from.push(new Array(K).fill(-1)); }
+      for (var k = 0; k < K; k++) dp[0][k] = cost(0, k);
+      for (var m2 = 1; m2 < M; m2++) {
+        var best = INF, bi = -1;
+        for (var k2 = 0; k2 < K; k2++) {
+          if (k2 > 0 && dp[m2 - 1][k2 - 1] < best) { best = dp[m2 - 1][k2 - 1]; bi = k2 - 1; }
+          if (bi >= 0) { dp[m2][k2] = best + cost(m2, k2); from[m2][k2] = bi; }
+        }
+      }
+      var endK = -1, bv = INF; for (var k3 = 0; k3 < K; k3++) if (dp[M - 1][k3] < bv) { bv = dp[M - 1][k3]; endK = k3; }
+      if (endK < 0) return null;
+      var chosen = []; for (var m3 = M - 1, kk = endK; m3 >= 0; m3--) { chosen.unshift(gaps[kk]); kk = from[m3][kk]; }
+      times = [0].concat(chosen.map(function (g) { return Math.round(Math.max(0, g.b - lead) * 100) / 100; }));
+    } else {
+      var pick = gaps.slice().sort(function (x, y) { return y.len - x.len; }).slice(0, count - 1).sort(function (x, y) { return x.a - y.a; });
+      times = [0].concat(pick.map(function (g) { return Math.round(Math.max(0, g.b - lead) * 100) / 100; }));
+    }
+    return times;
+  }
+
+  // ---------- UI ----------
+  var CSS2 = '\
+.ws .sh-wave{width:100%;height:84px;display:block;background:#0b0d11;border:1px solid var(--line);border-radius:8px;cursor:pointer}\
+.ws .sh-seg{display:grid;grid-template-columns:26px 1fr 92px;gap:8px;align-items:center;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:8px 10px;cursor:pointer}\
+.ws .sh-seg.on{border-color:var(--acc);box-shadow:0 0 0 1px var(--acc) inset}\
+.ws .sh-seg .txt{font-size:13px;line-height:1.35;white-space:pre-line}\
+.ws .sh-seg input{text-align:right}\
+.ws .sh-list{display:flex;flex-direction:column;gap:6px;margin-top:10px}\
+.ws .sh-script{min-height:190px;font-size:13.5px;line-height:1.45}\
+.ws .sh-tap{position:fixed;inset:0;background:rgba(0,0,0,.72);display:none;align-items:center;justify-content:center;z-index:9999;flex-direction:column;gap:14px;color:#fff;text-align:center}\
+.ws .sh-tap .big{font-size:22px;font-weight:700}.ws .sh-tap button{font-size:18px;padding:16px 28px}\
+.ws .row2{display:flex;gap:8px;align-items:center;flex-wrap:wrap}\
+.ws input[type=color]{width:44px;height:32px;padding:2px;background:#0b0d11;border:1px solid var(--line);border-radius:7px}';
+
+  function mount(root, cfg) {
+    cfg = cfg || {};
+    var C = window.WordSummaryCore;
+    if (C && C.ensureCss) C.ensureCss();
+    if (!document.getElementById('sh-css')) { var st = document.createElement('style'); st.id = 'sh-css'; st.textContent = CSS2; document.head.appendChild(st); }
+    root.innerHTML = '';
+    var el = function (tag, attrs, kids) {
+      var e = document.createElement(tag);
+      if (attrs) for (var k in attrs) { if (k === 'class') e.className = attrs[k]; else if (k === 'text') e.textContent = attrs[k]; else if (k.slice(0, 2) === 'on') e.addEventListener(k.slice(2), attrs[k]); else e.setAttribute(k, attrs[k]); }
+      (kids || []).forEach(function (c) { if (c) e.appendChild(c); });
+      return e;
+    };
+    var STORE = cfg.storeKey || 'projeclab_sh_v1';
+    var init = cfg.initial && !Array.isArray(cfg.initial) ? cfg.initial : null;
+    if (!init && !cfg.shared) { try { init = JSON.parse(localStorage.getItem(STORE) || 'null'); } catch (e) { } }
+    var data = { script: '', times: [], size: 1, color: '#FED834', length: 0 };
+    if (init) Object.keys(data).forEach(function (k) { if (init[k] != null) data[k] = init[k]; });
+    var opts = { res: '4k', format: 'mov' };
+    try { var so = JSON.parse(localStorage.getItem(STORE + ':opts') || 'null'); if (so) Object.assign(opts, so); } catch (e) { }
+
+    var parts = [], lays = [], audio = null, audioUrl = null, envObj = null, abuf = null, active = 0;
+    var ac = null, src = null, acStart = 0, mode = 'clock'; // playback: Web Audio (decoded buffer), <audio>, or a silent clock
+    var saveTimer = null;
+    function snapshot() { return { script: data.script, times: data.times.slice(0, parts.length), size: data.size, color: data.color, length: data.length }; }
+    function save() {
+      try { localStorage.setItem(STORE + ':opts', JSON.stringify(opts)); } catch (e) { }
+      if (cfg.shared) { clearTimeout(saveTimer); saveTimer = setTimeout(function () { saveTimer = null; cfg.shared(snapshot()); }, 700); return; }
+      try { localStorage.setItem(STORE, JSON.stringify(snapshot())); } catch (e) { }
+    }
+    function flush() { if (cfg.shared && saveTimer) { clearTimeout(saveTimer); saveTimer = null; cfg.shared(snapshot()); } }
+
+    function totalLen() {
+      if (data.length > 0) return data.length;
+      if (abuf) return abuf.duration;
+      if (audio && isFinite(audio.duration) && audio.duration > 0) return audio.duration;
+      var last = parts.length ? (data.times[parts.length - 1] || 0) : 0;
+      return Math.max(4, last + 6);
+    }
+    // keep one time per part, increasing; new parts are spaced after the last one
+    function fixTimes() {
+      var t = data.times.slice(0, parts.length);
+      t[0] = 0;
+      for (var i = 1; i < parts.length; i++) {
+        if (t[i] == null || !isFinite(t[i])) t[i] = (t[i - 1] || 0) + 5;
+        if (t[i] < t[i - 1] + 0.6) t[i] = t[i - 1] + 0.6;
+      }
+      data.times = t;
+    }
+    function relayout() {
+      parts = parseScript(data.script);
+      lays = parts.map(function (p) { return layoutPart(p, data.size); });
+      fixTimes();
+      if (active >= parts.length) active = Math.max(0, parts.length - 1);
+    }
+
+    var wrap = el('div', { class: 'ws' });
+    root.appendChild(wrap);
+
+    // ----- left
+    var left = el('div');
+    var scriptTa = el('textarea', { class: 'sh-script', placeholder: 'Paste the script here.\n\nPut a blank line between parts. Line breaks inside a part are kept.\n\nWe are walking beside a wide,\npeaceful lake on a bright afternoon.\nThe water is calm and incredibly smooth,\n\nwhile tall buildings rise in the distance\nA few clouds float gently\nacross the blue sky,' });
+    scriptTa.value = data.script;
+    var audioIn = el('input', { type: 'file', accept: 'audio/*,video/*', style: 'display:none' });
+    var audioName = el('span', { class: 'sub', text: 'No audio loaded' });
+    var wave = el('canvas', { class: 'sh-wave', width: 1200, height: 168 });
+    var list = el('div', { class: 'sh-list' });
+    var status = el('div', { class: 'hint' });
+    left.appendChild(el('div', null, [el('h2', { text: cfg.title || 'Volk English · Shadowing Segment' }), el('div', { class: 'sub', text: 'Paste the script, load the audio, time the parts, then export one transparent clip for Premiere.' })]));
+    left.appendChild(el('label', { style: 'margin-top:12px', text: '1 · Script' }));
+    left.appendChild(scriptTa);
+    left.appendChild(el('label', { style: 'margin-top:12px', text: '2 · Audio (only used for timing and preview, not exported)' }));
+    left.appendChild(el('div', { class: 'row2' }, [el('button', { text: 'Load audio', onclick: function () { audioIn.click(); } }), audioName, audioIn]));
+    left.appendChild(el('div', { style: 'margin-top:8px' }, [wave]));
+    left.appendChild(el('label', { style: 'margin-top:12px', text: '3 · Timing (seconds when each part comes in)' }));
+    var autoBtn = el('button', { class: 'pri', text: 'Auto-time from audio' });
+    var tapBtn = el('button', { text: 'Tap to time' });
+    var evenBtn = el('button', { text: 'Space evenly' });
+    left.appendChild(el('div', { class: 'row2' }, [autoBtn, tapBtn, evenBtn]));
+    left.appendChild(el('div', { class: 'hint', text: 'Fine-tune: drag the yellow markers on the waveform, use −0.1 / +0.1, or type the time. To re-tap from one part on, click that part first, then Tap to time.' }));
+    left.appendChild(status);
+    left.appendChild(list);
+    wrap.appendChild(left);
+
+    // ----- right
+    var right = el('div', { class: 'right' });
+    var stage = el('div', { class: 'stage blk' });
+    var cv = el('canvas', { width: W, height: H });
+    stage.appendChild(cv);
+    var ctx = cv.getContext('2d');
+    var scrub = el('input', { type: 'range', class: 'scrub', min: 0, max: 1000, step: 1, value: 0 });
+    var playBtn = el('button', { class: 'pri', text: '▶ Play' });
+    var tc = el('span', { class: 'sub' });
+    var bgSel = el('select', { style: 'width:auto' }, [el('option', { value: 'blk', text: 'Black' }), el('option', { value: 'chk', text: 'Transparent grid' }), el('option', { value: 'grn', text: 'Green' })]);
+    bgSel.onchange = function () { stage.className = 'stage ' + bgSel.value; };
+    right.appendChild(stage);
+    right.appendChild(el('div', { class: 'bar' }, [playBtn, scrub, tc, bgSel]));
+    var resSel = el('select', null, [el('option', { value: '4k', text: '4K · 3840×2160' }), el('option', { value: '1080', text: 'HD · 1920×1080' })]);
+    var fmtSel = el('select', null, [el('option', { value: 'mov', text: 'MOV with transparency (Premiere)' }), el('option', { value: 'movfull', text: 'MOV, full size (if Premiere has trouble)' }), el('option', { value: 'png', text: 'PNG sequence (.zip)' })]);
+    var sizeIn = el('input', { type: 'range', min: 50, max: 130, step: 5, style: 'width:100%' });
+    var sizeLbl = el('span', { style: 'float:right;color:var(--txt)' });
+    var colorIn = el('input', { type: 'color' });
+    var lenIn = el('input', { type: 'number', min: 1, step: 0.5, placeholder: 'auto' });
+    resSel.value = opts.res; fmtSel.value = opts.format; sizeIn.value = Math.round(data.size * 100); colorIn.value = data.color; lenIn.value = data.length || '';
+    resSel.onchange = function () { opts.res = resSel.value; save(); };
+    fmtSel.onchange = function () { opts.format = fmtSel.value; save(); };
+    sizeIn.oninput = function () { data.size = (+sizeIn.value) / 100; sizeLbl.textContent = sizeIn.value + '%'; relayout(); draw(); save(); };
+    sizeIn.ondblclick = function () { sizeIn.value = 100; sizeIn.oninput(); };
+    colorIn.oninput = function () { data.color = colorIn.value; draw(); save(); };
+    lenIn.onchange = function () { var v = parseFloat(lenIn.value); data.length = v > 0 ? v : 0; lenIn.value = data.length || ''; draw(); save(); };
+    sizeLbl.textContent = sizeIn.value + '%';
+    var prog = el('div', { class: 'prog' }, [el('i')]);
+    var exBtn = el('button', { class: 'pri', text: 'Export clip' });
+    var exStatus = el('div', { class: 'hint' });
+    right.appendChild(el('div', { class: 'card' }, [
+      el('div', { class: 'grid2' }, [
+        el('div', null, [el('label', { text: 'Size' }), resSel]),
+        el('div', null, [el('label', { text: 'Format' }), fmtSel]),
+        el('div', null, [el('label', null, [document.createTextNode('Text size'), sizeLbl]), sizeIn]),
+        el('div', null, [el('label', { text: 'Text colour' }), el('div', { class: 'row2' }, [colorIn, el('button', { text: 'Reset', onclick: function () { colorIn.value = '#FED834'; colorIn.oninput(); } })])]),
+        el('div', null, [el('label', { text: 'Clip length (seconds, blank = audio length)' }), lenIn]),
+        el('div', null, [el('label', { text: 'Frame rate' }), el('div', { class: 'sub', style: 'padding-top:8px', text: '24 fps' })])
+      ]),
+      el('div', { class: 'bar', style: 'margin-top:12px' }, [exBtn]),
+      prog, exStatus
+    ]));
+    wrap.appendChild(right);
+
+    // tap overlay
+    var tapInfo = el('div', { class: 'big' }), tapNext = el('button', { class: 'pri', text: 'Next part  (Space)' });
+    var tapBox = el('div', { class: 'sh-tap' }, [tapInfo, el('div', { class: 'sub', style: 'color:#ccc', text: 'Press Space (or click) the moment each new part should come in. Esc to stop.' }), tapNext, el('button', { text: 'Stop', onclick: function () { endTap(); } })]);
+    wrap.appendChild(tapBox);
+
+    // ----- segment list
+    function fmt(t) { return (Math.round(t * 100) / 100).toFixed(2); }
+    function renderList() {
+      list.innerHTML = '';
+      if (!parts.length) { list.appendChild(el('div', { class: 'hint', text: 'Parts will show here once you paste the script.' })); return; }
+      parts.forEach(function (p, i) {
+        var tIn = el('input', { type: 'number', step: 0.05, min: 0, value: fmt(data.times[i] || 0) });
+        if (i === 0) tIn.disabled = true;
+        tIn.onclick = function (e) { e.stopPropagation(); };
+        tIn.onchange = function () { var v = parseFloat(tIn.value); if (isFinite(v)) { data.times[i] = v; fixTimes(); } renderList(); drawWave(); seek(data.times[i] - 0.8); save(); };
+        var nudge = function (d) { return el('button', { text: (d < 0 ? '−' : '+') + '0.1', title: 'Move this change ' + (d < 0 ? 'earlier' : 'later'), style: 'padding:2px 6px;font-size:11px', onclick: function (e) { e.stopPropagation(); if (!i) return; data.times[i] = Math.max(0, (data.times[i] || 0) + d); fixTimes(); active = i; renderList(); seek(data.times[i] - 0.9); save(); } }); };
+        var tBox = el('div', null, [tIn, i ? el('div', { style: 'display:flex;gap:4px;justify-content:flex-end;margin-top:4px' }, [nudge(-0.1), nudge(0.1)]) : null]);
+        var row = el('div', { class: 'sh-seg' + (i === active ? ' on' : '') }, [el('div', { class: 'num', text: String(i + 1) }), el('div', { class: 'txt', text: p.join('\n') }), tBox]);
+        row.onclick = function () { active = i; seek(Math.max(0, (data.times[i] || 0) - (i ? 0.9 : 0))); renderList(); };
+        list.appendChild(row);
+      });
+    }
+
+    // ----- waveform
+    function drawWave() {
+      var g = wave.getContext('2d'), w = wave.width, h = wave.height, len = totalLen();
+      g.clearRect(0, 0, w, h);
+      if (envObj) {
+        var env = envObj.env, max = 0; for (var i = 0; i < env.length; i++) if (env[i] > max) max = env[i];
+        g.fillStyle = '#4b5366';
+        for (var x = 0; x < w; x++) {
+          var a = Math.floor(x / w * len / envObj.step), b = Math.floor((x + 1) / w * len / envObj.step), m = 0;
+          for (var k = a; k < Math.min(b + 1, env.length); k++) if (env[k] > m) m = env[k];
+          var bh = max ? m / max * (h - 10) : 0; g.fillRect(x, (h - bh) / 2, 1, Math.max(1, bh));
+        }
+      } else { g.fillStyle = '#8b93a5'; g.font = '22px system-ui'; g.fillText('Load the audio to see it here', 20, h / 2 + 8); }
+      g.fillStyle = '#f5b041'; g.font = 'bold 20px system-ui';
+      data.times.slice(0, parts.length).forEach(function (t, i) { var x = Math.round(t / len * w); g.fillRect(x, 0, 3, h); g.fillText(String(i + 1), x + 5, 20); });
+      var px = Math.round(now() / len * w); g.fillStyle = '#ffffff'; g.fillRect(px, 0, 2, h);
+    }
+    var dragI = -1, dragMoved = false;
+    function waveT(e) { var r = wave.getBoundingClientRect(); return clamp((e.clientX - r.left) / r.width, 0, 1) * totalLen(); }
+    wave.addEventListener('pointerdown', function (e) {
+      var r = wave.getBoundingClientRect(), len = totalLen(), x = e.clientX - r.left, best = -1, bd = 9;
+      for (var i = 1; i < parts.length; i++) { var d = Math.abs(data.times[i] / len * r.width - x); if (d < bd) { bd = d; best = i; } }
+      if (best > 0) { dragI = best; dragMoved = false; wave.setPointerCapture(e.pointerId); e.preventDefault(); }
+      else seek(waveT(e));
+    });
+    wave.addEventListener('pointermove', function (e) {
+      var r = wave.getBoundingClientRect(), len = totalLen(), x = e.clientX - r.left, near = false;
+      for (var i = 1; i < parts.length; i++) if (Math.abs(data.times[i] / len * r.width - x) < 9) near = true;
+      wave.style.cursor = dragI > 0 || near ? 'ew-resize' : 'pointer';
+      if (dragI < 1) return;
+      var lo = data.times[dragI - 1] + 0.6, hi = dragI + 1 < parts.length ? data.times[dragI + 1] - 0.6 : totalLen();
+      data.times[dragI] = Math.round(clamp(waveT(e), lo, hi) * 100) / 100; dragMoved = true; cur = data.times[dragI]; draw();
+    });
+    wave.addEventListener('pointerup', function () { if (dragI > 0) { var i = dragI; dragI = -1; active = i; renderList(); if (dragMoved) { seek(data.times[i] - 0.9); save(); } } });
+
+    // ----- playback
+    var playing = false, t0 = 0, base = 0, cur = 0;
+    function now() {
+      if (!playing) return cur;
+      if (mode === 'wa' && ac) return base + (ac.currentTime - acStart);
+      if (mode === 'el' && audio) return audio.currentTime;
+      return base + (performance.now() - t0) / 1000;
+    }
+    function stopSound() { if (src) { try { src.onended = null; src.stop(); } catch (e) { } src = null; } if (audio) audio.pause(); }
+    function startSound() {
+      // 1) decoded audio through Web Audio  2) the <audio> element  3) silent clock, with a note
+      base = cur; t0 = performance.now(); mode = 'clock';
+      if (abuf) {
+        try {
+          var AC = window.AudioContext || window.webkitAudioContext;
+          if (!ac) ac = new AC();
+          if (ac.resume) ac.resume();
+          src = ac.createBufferSource(); src.buffer = abuf; src.connect(ac.destination);
+          acStart = ac.currentTime; src.start(0, Math.min(cur, Math.max(0, abuf.duration - 0.01)));
+          mode = 'wa';
+          setTimeout(function () { if (playing && mode === 'wa' && ac.state !== 'running') { stopSound(); mode = 'clock'; base = cur; t0 = performance.now(); status.textContent = 'This window blocked the sound, so the preview is playing silently. Open the tool in Chrome to hear it.'; } }, 400);
+          return;
+        } catch (e) { stopSound(); }
+      }
+      if (audio) {
+        mode = 'el'; audio.currentTime = cur;
+        var pr = audio.play();
+        if (pr && pr.catch) pr.catch(function () { if (!playing) return; mode = 'clock'; base = cur; t0 = performance.now(); status.textContent = 'This window blocked the sound, so the preview is playing silently. Open the tool in Chrome to hear it.'; });
+      }
+    }
+    function seek(t) { var was = playing; if (was) { stopSound(); playing = false; } cur = clamp(t, 0, totalLen()); if (audio) try { audio.currentTime = cur; } catch (e) { } if (was) { playing = true; startSound(); } draw(); }
+    function draw() {
+      var t = now();
+      drawAt(ctx, partsAt(t, lays, data.times), data.color, 1);
+      var len = totalLen();
+      scrub.value = Math.round(t / len * 1000);
+      tc.textContent = fmt(t) + 's / ' + fmt(len) + 's';
+      drawWave();
+    }
+    function tick() {
+      if (!playing) return;
+      if (!document.body.contains(root)) { stop(); return; }
+      var t = now();
+      if (t >= totalLen()) { stop(); cur = totalLen(); }
+      draw();
+      if (playing) requestAnimationFrame(tick);
+    }
+    function play() { playing = true; playBtn.textContent = '❚❚ Pause'; startSound(); requestAnimationFrame(tick); }
+    function stop() { if (playing) cur = now(); playing = false; playBtn.textContent = '▶ Play'; stopSound(); }
+    playBtn.onclick = function () { if (playing) stop(); else { if (cur >= totalLen() - 0.05) cur = 0; play(); } };
+    scrub.oninput = function () { stop(); cur = (+scrub.value) / 1000 * totalLen(); draw(); };
+
+    // ----- audio loading
+    audioIn.onchange = function () { var f = audioIn.files[0]; if (f) loadAudio(f); };
+    wrap.addEventListener('dragover', function (e) { if (e.dataTransfer && Array.prototype.some.call(e.dataTransfer.items || [], function (i) { return /^audio|^video/.test(i.type); })) e.preventDefault(); });
+    wrap.addEventListener('drop', function (e) { var f = e.dataTransfer && e.dataTransfer.files[0]; if (f && /^audio|^video/.test(f.type)) { e.preventDefault(); loadAudio(f); } });
+    function loadAudio(f) {
+      stop(); abuf = null;
+      if (audioUrl) URL.revokeObjectURL(audioUrl);
+      audioUrl = URL.createObjectURL(f);
+      audio = new Audio(audioUrl); audio.preload = 'auto';
+      audio.onloadedmetadata = function () { draw(); };
+      audioName.textContent = f.name;
+      status.textContent = 'Reading the audio…';
+      f.arrayBuffer().then(function (ab) {
+        var AC = window.AudioContext || window.webkitAudioContext, ac = new AC();
+        return ac.decodeAudioData(ab).then(function (buf) { envObj = envelope(buf); envObj.duration = buf.duration; abuf = buf; try { ac.close(); } catch (e) { } status.textContent = 'Audio ready · ' + fmt(buf.duration) + 's. Click "Auto-time from audio", or "Tap to time".'; draw(); });
+      }).catch(function () { status.textContent = 'Could not read that audio file. Try an MP3, WAV or M4A.'; });
+    }
+
+    // ----- timing helpers
+    autoBtn.onclick = function () {
+      if (!parts.length) { status.textContent = 'Paste the script first.'; return; }
+      if (!envObj) { status.textContent = 'Load the audio first.'; return; }
+      if (parts.length < 2) { status.textContent = 'Only one part, nothing to time.'; return; }
+      var t = autoTimes(envObj, parts.length, 0.25, parts.map(function (p) { return p.join(' ').split(/\s+/).length; }));
+      if (!t) { status.textContent = 'Not enough clear pauses in the audio for ' + parts.length + ' parts. Try "Tap to time".'; return; }
+      data.times = t; fixTimes(); renderList(); draw(); save();
+      status.textContent = 'Timed ' + parts.length + ' parts from the pauses. Press Play to check, and fix any time in the list.';
+    };
+    evenBtn.onclick = function () {
+      if (parts.length < 2) return;
+      var len = totalLen(), step = len / parts.length;
+      data.times = parts.map(function (_, i) { return Math.round(i * step * 100) / 100; }); fixTimes(); renderList(); draw(); save();
+    };
+    var tapping = false, tapIdx = 0;
+    function tapKey(e) { if (!tapping) return; if (e.code === 'Space') { e.preventDefault(); tap(); } else if (e.key === 'Escape') { e.preventDefault(); endTap(); } }
+    function tap() {
+      if (!tapping) return;
+      var t = Math.round(Math.max(0, now() - 0.12) * 100) / 100;
+      tapIdx++;
+      if (tapIdx < parts.length) { data.times[tapIdx] = t; for (var i = tapIdx + 1; i < parts.length; i++) if (data.times[i] <= t + 0.6) data.times[i] = t + 0.6 * (i - tapIdx); }
+      if (tapIdx >= parts.length - 1) { tapInfo.textContent = 'Last part set ✓'; setTimeout(endTap, 600); }
+      else tapInfo.textContent = 'Part ' + (tapIdx + 1) + ' set. Next: part ' + (tapIdx + 2) + ' of ' + parts.length;
+      draw();
+    }
+    function endTap() { tapping = false; tapBox.style.display = 'none'; stop(); fixTimes(); renderList(); draw(); save(); document.removeEventListener('keydown', tapKey, true); }
+    tapBtn.onclick = function () {
+      if (parts.length < 2) { status.textContent = 'Paste a script with at least two parts first.'; return; }
+      if (!audio) { status.textContent = 'Load the audio first, so you can tap along to it.'; return; }
+      var from = active > 0 ? active : 1;
+      tapping = true; tapIdx = from - 1;
+      tapInfo.textContent = 'Listening… tap when part ' + (from + 1) + ' of ' + parts.length + ' should come in';
+      tapBox.style.display = 'flex'; document.addEventListener('keydown', tapKey, true);
+      cur = from > 1 ? Math.max(0, (data.times[from - 1] || 0) - 0.5) : 0; play();
+    };
+    tapNext.onclick = tap;
+
+    scriptTa.oninput = function () { data.script = scriptTa.value; relayout(); renderList(); draw(); save(); };
+
+    // ----- export
+    var busy = false;
+    function setProg(v, msg) { prog.style.display = v == null ? 'none' : 'block'; prog.firstChild.style.width = ((v || 0) * 100) + '%'; if (msg != null) exStatus.textContent = msg; }
+    function download(blob, name) { var a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name; document.body.appendChild(a); a.click(); setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 4000); }
+    function toBlob(c) { return new Promise(function (res) { c.toBlob(res, 'image/png'); }); }
+    exBtn.onclick = async function () {
+      if (busy) return;
+      if (!parts.length) { exStatus.textContent = 'Paste the script first.'; return; }
+      busy = true; exBtn.disabled = true; stop();
+      try {
+        var k = opts.res === '4k' ? 2 : 1, ec = document.createElement('canvas'); ec.width = W * k; ec.height = H * k;
+        var ex = ec.getContext('2d'), n = Math.max(1, Math.round(totalLen() * FPS)), blobs = [], lastSig = null, lastBlob = null;
+        for (var i = 0; i < n; i++) {
+          var list2 = partsAt(i / FPS, lays, data.times), sig = sigOf(list2);
+          if (sig !== lastSig) { drawAt(ex, list2, data.color, k); lastBlob = await toBlob(ec); lastSig = sig; }
+          blobs.push(lastBlob);
+          if (i % 12 === 0) { setProg(i / n, 'Rendering… ' + Math.round(i / n * 100) + '%'); await new Promise(function (r) { setTimeout(r, 0); }); }
+        }
+        var name = ((typeof cfg.fileName === 'function' ? cfg.fileName() : cfg.fileName) || 'shadowing-segment').replace(/[^a-z0-9]+/gi, '-').replace(/^-|-$/g, '').toLowerCase() || 'shadowing-segment';
+        if (opts.format === 'png') {
+          var files = blobs.map(function (b, j) { return { name: name + '/' + name + '_' + String(j).padStart(5, '0') + '.png', blob: b }; });
+          download(await C.buildZip(files), name + '_png-sequence.zip');
+        } else download(C.buildMov(blobs, ec.width, ec.height, FPS, opts.format !== 'movfull'), name + '.mov');
+        setProg(null, 'Done · ' + n + ' frames (' + fmt(n / FPS) + 's). Check your Downloads folder.');
+      } catch (err) { setProg(null, 'Export failed: ' + (err && err.message || err)); console.error(err); }
+      busy = false; exBtn.disabled = false;
+    };
+
+    // ----- start
+    relayout(); renderList();
+    Promise.all([700].map(function (w) { return document.fonts.load(w + ' 100px ' + FONT); })).then(function () { relayout(); draw(); });
+    draw();
+    return {
+      destroy: function () { flush(); stop(); if (tapping) endTap(); if (audioUrl) URL.revokeObjectURL(audioUrl); if (ac && ac.close) try { ac.close(); } catch (e) { } root.innerHTML = ''; },
+      flush: flush, data: function () { return data; }, _parts: function () { return { parts: parts, lays: lays }; }, _at: function (t) { return partsAt(t, lays, data.times); }, _draw: drawAt, _auto: autoTimes, _env: envelope
+    };
+  }
+  window.mountShadowing = mount;
+  window.ShadowingCore = { parseScript: parseScript, layoutPart: layoutPart, partsAt: partsAt, drawAt: drawAt, envelope: envelope, autoTimes: autoTimes, S: S, TM: TM };
 })();
 
 </script>
@@ -1865,25 +2413,36 @@
      the words and the editor opens them and exports. Photos dropped in go to the same Supabase
      bucket as task photos; only their links are saved. */
   var EDITOR_TOOLS = [
-    { id: "wordsummary", name: "Word Summary", note: "Word + photo + short definition with the Volk English animation. Paste the words, add photos, export transparent 4K clips for Premiere." }
+    { id: "wordsummary", name: "Word Summary", note: "Word + photo + short definition with the Volk English animation. Paste the words, add photos, export transparent 4K clips for Premiere." },
+    { id: "shadowing", name: "Shadowing Segment", note: "Script scroller: the current line big in yellow, the next one faint below. Paste the script, load the audio, time it, export one transparent 4K clip." }
   ];
-  var clientTools = (c) => Array.isArray(c && c.tools) ? c.tools : /volk/i.test(c && c.name || "") ? ["wordsummary"] : [];
+  var clientTools = (c) => Array.isArray(c && c.tools) ? c.tools : /volk/i.test(c && c.name || "") ? ["wordsummary", "shadowing"] : [];
   /* Word lists are saved as named sets (one row each in db.wordlists, matched by clientId),
      e.g. "Video 135". The first list ever saved used id "wl-<clientId>" with no name. */
-  var wsSets = (db, clientId) => (db.wordlists || [])
-    .filter((w) => w && w.clientId === clientId)
+  var wsSets = (db, clientId, tool) => (db.wordlists || [])
+    .filter((w) => w && w.clientId === clientId && (w.tool || "wordsummary") === (tool || "wordsummary"))
     .sort((a, b) => String(b.created || b.at || "").localeCompare(String(a.created || a.at || "")));
   var wsLatest = (sets) => sets.slice().sort((a, b) => String(b.at || "").localeCompare(String(a.at || "")))[0];
   var wsSetName = (w) => w && w.name ? w.name : "Untitled set";
   var wsDefaultName = () => "New set · " + shortDate((/* @__PURE__ */ new Date()).toISOString());
-  function WordSummaryModal({ db, me, client, mutate, close }) {
+  /* How much is in a saved set: words for Word Summary, script parts for Shadowing. */
+  var setCount = (w) => {
+    if (!w) return 0;
+    if (Array.isArray(w.items)) return w.items.filter((x) => x && x.word).length;
+    const sc = w.items && w.items.script;
+    return sc && window.ShadowingCore ? window.ShadowingCore.parseScript(sc).length : 0;
+  };
+  var setUnit = (tool, n) => (tool === "shadowing" ? "part" : "word") + (n === 1 ? "" : "s");
+  function WordSummaryModal({ db, me, client, mutate, close, tool = "wordsummary" }) {
     const h = React.createElement;
     const box = useRef(null);
     const mut = useRef(mutate);
     mut.current = mutate;
     const dbRef = useRef(db);
     dbRef.current = db;
-    const sets = wsSets(db, client.id);
+    const sets = wsSets(db, client.id, tool);
+    const mountFn = tool === "shadowing" ? window.mountShadowing : window.mountWordSummary;
+    const toolName = (EDITOR_TOOLS.find((t) => t.id === tool) || {}).name || "Tool";
     const [curId, setCurId] = useState(() => sets.length ? wsLatest(sets).id : uid("wl"));
     const gone = useRef({});
     const newNames = useRef({});
@@ -1891,29 +2450,32 @@
     const [pendingName, setPendingName] = useState(() => sets.length ? null : wsDefaultName());
     const cur = sets.find((w) => w.id === curId);
     const curName = cur ? wsSetName(cur) : pendingName || wsDefaultName();
+    const nameShown = useRef(curName);
+    nameShown.current = curName;
     /* Write a set row, creating it the first time something is saved. */
     const writeSet = (id, patch, nameIfNew) => {
       if (gone.current[id]) return;
       const was = (dbRef.current.wordlists || []).find((x) => x.id === id);
       /* Nothing actually changed (e.g. photos re-loading when a set is opened) - don't touch it. */
       if (was && Object.keys(patch).every((k) => JSON.stringify(was[k]) === JSON.stringify(patch[k]))) return;
-      if (!was && patch.items && !patch.name && !patch.items.some((x) => x && (x.word || x.def || x.imgSrc))) return;
+      if (!was && patch.items && !patch.name && (Array.isArray(patch.items) ? !patch.items.some((x) => x && (x.word || x.def || x.imgSrc)) : !String(patch.items.script || "").trim())) return;
       mut.current((n) => {
       n.wordlists = Array.isArray(n.wordlists) ? n.wordlists : [];
       const now = (/* @__PURE__ */ new Date()).toISOString();
       const i = n.wordlists.findIndex((x) => x.id === id);
       if (i >= 0) n.wordlists[i] = { ...n.wordlists[i], ...patch, by: me.id, at: now };
-      else n.wordlists.push({ id, clientId: client.id, name: nameIfNew || wsDefaultName(), items: [], created: now, ...patch, by: me.id, at: now });
+      else n.wordlists.push({ id, clientId: client.id, tool, name: nameIfNew || wsDefaultName(), items: [], created: now, ...patch, by: me.id, at: now });
       });
     };
     useEffect(() => {
-      if (typeof window.mountWordSummary !== "function" || !box.current) return;
+      if (typeof mountFn !== "function" || !box.current) return;
       const id = curId;
       const row = (dbRef.current.wordlists || []).find((w) => w.id === id);
-      const api = window.mountWordSummary(box.current, {
-        title: `${client.name} · Word Summary`,
-        storeKey: "ps-ws-" + client.id,
-        initial: row && Array.isArray(row.items) ? row.items : [],
+      const api = mountFn(box.current, {
+        title: `${client.name} · ${toolName}`,
+        storeKey: (tool === "shadowing" ? "ps-sh-" : "ps-ws-") + client.id,
+        initial: row ? row.items : [],
+        fileName: () => nameShown.current,
         shared: (items) => writeSet(id, { items }, newNames.current[id]),
         uploadFile: typeof window.uploadPhoto === "function" ? async (f) => (await window.uploadPhoto(f)).url : null
       });
@@ -1931,21 +2493,20 @@
     };
     const removeSet = () => {
       if (!cur) return;
-      const n = (cur.items || []).filter((x) => x && x.word).length;
-      if (!window.confirm(`Delete the set “${curName}”${n ? ` and its ${n} word${n > 1 ? "s" : ""}` : ""}? This can't be undone.`)) return;
+      const n = setCount(cur);
+      if (!window.confirm(`Delete the set “${curName}”${n ? ` and its ${n} ${setUnit(tool, n)}` : ""}? This can't be undone.`)) return;
       const rest = sets.filter((w) => w.id !== curId);
       gone.current[curId] = true;
       mut.current((d) => { d.wordlists = (d.wordlists || []).filter((x) => x.id !== curId); });
       if (rest.length) pick(wsLatest(rest).id); else newSet();
     };
-    const count = (w) => (w.items || []).filter((x) => x && x.word).length;
     return h("div", { className: "ps-overlay ps-ws-overlay" },
       h("div", { className: "ps-ws-modal", role: "dialog", "aria-modal": "true" },
         h("div", { className: "ps-ws-bar" },
           h("label", { className: "ps-ws-l" }, "Set"),
           h("select", { className: "ps-ws-sel", value: curId, onChange: (e) => pick(e.target.value) },
             !cur && h("option", { value: curId }, `${curName} (new)`),
-            sets.map((w) => h("option", { key: w.id, value: w.id }, `${wsSetName(w)} · ${count(w)} word${count(w) === 1 ? "" : "s"}`))),
+            sets.map((w) => h("option", { key: w.id, value: w.id }, `${wsSetName(w)} · ${setCount(w)} ${setUnit(tool, setCount(w))}`))),
           h("input", {
             className: "ps-ws-name", value: draftName != null ? draftName : curName, title: "Rename this set",
             "aria-label": "Set name", placeholder: "Name this set, e.g. Video 135",
@@ -1956,9 +2517,9 @@
           }),
           h("button", { className: "ps-ws-btn", onClick: newSet }, "+ New set"),
           cur && h("button", { className: "ps-ws-btn danger", onClick: removeSet }, "Delete set"),
-          h("span", { className: "ps-ws-saved" }, cur ? `Saved · ${shortDate(cur.at)}` : "Saves when you add words"),
+          h("span", { className: "ps-ws-saved" }, cur ? `Saved · ${shortDate(cur.at)}` : tool === "shadowing" ? "Saves when you add the script" : "Saves when you add words"),
           h("button", { className: "ps-x ps-ws-x", onClick: close, "aria-label": "Close" }, "\xD7")),
-        typeof window.mountWordSummary === "function" ? h("div", { ref: box, key: curId }) : h("p", { className: "ps-empty", style: { padding: 30 } }, "The Word Summary tool didn't load. Refresh the page and try again.")));
+        typeof mountFn === "function" ? h("div", { ref: box, key: curId }) : h("p", { className: "ps-empty", style: { padding: 30 } }, `The ${toolName} tool didn't load. Refresh the page and try again.`)));
   }
   function EditorTools({ db, me, client, canEdit, mutate }) {
     const h = React.createElement;
@@ -1967,9 +2528,14 @@
     const on = clientTools(client);
     const shown = EDITOR_TOOLS.filter((t) => on.includes(t.id) || canEdit);
     if (!shown.length) return null;
-    const sets = wsSets(db, client.id);
-    const latest = sets.length ? wsLatest(sets) : null;
-    const by = latest && (db.people || []).find((p) => p.id === latest.by);
+    const meta = (toolId) => {
+      const sets = wsSets(db, client.id, toolId);
+      const latest = sets.length ? wsLatest(sets) : null;
+      const by = latest && (db.people || []).find((p) => p.id === latest.by);
+      return sets.length
+        ? `${sets.length} saved set${sets.length > 1 ? "s" : ""} \u00b7 latest: ${wsSetName(latest)}${by ? ` (${by.name.split(" ")[0]}, ${shortDate(latest.at)})` : ""}`
+        : "No sets yet.";
+    };
     const setOn = (id, val) => mutate((n) => {
       const c = n.clients.find((x) => x.id === client.id);
       if (!c) return;
@@ -1984,14 +2550,12 @@
         return h("div", { key: t.id, className: `ps-tool ${isOn ? "" : "off"}` },
           h("div", { className: "ps-tool-t" }, t.name, !isOn && h("span", { className: "ps-chip" }, "Off for this client")),
           h("p", { className: "ps-muted ps-tool-n" }, t.note),
-          isOn && t.id === "wordsummary" && h("p", { className: "ps-muted ps-tool-m" }, sets.length
-            ? `${sets.length} saved set${sets.length > 1 ? "s" : ""} · latest: ${wsSetName(latest)}${by ? ` (${by.name.split(" ")[0]}, ${shortDate(latest.at)})` : ""}`
-            : "No word sets yet."),
+          isOn && h("p", { className: "ps-muted ps-tool-m" }, meta(t.id)),
           h("div", { className: "ps-btnrow ps-tool-b" },
             canEdit && h("button", { className: "ps-btn ghost small", onClick: () => setOn(t.id, !isOn) }, isOn ? "Switch off" : "Switch on"),
             isOn && h("button", { className: "ps-btn small", onClick: () => setOpen(t.id) }, "Open")));
       })),
-      open === "wordsummary" && h(WordSummaryModal, { db, me, client, mutate, close: () => setOpen(null) }));
+      open && h(WordSummaryModal, { key: open, db, me, client, mutate, tool: open, close: () => setOpen(null) }));
   }
 
   /* Everything an editor needs to work this client correctly, in one place:

@@ -386,11 +386,12 @@
         c.toBlob(function (b) { res(b ? new File([b], (String(file.name || 'photo').replace(/\.\w+$/, '')) + '.jpg', { type: 'image/jpeg' }) : file); }, 'image/jpeg', 0.9);
       });
     }
+    function fetchDataUrl(src) { return new Promise(function (res, rej) { try { var m = src.match(/^data:([^;,]+)(;base64)?,(.*)$/); var bin = m[2] ? atob(m[3]) : decodeURIComponent(m[3]); var u = new Uint8Array(bin.length); for (var i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i); res(new Blob([u], { type: m[1] })); } catch (e) { rej(e); } }); }
     // Load a photo from a web link (e.g. images.unsplash.com). Needs the site to allow it (CORS).
     function loadUrl(it, src, keepCrop) {
       if (!src) return;
       it.imgSrc = src; it.imgErr = false; it.loading = true; renderList(); save();
-      fetch(src, { mode: 'cors' }).then(function (r) { if (!r.ok) throw new Error(r.status); return r.blob(); }).then(function (b) {
+      (/^data:image\//.test(src) ? fetchDataUrl(src) : fetch(src, { mode: 'cors' }).then(function (r) { if (!r.ok) throw new Error(r.status); return r.blob(); })).then(function (b) {
         if (!/^image\//.test(b.type)) throw new Error('not an image');
         var url = URL.createObjectURL(b), im = new Image();
         im.onload = function () { if (it.imgSrc !== src) return; it.img = im; it.imgUrl = url; it.loading = false; if (!keepCrop) it.crop = { x: .5, y: .5, z: 1 }; renderList(); draw(); save(); };

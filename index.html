@@ -782,7 +782,8 @@
     var opts = { res: '4k', format: 'mov' };
     try { var so = JSON.parse(localStorage.getItem(STORE + ':opts') || 'null'); if (so) Object.assign(opts, so); } catch (e) { }
 
-    var parts = [], lays = [], audio = null, audioUrl = null, envObj = null, active = 0;
+    var parts = [], lays = [], audio = null, audioUrl = null, envObj = null, abuf = null, active = 0;
+    var ac = null, src = null, acStart = 0, mode = 'clock'; // playback: Web Audio (decoded buffer), <audio>, or a silent clock
     var saveTimer = null;
     function snapshot() { return { script: data.script, times: data.times.slice(0, parts.length), size: data.size, color: data.color, length: data.length }; }
     function save() {
@@ -794,6 +795,7 @@
 
     function totalLen() {
       if (data.length > 0) return data.length;
+      if (abuf) return abuf.duration;
       if (audio && isFinite(audio.duration) && audio.duration > 0) return audio.duration;
       var last = parts.length ? (data.times[parts.length - 1] || 0) : 0;
       return Math.max(4, last + 6);
@@ -928,8 +930,35 @@
 
     // ----- playback
     var playing = false, t0 = 0, base = 0, cur = 0;
-    function now() { return playing ? (audio ? audio.currentTime : base + (performance.now() - t0) / 1000) : cur; }
-    function seek(t) { cur = clamp(t, 0, totalLen()); if (audio) audio.currentTime = cur; if (playing) { base = cur; t0 = performance.now(); } draw(); }
+    function now() {
+      if (!playing) return cur;
+      if (mode === 'wa' && ac) return base + (ac.currentTime - acStart);
+      if (mode === 'el' && audio) return audio.currentTime;
+      return base + (performance.now() - t0) / 1000;
+    }
+    function stopSound() { if (src) { try { src.onended = null; src.stop(); } catch (e) { } src = null; } if (audio) audio.pause(); }
+    function startSound() {
+      // 1) decoded audio through Web Audio  2) the <audio> element  3) silent clock, with a note
+      base = cur; t0 = performance.now(); mode = 'clock';
+      if (abuf) {
+        try {
+          var AC = window.AudioContext || window.webkitAudioContext;
+          if (!ac) ac = new AC();
+          if (ac.resume) ac.resume();
+          src = ac.createBufferSource(); src.buffer = abuf; src.connect(ac.destination);
+          acStart = ac.currentTime; src.start(0, Math.min(cur, Math.max(0, abuf.duration - 0.01)));
+          mode = 'wa';
+          setTimeout(function () { if (playing && mode === 'wa' && ac.state !== 'running') { stopSound(); mode = 'clock'; base = cur; t0 = performance.now(); status.textContent = 'This window blocked the sound, so the preview is playing silently. Open the tool in Chrome to hear it.'; } }, 400);
+          return;
+        } catch (e) { stopSound(); }
+      }
+      if (audio) {
+        mode = 'el'; audio.currentTime = cur;
+        var pr = audio.play();
+        if (pr && pr.catch) pr.catch(function () { if (!playing) return; mode = 'clock'; base = cur; t0 = performance.now(); status.textContent = 'This window blocked the sound, so the preview is playing silently. Open the tool in Chrome to hear it.'; });
+      }
+    }
+    function seek(t) { var was = playing; if (was) { stopSound(); playing = false; } cur = clamp(t, 0, totalLen()); if (audio) try { audio.currentTime = cur; } catch (e) { } if (was) { playing = true; startSound(); } draw(); }
     function draw() {
       var t = now();
       drawAt(ctx, partsAt(t, lays, data.times), data.color, 1);
@@ -946,17 +975,17 @@
       draw();
       if (playing) requestAnimationFrame(tick);
     }
-    function play() { playing = true; playBtn.textContent = '❚❚ Pause'; base = cur; t0 = performance.now(); if (audio) { audio.currentTime = cur; audio.play().catch(function () { }); } requestAnimationFrame(tick); }
-    function stop() { if (playing) cur = now(); playing = false; playBtn.textContent = '▶ Play'; if (audio) audio.pause(); }
+    function play() { playing = true; playBtn.textContent = '❚❚ Pause'; startSound(); requestAnimationFrame(tick); }
+    function stop() { if (playing) cur = now(); playing = false; playBtn.textContent = '▶ Play'; stopSound(); }
     playBtn.onclick = function () { if (playing) stop(); else { if (cur >= totalLen() - 0.05) cur = 0; play(); } };
-    scrub.oninput = function () { stop(); cur = (+scrub.value) / 1000 * totalLen(); if (audio) audio.currentTime = cur; draw(); };
+    scrub.oninput = function () { stop(); cur = (+scrub.value) / 1000 * totalLen(); draw(); };
 
     // ----- audio loading
     audioIn.onchange = function () { var f = audioIn.files[0]; if (f) loadAudio(f); };
     wrap.addEventListener('dragover', function (e) { if (e.dataTransfer && Array.prototype.some.call(e.dataTransfer.items || [], function (i) { return /^audio|^video/.test(i.type); })) e.preventDefault(); });
     wrap.addEventListener('drop', function (e) { var f = e.dataTransfer && e.dataTransfer.files[0]; if (f && /^audio|^video/.test(f.type)) { e.preventDefault(); loadAudio(f); } });
     function loadAudio(f) {
-      stop();
+      stop(); abuf = null;
       if (audioUrl) URL.revokeObjectURL(audioUrl);
       audioUrl = URL.createObjectURL(f);
       audio = new Audio(audioUrl); audio.preload = 'auto';
@@ -965,7 +994,7 @@
       status.textContent = 'Reading the audio…';
       f.arrayBuffer().then(function (ab) {
         var AC = window.AudioContext || window.webkitAudioContext, ac = new AC();
-        return ac.decodeAudioData(ab).then(function (buf) { envObj = envelope(buf); envObj.duration = buf.duration; try { ac.close(); } catch (e) { } status.textContent = 'Audio ready · ' + fmt(buf.duration) + 's. Click "Auto-time from audio", or "Tap to time".'; draw(); });
+        return ac.decodeAudioData(ab).then(function (buf) { envObj = envelope(buf); envObj.duration = buf.duration; abuf = buf; try { ac.close(); } catch (e) { } status.textContent = 'Audio ready · ' + fmt(buf.duration) + 's. Click "Auto-time from audio", or "Tap to time".'; draw(); });
       }).catch(function () { status.textContent = 'Could not read that audio file. Try an MP3, WAV or M4A.'; });
     }
 
@@ -1040,7 +1069,7 @@
     Promise.all([700].map(function (w) { return document.fonts.load(w + ' 100px ' + FONT); })).then(function () { relayout(); draw(); });
     draw();
     return {
-      destroy: function () { flush(); stop(); if (tapping) endTap(); if (audioUrl) URL.revokeObjectURL(audioUrl); root.innerHTML = ''; },
+      destroy: function () { flush(); stop(); if (tapping) endTap(); if (audioUrl) URL.revokeObjectURL(audioUrl); if (ac && ac.close) try { ac.close(); } catch (e) { } root.innerHTML = ''; },
       flush: flush, data: function () { return data; }, _parts: function () { return { parts: parts, lays: lays }; }, _at: function (t) { return partsAt(t, lays, data.times); }, _draw: drawAt, _auto: autoTimes, _env: envelope
     };
   }

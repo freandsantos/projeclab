@@ -121,11 +121,11 @@
     ctx.textBaseline = 'alphabetic';
     // Title
     if (s.title && item.word) {
-      var T = L.TITLE, size = T.size;
+      var T = L.TITLE, size = T.size * (item.titleScale || 1);
       ctx.font = T.weight + ' ' + size + 'px ' + FONT; setTrack(ctx, T.track * size);
       var w = ctx.measureText(item.word).width;
       if (w > T.maxW) { size = size * T.maxW / w; ctx.font = T.weight + ' ' + size + 'px ' + FONT; setTrack(ctx, T.track * size); w = ctx.measureText(item.word).width; }
-      var base = T.base - (T.size - size) * 0.79;   // keep the top edge where it was if the word had to shrink
+      var base = T.base - (T.size - size) * 0.79;   // keep the top edge under the photo whatever the word size
       var cx = T.x + w / 2, cy = base - size * 0.395;
       ctx.save();
       ctx.translate(cx + s.dx, cy + s.dy); ctx.scale(Math.max(s.sc, 0.0001), Math.max(s.sc, 0.0001)); ctx.translate(-cx, -cy);
@@ -135,11 +135,14 @@
     }
     // Definition
     if (s.dOp > 0.001 && item.def) {
-      var D = L.DEF, wt = item.defWeight || 500;
+      var D = L.DEF, wt = item.defWeight || 500, dk = item.defScale || 1, dSize = D.size * dk;
+      var tSize = L.TITLE.size * (item.titleScale || 1);
+      if (item.word) { ctx.font = L.TITLE.weight + ' ' + tSize + 'px ' + FONT; setTrack(ctx, L.TITLE.track * tSize); var tw = ctx.measureText(item.word).width; if (tw > L.TITLE.maxW) tSize = tSize * L.TITLE.maxW / tw; }
+      var dBase = D.base - (L.TITLE.size - tSize) * 0.79 + (dSize - D.size) * 0.76;   // follow the word, keep the same gap
       ctx.save(); ctx.globalAlpha = s.dOp;
-      ctx.font = wt + ' ' + D.size + 'px ' + FONT; setTrack(ctx, D.track * D.size);
+      ctx.font = wt + ' ' + dSize + 'px ' + FONT; setTrack(ctx, D.track * dSize);
       var lines = wrapLines(ctx, item.def, D.maxW);
-      lines.forEach(function (ln, i) { ctx.fillText(ln, D.x, D.base + s.dY + i * D.lineH); });
+      lines.forEach(function (ln, i) { ctx.fillText(ln, D.x, dBase + s.dY + i * D.lineH * dk); });
       ctx.restore();
     }
     ctx.restore();
@@ -286,13 +289,13 @@
 
     var items = [], active = 0;
     var opts = { res: '4k', format: 'mov', extra: 0 };
-    function fromSaved(s) { return { word: s.word || '', def: s.def || '', defWeight: s.defWeight || 500, crop: s.crop || { x: .5, y: .5, z: 1 }, img: null, imgSrc: s.imgSrc || '' }; }
+    function fromSaved(s) { return { word: s.word || '', def: s.def || '', defWeight: s.defWeight || 500, titleScale: s.titleScale || 1, defScale: s.defScale || 1, crop: s.crop || { x: .5, y: .5, z: 1 }, img: null, imgSrc: s.imgSrc || '' }; }
     if (cfg.initial && cfg.initial.length) cfg.initial.forEach(function (s) { items.push(fromSaved(s)); });
     try { var savedOpts = JSON.parse(localStorage.getItem(STORE + ':opts') || 'null'); if (savedOpts) Object.assign(opts, savedOpts); } catch (e) { }
-    if (!cfg.shared) try { var saved = JSON.parse(localStorage.getItem(STORE) || 'null'); if (saved) { (saved.items || []).forEach(function (s) { items.push({ word: s.word, def: s.def, defWeight: s.defWeight || 500, crop: s.crop || { x: .5, y: .5, z: 1 }, img: null, imgSrc: s.imgSrc || '' }); }); if (saved.opts) Object.assign(opts, saved.opts); } } catch (e) { }
+    if (!cfg.shared) try { var saved = JSON.parse(localStorage.getItem(STORE) || 'null'); if (saved) { (saved.items || []).forEach(function (s) { items.push({ word: s.word, def: s.def, defWeight: s.defWeight || 500, titleScale: s.titleScale || 1, defScale: s.defScale || 1, crop: s.crop || { x: .5, y: .5, z: 1 }, img: null, imgSrc: s.imgSrc || '' }); }); if (saved.opts) Object.assign(opts, saved.opts); } } catch (e) { }
     if (!items.length) items.push(cfg.shared ? { word: '', def: '', defWeight: 500, crop: { x: .5, y: .5, z: 1 }, img: null } : { word: 'to die', def: 'To stop living. Can also mean to stop working,', defWeight: 500, crop: { x: .5, y: .5, z: 1 }, img: null });
     var saveTimer = null;
-    function plain() { return items.map(function (i) { return { word: i.word, def: i.def, defWeight: i.defWeight, crop: i.crop, imgSrc: /^blob:/.test(i.imgSrc || '') ? '' : (i.imgSrc || '') }; }); }
+    function plain() { return items.map(function (i) { return { word: i.word, def: i.def, defWeight: i.defWeight, titleScale: i.titleScale || 1, defScale: i.defScale || 1, crop: i.crop, imgSrc: /^blob:/.test(i.imgSrc || '') ? '' : (i.imgSrc || '') }; }); }
     function save() {
       try { localStorage.setItem(STORE + ':opts', JSON.stringify(opts)); } catch (e) { }
       if (cfg.shared) { clearTimeout(saveTimer); saveTimer = setTimeout(function () { cfg.shared(plain()); }, 700); return; }
@@ -344,6 +347,17 @@
       var f = Math.round(clamp(parseFloat(lenIn.value) || 4.5, 3.75, 20) * 24);
       opts.extra = f - BASE_FRAMES; lenIn.value = (f / 24).toFixed(2); scrub.max = f; save(); draw();
     };
+    function sizeCtl(key, lbl) {
+      var r = el('input', { type: 'range', min: 40, max: 140, step: 5, value: 100, style: 'width:100%' });
+      var v = el('span', { style: 'float:right;color:var(--txt)' });
+      var lab = el('label', null, [document.createTextNode(lbl), v]);
+      function show() { v.textContent = r.value + '%'; }
+      r.oninput = function () { var it = items[active]; if (!it) return; it[key] = (+r.value) / 100; show(); draw(); save(); };
+      r.ondblclick = function () { r.value = 100; r.oninput(); };
+      return { box: el('div', null, [lab, r]), set: function (it) { r.value = Math.round(((it && it[key]) || 1) * 100); show(); } };
+    }
+    var tSz = sizeCtl('titleScale', 'Word size (this word)'), dSz = sizeCtl('defScale', 'Definition size (this word)');
+    function syncSizes() { tSz.set(items[active]); dSz.set(items[active]); }
     wtSel.onchange = function () { var it = items[active]; if (it) { it.defWeight = +wtSel.value; save(); draw(); } };
     var prog = el('div', { class: 'prog' }, [el('i')]);
     var status = el('div', { class: 'hint' });
@@ -354,7 +368,8 @@
         el('div', null, [el('label', { text: 'Size' }), resSel]),
         el('div', null, [el('label', { text: 'Format' }), fmtSel]),
         el('div', null, [el('label', { text: 'Clip length (seconds, 24 fps)' }), lenIn]),
-        el('div', null, [el('label', { text: 'Definition weight (this word)' }), wtSel])
+        el('div', null, [el('label', { text: 'Definition weight (this word)' }), wtSel]),
+        tSz.box, dSz.box
       ]),
       el('div', { class: 'bar', style: 'margin-top:12px' }, [exOne, exAll]),
       prog, status
@@ -435,7 +450,7 @@
       if (active === i) return;
       active = i;
       Array.prototype.forEach.call(listEl.children, function (r, k) { r.classList.toggle('on', k === i); });
-      wtSel.value = String(items[i].defWeight || 500);
+      wtSel.value = String(items[i].defWeight || 500); syncSizes();
       draw();
     }
 
@@ -487,6 +502,7 @@
     function frameNow() { return +scrub.value; }
     function draw(fr) {
       var it = items[active]; if (!it) return;
+      if (typeof tSz !== 'undefined' && tSz && fr == null) syncSizes();
       var n = fr != null ? fr : frameNow();
       it._placeholder = true;
       drawFrame(ctx, it, stateAt(refFrame(n, opts.extra)), 1);
@@ -551,7 +567,7 @@
 
     // fonts first, then draw
     items.forEach(function (it) { if (it.imgSrc) loadUrl(it, it.imgSrc, true); });
-    Promise.all([700, 500, 600].map(function (w) { return document.fonts.load(w + ' 100px ' + FONT); })).then(function () { renderList(); wtSel.value = String(items[0].defWeight || 500); draw(); });
+    Promise.all([700, 500, 600].map(function (w) { return document.fonts.load(w + ' 100px ' + FONT); })).then(function () { renderList(); wtSel.value = String(items[0].defWeight || 500); syncSizes(); draw(); });
     renderList(); draw();
     return { destroy: function () { flush(); destroyed = true; playing = false; document.removeEventListener('paste', onPaste); root.innerHTML = ''; }, flush: flush, items: function () { return items; }, opts: opts, _render: renderClip, _state: stateAt, _draw: drawFrame, _buildMov: buildMov };
   }

@@ -689,11 +689,10 @@
         st.s = lerp(1, S.prevScale, q);
         st.o = t < D + TM.move ? lerp(TM.dimTo, S.prevOp, q) : lerp(S.prevOp, 0, ramp(t, D + TM.move, D + TM.prevFade));
       }
-      // per-word italic: tip in word by word before leaving, settle word by word after arriving
+      // per-word italic: tip in word by word before leaving
       for (var w = 0; w < lay.words; w++) {
         var out1 = D < 1e8 ? ramp(t, D - TM.waveStart + w * TM.waveStep, D - TM.waveStart + w * TM.waveStep + TM.waveRamp) : 0;
-        var e0 = A + w * TM.enterStep, inn = j > 0 && t >= A ? (t < e0 + TM.enterUp ? ramp(t, e0, e0 + TM.enterUp) : 1 - ramp(t, e0 + TM.enterUp, e0 + TM.enterUp + TM.enterDown)) : 0;
-        st.skew.push(Math.max(out1, inn));
+        st.skew.push(out1); // no italic wiggle after arriving (that was an editing slip in the sample)
       }
       if (st.o > 0.002) out.push(st);
     }

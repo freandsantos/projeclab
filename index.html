@@ -732,7 +732,7 @@
     return { env: env, step: 0.02 };
   }
   // Pick part changes from the pauses in the voice: the N-1 longest pauses, each change just before speech resumes.
-  function autoTimes(envObj, count, lead) {
+  function autoTimes(envObj, count, lead, weights) {
     var env = envObj.env, step = envObj.step, sorted = Array.prototype.slice.call(env).sort(function (a, b) { return a - b; });
     var lo = sorted[Math.floor(sorted.length * 0.1)] || 0, hi = sorted[Math.floor(sorted.length * 0.9)] || 1;
     var thr = lo + (hi - lo) * 0.12, gaps = [], start = null, firstVoice = null;
@@ -743,8 +743,34 @@
       if (!quiet && start !== null) { if ((i - start) * step >= 0.3 && firstVoice !== null && start * step > firstVoice) gaps.push({ a: start * step, b: i * step, len: (i - start) * step }); start = null; }
     }
     if (gaps.length < count - 1) return null;
-    var pick = gaps.slice().sort(function (x, y) { return y.len - x.len; }).slice(0, count - 1).sort(function (x, y) { return x.a - y.a; });
-    var times = [0].concat(pick.map(function (g) { return Math.max(0, g.b - (lead == null ? 0.25 : lead)); }));
+    lead = lead == null ? 0.25 : lead;
+    var times;
+    if (weights && weights.length === count) {
+      // Expected change points from how long each part is, then pick one pause per change (in order),
+      // favouring long pauses close to where the change is expected.
+      var lastVoice = 0; for (var q = env.length - 1; q >= 0; q--) if (env[q] >= thr) { lastVoice = q * step; break; }
+      var span = Math.max(1, lastVoice - (firstVoice || 0)), tot = weights.reduce(function (a, b) { return a + b; }, 0), acc = 0, E = [];
+      for (var e = 0; e < count - 1; e++) { acc += weights[e]; E.push((firstVoice || 0) + span * acc / tot); }
+      var avg = span / count, K = gaps.length, M = count - 1, INF = 1e18;
+      var cost = function (m, k) { return -Math.min(gaps[k].len, 3) + 1.6 * Math.abs(gaps[k].b - E[m]) / avg; };
+      var dp = [], from = [];
+      for (var m = 0; m < M; m++) { dp.push(new Array(K).fill(INF)); from.push(new Array(K).fill(-1)); }
+      for (var k = 0; k < K; k++) dp[0][k] = cost(0, k);
+      for (var m2 = 1; m2 < M; m2++) {
+        var best = INF, bi = -1;
+        for (var k2 = 0; k2 < K; k2++) {
+          if (k2 > 0 && dp[m2 - 1][k2 - 1] < best) { best = dp[m2 - 1][k2 - 1]; bi = k2 - 1; }
+          if (bi >= 0) { dp[m2][k2] = best + cost(m2, k2); from[m2][k2] = bi; }
+        }
+      }
+      var endK = -1, bv = INF; for (var k3 = 0; k3 < K; k3++) if (dp[M - 1][k3] < bv) { bv = dp[M - 1][k3]; endK = k3; }
+      if (endK < 0) return null;
+      var chosen = []; for (var m3 = M - 1, kk = endK; m3 >= 0; m3--) { chosen.unshift(gaps[kk]); kk = from[m3][kk]; }
+      times = [0].concat(chosen.map(function (g) { return Math.round(Math.max(0, g.b - lead) * 100) / 100; }));
+    } else {
+      var pick = gaps.slice().sort(function (x, y) { return y.len - x.len; }).slice(0, count - 1).sort(function (x, y) { return x.a - y.a; });
+      times = [0].concat(pick.map(function (g) { return Math.round(Math.max(0, g.b - lead) * 100) / 100; }));
+    }
     return times;
   }
 
@@ -840,6 +866,7 @@
     var tapBtn = el('button', { text: 'Tap to time' });
     var evenBtn = el('button', { text: 'Space evenly' });
     left.appendChild(el('div', { class: 'row2' }, [autoBtn, tapBtn, evenBtn]));
+    left.appendChild(el('div', { class: 'hint', text: 'Fine-tune: drag the yellow markers on the waveform, use −0.1 / +0.1, or type the time. To re-tap from one part on, click that part first, then Tap to time.' }));
     left.appendChild(status);
     left.appendChild(list);
     wrap.appendChild(left);
@@ -903,7 +930,9 @@
         if (i === 0) tIn.disabled = true;
         tIn.onclick = function (e) { e.stopPropagation(); };
         tIn.onchange = function () { var v = parseFloat(tIn.value); if (isFinite(v)) { data.times[i] = v; fixTimes(); } renderList(); drawWave(); seek(data.times[i] - 0.8); save(); };
-        var row = el('div', { class: 'sh-seg' + (i === active ? ' on' : '') }, [el('div', { class: 'num', text: String(i + 1) }), el('div', { class: 'txt', text: p.join('\n') }), tIn]);
+        var nudge = function (d) { return el('button', { text: (d < 0 ? '−' : '+') + '0.1', title: 'Move this change ' + (d < 0 ? 'earlier' : 'later'), style: 'padding:2px 6px;font-size:11px', onclick: function (e) { e.stopPropagation(); if (!i) return; data.times[i] = Math.max(0, (data.times[i] || 0) + d); fixTimes(); active = i; renderList(); seek(data.times[i] - 0.9); save(); } }); };
+        var tBox = el('div', null, [tIn, i ? el('div', { style: 'display:flex;gap:4px;justify-content:flex-end;margin-top:4px' }, [nudge(-0.1), nudge(0.1)]) : null]);
+        var row = el('div', { class: 'sh-seg' + (i === active ? ' on' : '') }, [el('div', { class: 'num', text: String(i + 1) }), el('div', { class: 'txt', text: p.join('\n') }), tBox]);
         row.onclick = function () { active = i; seek(Math.max(0, (data.times[i] || 0) - (i ? 0.9 : 0))); renderList(); };
         list.appendChild(row);
       });
@@ -926,7 +955,23 @@
       data.times.slice(0, parts.length).forEach(function (t, i) { var x = Math.round(t / len * w); g.fillRect(x, 0, 3, h); g.fillText(String(i + 1), x + 5, 20); });
       var px = Math.round(now() / len * w); g.fillStyle = '#ffffff'; g.fillRect(px, 0, 2, h);
     }
-    wave.onclick = function (e) { var r = wave.getBoundingClientRect(); seek((e.clientX - r.left) / r.width * totalLen()); };
+    var dragI = -1, dragMoved = false;
+    function waveT(e) { var r = wave.getBoundingClientRect(); return clamp((e.clientX - r.left) / r.width, 0, 1) * totalLen(); }
+    wave.addEventListener('pointerdown', function (e) {
+      var r = wave.getBoundingClientRect(), len = totalLen(), x = e.clientX - r.left, best = -1, bd = 9;
+      for (var i = 1; i < parts.length; i++) { var d = Math.abs(data.times[i] / len * r.width - x); if (d < bd) { bd = d; best = i; } }
+      if (best > 0) { dragI = best; dragMoved = false; wave.setPointerCapture(e.pointerId); e.preventDefault(); }
+      else seek(waveT(e));
+    });
+    wave.addEventListener('pointermove', function (e) {
+      var r = wave.getBoundingClientRect(), len = totalLen(), x = e.clientX - r.left, near = false;
+      for (var i = 1; i < parts.length; i++) if (Math.abs(data.times[i] / len * r.width - x) < 9) near = true;
+      wave.style.cursor = dragI > 0 || near ? 'ew-resize' : 'pointer';
+      if (dragI < 1) return;
+      var lo = data.times[dragI - 1] + 0.6, hi = dragI + 1 < parts.length ? data.times[dragI + 1] - 0.6 : totalLen();
+      data.times[dragI] = Math.round(clamp(waveT(e), lo, hi) * 100) / 100; dragMoved = true; cur = data.times[dragI]; draw();
+    });
+    wave.addEventListener('pointerup', function () { if (dragI > 0) { var i = dragI; dragI = -1; active = i; renderList(); if (dragMoved) { seek(data.times[i] - 0.9); save(); } } });
 
     // ----- playback
     var playing = false, t0 = 0, base = 0, cur = 0;
@@ -1003,7 +1048,7 @@
       if (!parts.length) { status.textContent = 'Paste the script first.'; return; }
       if (!envObj) { status.textContent = 'Load the audio first.'; return; }
       if (parts.length < 2) { status.textContent = 'Only one part, nothing to time.'; return; }
-      var t = autoTimes(envObj, parts.length, 0.25);
+      var t = autoTimes(envObj, parts.length, 0.25, parts.map(function (p) { return p.join(' ').split(/\s+/).length; }));
       if (!t) { status.textContent = 'Not enough clear pauses in the audio for ' + parts.length + ' parts. Try "Tap to time".'; return; }
       data.times = t; fixTimes(); renderList(); draw(); save();
       status.textContent = 'Timed ' + parts.length + ' parts from the pauses. Press Play to check, and fix any time in the list.';
@@ -1017,7 +1062,7 @@
     function tapKey(e) { if (!tapping) return; if (e.code === 'Space') { e.preventDefault(); tap(); } else if (e.key === 'Escape') { e.preventDefault(); endTap(); } }
     function tap() {
       if (!tapping) return;
-      var t = Math.max(0, now() - 0.12);
+      var t = Math.round(Math.max(0, now() - 0.12) * 100) / 100;
       tapIdx++;
       if (tapIdx < parts.length) { data.times[tapIdx] = t; for (var i = tapIdx + 1; i < parts.length; i++) if (data.times[i] <= t + 0.6) data.times[i] = t + 0.6 * (i - tapIdx); }
       if (tapIdx >= parts.length - 1) { tapInfo.textContent = 'Last part set ✓'; setTimeout(endTap, 600); }
@@ -1028,9 +1073,11 @@
     tapBtn.onclick = function () {
       if (parts.length < 2) { status.textContent = 'Paste a script with at least two parts first.'; return; }
       if (!audio) { status.textContent = 'Load the audio first, so you can tap along to it.'; return; }
-      tapping = true; tapIdx = 0; tapInfo.textContent = 'Listening… tap when part 2 of ' + parts.length + ' should come in';
+      var from = active > 0 ? active : 1;
+      tapping = true; tapIdx = from - 1;
+      tapInfo.textContent = 'Listening… tap when part ' + (from + 1) + ' of ' + parts.length + ' should come in';
       tapBox.style.display = 'flex'; document.addEventListener('keydown', tapKey, true);
-      cur = 0; play();
+      cur = from > 1 ? Math.max(0, (data.times[from - 1] || 0) - 0.5) : 0; play();
     };
     tapNext.onclick = tap;
 

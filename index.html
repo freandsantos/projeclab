@@ -1852,33 +1852,97 @@
     { id: "wordsummary", name: "Word Summary", note: "Word + photo + short definition with the Volk English animation. Paste the words, add photos, export transparent 4K clips for Premiere." }
   ];
   var clientTools = (c) => Array.isArray(c && c.tools) ? c.tools : /volk/i.test(c && c.name || "") ? ["wordsummary"] : [];
+  /* Word lists are saved as named sets (one row each in db.wordlists, matched by clientId),
+     e.g. "Video 135". The first list ever saved used id "wl-<clientId>" with no name. */
+  var wsSets = (db, clientId) => (db.wordlists || [])
+    .filter((w) => w && w.clientId === clientId)
+    .sort((a, b) => String(b.created || b.at || "").localeCompare(String(a.created || a.at || "")));
+  var wsLatest = (sets) => sets.slice().sort((a, b) => String(b.at || "").localeCompare(String(a.at || "")))[0];
+  var wsSetName = (w) => w && w.name ? w.name : "Untitled set";
+  var wsDefaultName = () => "New set · " + shortDate((/* @__PURE__ */ new Date()).toISOString());
   function WordSummaryModal({ db, me, client, mutate, close }) {
     const h = React.createElement;
     const box = useRef(null);
     const mut = useRef(mutate);
     mut.current = mutate;
+    const dbRef = useRef(db);
+    dbRef.current = db;
+    const sets = wsSets(db, client.id);
+    const [curId, setCurId] = useState(() => sets.length ? wsLatest(sets).id : uid("wl"));
+    const gone = useRef({});
+    const newNames = useRef({});
+    const [draftName, setDraftName] = useState(null);
+    const [pendingName, setPendingName] = useState(() => sets.length ? null : wsDefaultName());
+    const cur = sets.find((w) => w.id === curId);
+    const curName = cur ? wsSetName(cur) : pendingName || wsDefaultName();
+    /* Write a set row, creating it the first time something is saved. */
+    const writeSet = (id, patch, nameIfNew) => {
+      if (gone.current[id]) return;
+      const was = (dbRef.current.wordlists || []).find((x) => x.id === id);
+      /* Nothing actually changed (e.g. photos re-loading when a set is opened) - don't touch it. */
+      if (was && Object.keys(patch).every((k) => JSON.stringify(was[k]) === JSON.stringify(patch[k]))) return;
+      if (!was && patch.items && !patch.name && !patch.items.some((x) => x && (x.word || x.def || x.imgSrc))) return;
+      mut.current((n) => {
+      n.wordlists = Array.isArray(n.wordlists) ? n.wordlists : [];
+      const now = (/* @__PURE__ */ new Date()).toISOString();
+      const i = n.wordlists.findIndex((x) => x.id === id);
+      if (i >= 0) n.wordlists[i] = { ...n.wordlists[i], ...patch, by: me.id, at: now };
+      else n.wordlists.push({ id, clientId: client.id, name: nameIfNew || wsDefaultName(), items: [], created: now, ...patch, by: me.id, at: now });
+      });
+    };
     useEffect(() => {
       if (typeof window.mountWordSummary !== "function" || !box.current) return;
-      const id = "wl-" + client.id;
-      const row = (db.wordlists || []).find((w) => w.id === id);
+      const id = curId;
+      const row = (dbRef.current.wordlists || []).find((w) => w.id === id);
       const api = window.mountWordSummary(box.current, {
         title: `${client.name} · Word Summary`,
         storeKey: "ps-ws-" + client.id,
         initial: row && Array.isArray(row.items) ? row.items : [],
-        shared: (items) => mut.current((n) => {
-          n.wordlists = Array.isArray(n.wordlists) ? n.wordlists : [];
-          const rec = { id, clientId: client.id, items, by: me.id, at: (/* @__PURE__ */ new Date()).toISOString() };
-          const i = n.wordlists.findIndex((x) => x.id === id);
-          if (i >= 0) n.wordlists[i] = rec; else n.wordlists.push(rec);
-        }),
+        shared: (items) => writeSet(id, { items }, newNames.current[id]),
         uploadFile: typeof window.uploadPhoto === "function" ? async (f) => (await window.uploadPhoto(f)).url : null
       });
       return () => api.destroy();
-    }, []);
+    }, [curId]);
+    const pick = (id) => { setDraftName(null); setPendingName(null); setCurId(id); };
+    const newSet = () => { const id = uid("wl"), nm = wsDefaultName(); newNames.current[id] = nm; setDraftName(null); setPendingName(nm); setCurId(id); };
+    if (!cur && !newNames.current[curId]) newNames.current[curId] = curName;
+    const commitName = () => {
+      if (draftName == null) return;
+      const nm = draftName.trim().slice(0, 80);
+      setDraftName(null);
+      if (!nm || nm === curName) return;
+      if (cur) writeSet(curId, { name: nm }); else { newNames.current[curId] = nm; setPendingName(nm); writeSet(curId, { name: nm }, nm); }
+    };
+    const removeSet = () => {
+      if (!cur) return;
+      const n = (cur.items || []).filter((x) => x && x.word).length;
+      if (!window.confirm(`Delete the set “${curName}”${n ? ` and its ${n} word${n > 1 ? "s" : ""}` : ""}? This can't be undone.`)) return;
+      const rest = sets.filter((w) => w.id !== curId);
+      gone.current[curId] = true;
+      mut.current((d) => { d.wordlists = (d.wordlists || []).filter((x) => x.id !== curId); });
+      if (rest.length) pick(wsLatest(rest).id); else newSet();
+    };
+    const count = (w) => (w.items || []).filter((x) => x && x.word).length;
     return h("div", { className: "ps-overlay ps-ws-overlay" },
       h("div", { className: "ps-ws-modal", role: "dialog", "aria-modal": "true" },
-        h("button", { className: "ps-x ps-ws-x", onClick: close, "aria-label": "Close" }, "\xD7"),
-        typeof window.mountWordSummary === "function" ? h("div", { ref: box }) : h("p", { className: "ps-empty", style: { padding: 30 } }, "The Word Summary tool didn't load. Refresh the page and try again.")));
+        h("div", { className: "ps-ws-bar" },
+          h("label", { className: "ps-ws-l" }, "Set"),
+          h("select", { className: "ps-ws-sel", value: curId, onChange: (e) => pick(e.target.value) },
+            !cur && h("option", { value: curId }, `${curName} (new)`),
+            sets.map((w) => h("option", { key: w.id, value: w.id }, `${wsSetName(w)} · ${count(w)} word${count(w) === 1 ? "" : "s"}`))),
+          h("input", {
+            className: "ps-ws-name", value: draftName != null ? draftName : curName, title: "Rename this set",
+            "aria-label": "Set name", placeholder: "Name this set, e.g. Video 135",
+            onFocus: (e) => { setDraftName(curName); setTimeout(() => e.target.select(), 0); },
+            onChange: (e) => setDraftName(e.target.value),
+            onBlur: commitName,
+            onKeyDown: (e) => { if (e.key === "Enter") e.target.blur(); if (e.key === "Escape") { setDraftName(null); e.target.blur(); } }
+          }),
+          h("button", { className: "ps-ws-btn", onClick: newSet }, "+ New set"),
+          cur && h("button", { className: "ps-ws-btn danger", onClick: removeSet }, "Delete set"),
+          h("span", { className: "ps-ws-saved" }, cur ? `Saved · ${shortDate(cur.at)}` : "Saves when you add words"),
+          h("button", { className: "ps-x ps-ws-x", onClick: close, "aria-label": "Close" }, "\xD7")),
+        typeof window.mountWordSummary === "function" ? h("div", { ref: box, key: curId }) : h("p", { className: "ps-empty", style: { padding: 30 } }, "The Word Summary tool didn't load. Refresh the page and try again.")));
   }
   function EditorTools({ db, me, client, canEdit, mutate }) {
     const h = React.createElement;
@@ -1887,9 +1951,9 @@
     const on = clientTools(client);
     const shown = EDITOR_TOOLS.filter((t) => on.includes(t.id) || canEdit);
     if (!shown.length) return null;
-    const list = (db.wordlists || []).find((w) => w.id === "wl-" + client.id);
-    const items = list && Array.isArray(list.items) ? list.items.filter((x) => x && x.word) : [];
-    const by = list && (db.people || []).find((p) => p.id === list.by);
+    const sets = wsSets(db, client.id);
+    const latest = sets.length ? wsLatest(sets) : null;
+    const by = latest && (db.people || []).find((p) => p.id === latest.by);
     const setOn = (id, val) => mutate((n) => {
       const c = n.clients.find((x) => x.id === client.id);
       if (!c) return;
@@ -1898,15 +1962,15 @@
     });
     return h(React.Fragment, null,
       h("h3", { className: "ps-h3" }, "Editor tools"),
-      h("p", { className: "ps-lede" }, "Shortcuts for this client's graphics. Anyone working on the client can open them; the word list is shared with the team."),
+      h("p", { className: "ps-lede" }, "Shortcuts for this client's graphics. Anyone working on the client can open them; word sets are shared with the team."),
       h("div", { className: "ps-tools" }, shown.map((t) => {
         const isOn = on.includes(t.id);
         return h("div", { key: t.id, className: `ps-tool ${isOn ? "" : "off"}` },
           h("div", { className: "ps-tool-t" }, t.name, !isOn && h("span", { className: "ps-chip" }, "Off for this client")),
           h("p", { className: "ps-muted ps-tool-n" }, t.note),
-          isOn && t.id === "wordsummary" && h("p", { className: "ps-muted ps-tool-m" }, items.length
-            ? `${items.length} word${items.length > 1 ? "s" : ""} · ${items.filter((x) => x.imgSrc).length} with photos${list.at ? ` · updated ${shortDate(list.at)}${by ? ` by ${by.name.split(" ")[0]}` : ""}` : ""}`
-            : "No words yet."),
+          isOn && t.id === "wordsummary" && h("p", { className: "ps-muted ps-tool-m" }, sets.length
+            ? `${sets.length} saved set${sets.length > 1 ? "s" : ""} · latest: ${wsSetName(latest)}${by ? ` (${by.name.split(" ")[0]}, ${shortDate(latest.at)})` : ""}`
+            : "No word sets yet."),
           h("div", { className: "ps-btnrow ps-tool-b" },
             canEdit && h("button", { className: "ps-btn ghost small", onClick: () => setOn(t.id, !isOn) }, isOn ? "Switch off" : "Switch on"),
             isOn && h("button", { className: "ps-btn small", onClick: () => setOpen(t.id) }, "Open")));
@@ -6655,7 +6719,20 @@ ${lines.join("\n")}`);
 .ps-ws-overlay{padding:20px 12px;z-index:40}
 .ps-ws-modal{position:relative;width:100%;max-width:1520px;border-radius:14px;overflow:hidden;background:#0f1115;box-shadow:0 30px 60px -20px rgba(0,0,0,.5)}
 .ps-ws-x{color:#8b93a5;z-index:2}
-.ps-ws-modal .ws{padding-top:46px}
+.ps-ws-bar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:12px 56px 12px 18px;border-bottom:1px solid #262b36;background:#141821;font:14px system-ui,-apple-system,Segoe UI,Roboto,sans-serif;color:#e9ecf2}
+.ps-ws-l{font-size:12px;color:#8b93a5;font-weight:600;text-transform:uppercase;letter-spacing:.06em}
+.ps-ws-sel,.ps-ws-name{font:inherit;color:#e9ecf2;background:#0b0d11;border:1px solid #262b36;border-radius:7px;padding:6px 8px}
+.ps-ws-sel{max-width:260px}
+.ps-ws-name{min-width:200px;flex:1 1 200px;max-width:340px;font-weight:600}
+.ps-ws-name:focus{border-color:#f5b041;outline:0}
+.ps-ws-btn{font:inherit;border:1px solid #262b36;background:#20242e;color:#e9ecf2;border-radius:8px;padding:6px 11px;cursor:pointer}
+.ps-ws-btn:hover{border-color:#3a4252}
+.ps-ws-btn.danger{color:#ff8a80}
+.ps-ws-saved{font-size:12px;color:#8b93a5;margin-left:auto}
+.ps-ws-bar .ps-ws-x{top:10px}
+.ps-root .ws input,.ps-root .ws select,.ps-root .ws textarea,.ps-root .ps-ws-bar select,.ps-root .ps-ws-bar input{background:#0b0d11;color:#e9ecf2;border:1px solid #262b36;border-radius:7px;padding:6px 8px}
+.ps-root .ws input[type=range]{background:none;border:0;padding:0}
+.ps-root .ps-ws-bar input.ps-ws-name:focus{border-color:#f5b041}
 .ps-briefnote>summary{display:flex;align-items:baseline;gap:10px;cursor:pointer;list-style:none;font-weight:600;font-size:14px}
 .ps-briefnote>summary::-webkit-details-marker{display:none}
 .ps-briefnote>summary::before{content:"\u25B8";color:var(--muted);font-size:11px;transition:transform .12s;display:inline-block}

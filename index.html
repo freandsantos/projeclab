@@ -689,10 +689,10 @@
         st.s = lerp(1, S.prevScale, q);
         st.o = t < D + TM.move ? lerp(TM.dimTo, S.prevOp, q) : lerp(S.prevOp, 0, ramp(t, D + TM.move, D + TM.prevFade));
       }
-      // per-word italic: tip in word by word before leaving
+      // words stay upright (the italic wave from the sample was removed at the editor's request)
       for (var w = 0; w < lay.words; w++) {
         var out1 = D < 1e8 ? ramp(t, D - TM.waveStart + w * TM.waveStep, D - TM.waveStart + w * TM.waveStep + TM.waveRamp) : 0;
-        st.skew.push(out1); // no italic wiggle after arriving (that was an editing slip in the sample)
+        st.skew.push(0); // no italic at all: the editor asked for the leaving sentence to stay straight
       }
       if (st.o > 0.002) out.push(st);
     }

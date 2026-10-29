@@ -3707,6 +3707,7 @@
     const hello = hour < 12 ? "Good morning" : hour < 18 ? "Good afternoon" : "Good evening";
     const today = new Date().toLocaleDateString("en-US", { timeZone: "Asia/Manila", weekday: "long", month: "short", day: "numeric" });
     const first = (me.name || "").split(/\s+/)[0];
+    const [peek, setPeek] = React.useState(null);
     const role = me.role;
     const isClient = role === "client";
     const isMgr = isManager(role);
@@ -3736,7 +3737,17 @@
       ...[...myTasks, ...finalChecks].map((t) => ({ key: "t" + t.id, title: t.text || "Untitled task", note: [taskStatusMeta(t).label, taskDueText(t.due).text].filter(Boolean).join(" \xB7 "), tone: taskDueText(t.due).tone, at: t.due ? dueDate(t.due).getTime() : far, open: () => openTask(t.id) })),
       ...mine.map((v) => { const d = isClient ? null : dueOf(v); const s = stageOf(v.stage); const c = (db.clients || []).find((x) => x.id === v.clientId); return { key: "v" + v.id, title: v.title, note: [c && c.name, s && s.name, dueText(d).text].filter(Boolean).join(" \xB7 "), tone: dueText(d).tone, at: d ? d.getTime() : far, open: () => openVideo(v.id) }; })
     ].sort((a, b) => a.at - b.at).slice(0, 5);
-    const stat = (label, n, note, tone) => h("div", { className: "ch-stat" }, h("span", { className: "ch-stat-l" }, label), h("b", { className: `ch-stat-n ${tone || ""}` }, n), h("span", { className: "ch-stat-note" }, note));
+    /* Each number opens a pop-up listing what's behind it. */
+    const nameOf = (id) => ((db.people || []).find((p) => p.id === id) || {}).name || "";
+    const clientOf = (id) => ((db.clients || []).find((c) => c.id === id) || {}).name || "";
+    const tItem = (t) => { const d = t.done ? { text: t.doneAt ? `Done ${shortDate(t.doneAt)}` : "Done", tone: "" } : taskDueText(t.due); return { key: "t" + t.id, title: t.text || "Untitled task", note: [t.personId !== me.id && nameOf(t.personId), t.clientId && clientOf(t.clientId), !t.done && taskStatusMeta(t).label, d.text].filter(Boolean).join(" \xB7 "), tone: d.tone, open: () => openTask(t.id) }; };
+    const vItem = (v) => { const d = isClient ? { text: "", tone: "" } : dueText(dueOf(v)); const st = stageOf(v.stage); return { key: "v" + v.id, title: v.title || "Untitled video", note: [!isClient && clientOf(v.clientId), v.editorId && v.editorId !== me.id && !isClient && nameOf(v.editorId), st && st.name, d.text].filter(Boolean).join(" \xB7 "), tone: d.tone, open: () => openVideo(v.id) }; };
+    const goApprovals = () => { setPeek(null); setTimeout(() => { const el = document.querySelector(".ps-req"); if (el) el.scrollIntoView({ behavior: "smooth", block: "center" }); }, 50); };
+    const rItem = (r) => ({ key: "r" + r.id, title: nameOf(r.personId) || "Someone", note: [r.from && shortDate(r.from + "T00:00:00"), r.to && r.to !== r.from && "to " + shortDate(r.to + "T00:00:00")].filter(Boolean).join(" "), open: goApprovals });
+    const aItem = (p) => { const a = awayOn(p, isoDay(new Date())); return { key: "a" + p.id, title: p.name, note: a && a.to ? `Away until ${shortDate(a.to + "T00:00:00")}` : "Away today" }; };
+    const stat = (label, n, note, tone, items) => h("button", { className: "ch-stat", onClick: () => setPeek({ label, note, items: items || [] }), "aria-haspopup": "dialog" }, h("span", { className: "ch-stat-l" }, label), h("b", { className: `ch-stat-n ${tone || ""}` }, n), h("span", { className: "ch-stat-note" }, note));
+    const mineVids = (f) => mine.filter(f).map(vItem);
+    const doneMine = (db.tasks || []).filter((t) => t.done && t.doneAt && t.doneAt >= new Date(Date.now() - 7 * DAY).toISOString() && (t.reviewFrom || t.personId) === me.id);
     return h("section", { className: "ch" },
       h("div", { className: "ch-hero" },
         h("div", { className: "ch-glow", "aria-hidden": "true" }),
@@ -3748,26 +3759,37 @@
         h("p", { className: "ch-sub" }, sub),
         h("span", { className: "ch-role" }, isClient && info.clientName ? info.clientName : (ROLES[me.role] || {}).label || me.role)),
       h("div", { className: "ch-stats" }, ...(isClient ? [
-        stat("Waiting on you", mine.length, mine.length ? "ready for your review" : "all clear"),
-        stat("In the works", info.inWorks || 0, "being made by the team"),
-        stat("Delivered this month", info.delivered || 0, info.delivered ? "sent to you" : "none yet", info.delivered ? "good" : ""),
-        stat("Delivered in total", info.deliveredAll || 0, "since you started")
+        stat("Waiting on you", mine.length, mine.length ? "ready for your review" : "all clear", "", mine.map(vItem)),
+        stat("In the works", (info.inWorksList || []).length, "being made by the team", "", (info.inWorksList || []).map(vItem)),
+        stat("Delivered this month", (info.deliveredList || []).length, (info.deliveredList || []).length ? "sent to you" : "none yet", (info.deliveredList || []).length ? "good" : "", (info.deliveredList || []).map(vItem)),
+        stat("Delivered in total", (info.deliveredAllList || []).length, "since you started", "", (info.deliveredAllList || []).map(vItem))
       ] : role === "hr" ? [
-        stat("Time off to approve", info.approvals || 0, info.approvals ? "waiting on you" : "nothing pending", info.approvals ? "late" : ""),
-        stat("Away today", info.awayToday || 0, info.awayNames || "everyone's in"),
-        stat("Open tasks", myTasks.length, myTasks.length ? "on your list" : "all clear"),
-        stat("Done this week", doneWeek, doneWeek ? "nice work" : "last 7 days", doneWeek ? "good" : "")
+        stat("Time off to approve", (info.approvalsList || []).length, (info.approvalsList || []).length ? "waiting on you" : "nothing pending", (info.approvalsList || []).length ? "late" : "", (info.approvalsList || []).map(rItem)),
+        stat("Away today", (info.awayList || []).length, info.awayNames || "everyone's in", "", (info.awayList || []).map(aItem)),
+        stat("Open tasks", myTasks.length, myTasks.length ? "on your list" : "all clear", "", myTasks.map(tItem)),
+        stat("Done this week", doneMine.length, doneMine.length ? "nice work" : "last 7 days", doneMine.length ? "good" : "", doneMine.map(tItem))
       ] : isMgr ? [
-        stat("Final checks", finalChecks.length, finalChecks.length ? "waiting on you" : "nothing to check"),
-        stat("Past due", info.lateStudio || 0, info.lateStudio ? "across the studio" : "all on time", info.lateStudio ? "late" : ""),
-        stat("Time off to approve", info.approvals || 0, info.approvals ? "waiting on you" : "nothing pending"),
-        stat("Done this week", info.doneStudio || 0, "across the studio", info.doneStudio ? "good" : "")
+        stat("Final checks", finalChecks.length, finalChecks.length ? "waiting on you" : "nothing to check", "", finalChecks.map(tItem)),
+        stat("Past due", (info.lateVideos || []).length + (info.overdueTasks || []).length, (info.lateVideos || []).length + (info.overdueTasks || []).length ? "across the studio" : "all on time", (info.lateVideos || []).length + (info.overdueTasks || []).length ? "late" : "", [...(info.overdueTasks || []).map(tItem), ...(info.lateVideos || []).map(vItem)]),
+        stat("Time off to approve", (info.approvalsList || []).length, (info.approvalsList || []).length ? "waiting on you" : "nothing pending", "", (info.approvalsList || []).map(rItem)),
+        stat("Done this week", (info.doneStudioList || []).length, "across the studio", (info.doneStudioList || []).length ? "good" : "", (info.doneStudioList || []).slice().sort((a, b) => b.doneAt.localeCompare(a.doneAt)).map(tItem))
       ] : [
-        stat("Open tasks", myTasks.length, myTasks.length ? "on your list" : "all clear"),
-        stat("Due today", dueToday.length, lateCount ? `${lateCount} past due` : dueToday.length ? "finish these first" : "nothing due", lateCount ? "late" : ""),
-        me.role === "qa" ? stat("To review", toReview, toReview ? "waiting on you" : "queue is clear") : stat("With QA", withQa, withQa ? "waiting on review" : "nothing in review"),
-        stat("Done this week", doneWeek, doneWeek ? "nice work" : "last 7 days", doneWeek ? "good" : "")
+        stat("Open tasks", myTasks.length, myTasks.length ? "on your list" : "all clear", "", myTasks.map(tItem)),
+        stat("Due today", dueToday.length, lateCount ? `${lateCount} past due` : dueToday.length ? "finish these first" : "nothing due", lateCount ? "late" : "", dueToday.map(tItem)),
+        me.role === "qa" ? stat("To review", toReview, toReview ? "waiting on you" : "queue is clear", "", [...myTasks.filter((t) => taskStatus(t) === "review").map(tItem), ...mineVids((v) => v.stage === "qa")])
+          : stat("With QA", withQa, withQa ? "waiting on review" : "nothing in review", "", [...(db.tasks || []).filter((t) => !t.done && t.reviewFrom === me.id && t.personId !== me.id).map(tItem), ...(isEditor(me.role) ? (db.videos || []).filter((v) => !v.archived && v.editorId === me.id && v.stage === "qa").map(vItem) : [])]),
+        stat("Done this week", doneMine.length, doneMine.length ? "nice work" : "last 7 days", doneMine.length ? "good" : "", doneMine.map(tItem))
       ])),
+      peek && h("div", { className: "ps-overlay", onClick: (e) => e.target === e.currentTarget && setPeek(null) },
+        h("div", { className: "ps-modal ch-peek", role: "dialog", "aria-modal": "true", "aria-label": peek.label },
+          h("button", { className: "ps-x", onClick: () => setPeek(null), "aria-label": "Close" }, "\xD7"),
+          h("span", { className: "ch-label" }, peek.label),
+          h("h2", { className: "ch-peek-h" }, peek.items.length, " ", peek.note),
+          peek.items.length ? h("ol", { className: "ch-steps" }, peek.items.map((x, i) => h("li", { key: x.key },
+            h(x.open ? "button" : "div", { className: `ch-step ${x.open ? "" : "static"}`, onClick: x.open ? () => { const go = x.open; if (go !== goApprovals) setPeek(null); go(); } : void 0 },
+              h("span", { className: "ch-num" }, i + 1),
+              h("span", { className: "ch-step-main" }, h("b", null, x.title), x.note ? h("span", { className: `ch-step-note ${x.tone || ""}` }, x.note) : null))))) :
+            h("p", { className: "ch-empty" }, "Nothing here right now."))),
       h("div", { className: "ch-cols" },
         h("div", { className: "ch-col" },
           h("span", { className: "ch-label" }, "Up next"),
@@ -5959,8 +5981,22 @@ ${lines.join("\n")}`);
       const wkAgo = new Date(Date.now() - 7 * DAY).toISOString();
       const monthKey = todayIso.slice(0, 7);
       const clientVids = client ? db.videos.filter((v) => v.clientId === client.id && !v.archived) : [];
+      const approvalsList = canApproveTimeoff(db, me) ? pendingTimeoff(db).filter((r) => {
+        if (r.personId === me.id) return false;
+        const a = approverFor(db, r.personId);
+        return a ? a.id === me.id : me.role === "lead";
+      }) : [];
+      const overdueTasks = db.tasks.filter((t) => !t.done && t.due && String(t.due).slice(0, 10) < todayIso);
       const homeInfo = {
         approvals: approvalCount,
+        approvalsList,
+        lateVideos: late,
+        overdueTasks,
+        doneStudioList: db.tasks.filter((t) => t.done && t.doneAt && t.doneAt >= wkAgo),
+        awayList,
+        inWorksList: waiting,
+        deliveredList: clientVids.filter((v) => v.stage === "ready" && (v.enteredAt || "").slice(0, 7) === monthKey),
+        deliveredAllList: clientVids.filter((v) => v.stage === "ready"),
         lateStudio: late.length + db.tasks.filter((t) => !t.done && t.due && String(t.due).slice(0, 10) < todayIso).length,
         doneStudio: db.tasks.filter((t) => t.done && t.doneAt && t.doneAt >= wkAgo).length,
         awayToday: awayList.length,
@@ -7937,6 +7973,15 @@ ${lines.join("\n")}`);
 html.ps-theming .ps-root,html.ps-theming .ps-root *{transition:background-color .55s ease,color .55s ease,border-color .55s ease,fill .55s ease!important}
 html.ps-theming .ps-theme-knob,html.ps-theming .ps-theme-ic{transition:transform .45s cubic-bezier(.34,1.45,.64,1),opacity .3s!important}
 @media (prefers-reduced-motion:reduce){.ps-theme-knob,.ps-theme-ic{transition:none}}
+.ch-stat{font:inherit;color:inherit;text-align:left;cursor:pointer;transition:border-color .18s,transform .18s,box-shadow .18s}
+.ch-stat:hover,.ch-stat:focus-visible{border-color:var(--accent);transform:translateY(-1px);box-shadow:0 6px 16px -10px rgba(26,34,48,.35)}
+@media (hover:none){.ch-stat:hover{border-color:var(--line);transform:none;box-shadow:none}}
+.ch-peek{max-width:560px;padding:24px 22px 18px}
+.ch-peek .ch-label{margin:0 6px 4px}
+.ch-peek-h{font-size:22px;font-weight:800;letter-spacing:-.02em;margin:0 6px 12px}
+.ch-step.static{cursor:default}
+.ch-step.static:hover{background:none;border-color:transparent;box-shadow:none;transform:none}
+.ch-step.static:hover .ch-num{background:none;color:inherit}
 `;
   window.ProjeclabStudios = ProjeclabStudios;
 })();

@@ -3697,6 +3697,60 @@
         ended.slice(0, 12).map((b) => row(b, "Delete", "Deleted."))));
   }
   /* ---- Archive & Trash page ------------------------------------------- */
+  /* ---- Creative home (test): a warm "Good morning" front page for the
+     creatives (editors, interns, team leaders, QA). Greeting by Manila time,
+     a few quick numbers, what's up next and the clients they're on. ---- */
+  var isCreative = (role) => isEditor(role) || role === "qa";
+  function CreativeHome({ db, me, mine, picker, openTask, openVideo }) {
+    const h = React.createElement;
+    const hour = Number(new Date().toLocaleString("en-US", { timeZone: "Asia/Manila", hour: "numeric", hour12: false })) % 24;
+    const hello = hour < 12 ? "Good morning" : hour < 18 ? "Good afternoon" : "Good evening";
+    const today = new Date().toLocaleDateString("en-US", { timeZone: "Asia/Manila", weekday: "long", month: "short", day: "numeric" });
+    const first = (me.name || "").split(/\s+/)[0];
+    const myTasks = (db.tasks || []).filter((t) => !t.done && t.personId === me.id);
+    const todayStart = startOfDay(new Date());
+    const dueToday = myTasks.filter((t) => t.due && startOfDay(dueDate(t.due)) <= todayStart);
+    const lateCount = myTasks.filter((t) => t.due && startOfDay(dueDate(t.due)) < todayStart).length;
+    const withQa = (db.tasks || []).filter((t) => !t.done && t.reviewFrom === me.id && t.personId !== me.id).length +
+      (isEditor(me.role) ? (db.videos || []).filter((v) => !v.archived && v.editorId === me.id && v.stage === "qa").length : 0);
+    const toReview = myTasks.filter((t) => taskStatus(t) === "review").length + mine.filter((v) => v.stage === "qa").length;
+    const weekAgo = new Date(Date.now() - 7 * DAY).toISOString();
+    const doneWeek = (db.tasks || []).filter((t) => t.done && t.doneAt && t.doneAt >= weekAgo && (t.reviewFrom || t.personId) === me.id).length;
+    const plural = (n, w) => `${n} ${w}${n === 1 ? "" : "s"}`;
+    const parts = [];
+    if (myTasks.length) parts.push(plural(myTasks.length, "open task"));
+    if (mine.length) parts.push(plural(mine.length, "video"));
+    const sub = (parts.length ? `${parts.join(" and ")} on your plate.` : "Nothing waiting on you right now.") + " Everything you're working on, in one place.";
+    /* Up next: open tasks and videos, soonest first; undated ones go last. */
+    const far = 864e13;
+    const next = [
+      ...myTasks.map((t) => ({ key: "t" + t.id, title: t.text || "Untitled task", note: [taskStatusMeta(t).label, taskDueText(t.due).text].filter(Boolean).join(" \xB7 "), tone: taskDueText(t.due).tone, at: t.due ? dueDate(t.due).getTime() : far, open: () => openTask(t.id) })),
+      ...mine.map((v) => { const d = dueOf(v); const s = stageOf(v.stage); const c = (db.clients || []).find((x) => x.id === v.clientId); return { key: "v" + v.id, title: v.title, note: [c && c.name, s && s.name, dueText(d).text].filter(Boolean).join(" \xB7 "), tone: dueText(d).tone, at: d ? d.getTime() : far, open: () => openVideo(v.id) }; })
+    ].sort((a, b) => a.at - b.at).slice(0, 5);
+    const stat = (label, n, note, tone) => h("div", { className: "ch-stat" }, h("span", { className: "ch-stat-l" }, label), h("b", { className: `ch-stat-n ${tone || ""}` }, n), h("span", { className: "ch-stat-note" }, note));
+    return h("section", { className: "ch" },
+      h("div", { className: "ch-hero" },
+        h("div", { className: "ch-glow", "aria-hidden": "true" }),
+        h("div", { className: "ch-hero-top" },
+          h("span", { className: "ch-eyebrow" }, "Projeclab Studios \xB7 ", today),
+          h("span", { className: "ch-hero-av" }, picker(me, 52))),
+        h("h1", { className: "ch-hello" }, hello, first ? h(React.Fragment, null, ",", h("br", null), first) : null),
+        h("p", { className: "ch-sub" }, sub),
+        h("span", { className: "ch-role" }, (ROLES[me.role] || {}).label || me.role)),
+      h("div", { className: "ch-stats" },
+        stat("Open tasks", myTasks.length, myTasks.length ? "on your list" : "all clear"),
+        stat("Due today", dueToday.length, lateCount ? `${lateCount} past due` : dueToday.length ? "finish these first" : "nothing due", lateCount ? "late" : ""),
+        me.role === "qa" ? stat("To review", toReview, toReview ? "waiting on you" : "queue is clear") : stat("With QA", withQa, withQa ? "waiting on review" : "nothing in review"),
+        stat("Done this week", doneWeek, doneWeek ? "nice work" : "last 7 days", doneWeek ? "good" : "")),
+      h("div", { className: "ch-cols" },
+        h("div", { className: "ch-col" },
+          h("span", { className: "ch-label" }, "Up next"),
+          next.length ? h("ol", { className: "ch-steps" }, next.map((x, i) => h("li", { key: x.key },
+            h("button", { className: "ch-step", onClick: x.open },
+              h("span", { className: "ch-num" }, i + 1),
+              h("span", { className: "ch-step-main" }, h("b", null, x.title), h("span", { className: `ch-step-note ${x.tone || ""}` }, x.note || "No due date")))))) :
+            h("p", { className: "ch-empty" }, "You're all caught up. New work shows up here."))));
+  }
   function ArchivePage({ db, me, mutate, setToast, confirm }) {
     const h = React.createElement;
     const [tab, setTab] = useState("archive");
@@ -4804,7 +4858,7 @@
       updateTask(t.id, { comments: comments.map((c) => c.id === id ? { ...c, text, to: mentionIds(text, people), editedAt: (/* @__PURE__ */ new Date()).toISOString() } : c) });
     } }), canEdit ? /* @__PURE__ */ React.createElement("div", { className: "ps-actions" }, !t.done && status === "in_progress" && !qa && !skipsQA(t) && /* @__PURE__ */ React.createElement("p", { className: "ps-warn" }, "Nobody has the QA role right now, so finishing this will skip review and mark it done directly. Add someone as QA in Settings first if that's not what you want."), !t.done && status !== "todo" && steps.length > 0 && !allTicked && /* @__PURE__ */ React.createElement("p", { className: "ps-warn" }, "Tick every step before this can ", status === "in_progress" ? canGoToReview ? viaQA ? "go to QA" : "be submitted for review" : qaOwnWork ? "go for final check" : "be finished" : status === "review" ? viaQA ? "pass QA" : "be approved" : "be finished", "."), (atReview || atFinal) && /* @__PURE__ */ React.createElement("p", { className: "ps-muted ps-rev-hint" }, "Changes needed? Write them in Revisions above and send it back."), /* @__PURE__ */ React.createElement("div", { className: "ps-btnrow" }, t.done ? /* @__PURE__ */ React.createElement("button", { className: "ps-btn", onClick: reopen }, "Reopen") : status === "todo" ? /* @__PURE__ */ React.createElement("button", { className: "ps-btn", onClick: start }, "Start task") : status === "in_progress" ? canGoToReview ? /* @__PURE__ */ React.createElement("button", { className: "ps-btn", disabled: !allTicked, onClick: sendToReview }, viaQA ? "Go to QA" : "Submit for review") : qaOwnWork || reportUp ? /* @__PURE__ */ React.createElement("button", { className: "ps-btn", disabled: !allTicked, onClick: passToLead }, "Send to ", signOff.name, " for final check") : /* @__PURE__ */ React.createElement("button", { className: "ps-btn", disabled: !allTicked, onClick: finish }, "Mark done") : status === "review" ? /* @__PURE__ */ React.createElement("button", { className: "ps-btn", disabled: !allTicked, onClick: canFinalCheck ? passToLead : finish }, viaQA ? "Pass QA" : "Approve") : /* @__PURE__ */ React.createElement("button", { className: "ps-btn", disabled: !allTicked, onClick: finish }, "Mark done")), canArchive && /* @__PURE__ */ React.createElement("button", { className: "ps-btn ghost small ps-arch-task", onClick: archive }, "Archive"), (lead || t.by === me.id) && /* @__PURE__ */ React.createElement("button", { className: "ps-btn ghost small ps-del-task", onClick: remove }, "Move to Trash")) : /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("p", { className: "ps-muted", style: { marginTop: 16 } }, "Only ", person ? person.name : "the owner", " or the lead can work on this."), t.by === me.id && /* @__PURE__ */ React.createElement("div", { className: "ps-btnrow" }, /* @__PURE__ */ React.createElement("button", { className: "ps-btn ghost small ps-arch-task", onClick: archive }, "Archive"), /* @__PURE__ */ React.createElement("button", { className: "ps-btn ghost small ps-del-task", onClick: remove }, "Move to Trash"))), history.length > 0 && /* @__PURE__ */ React.createElement("details", { className: "ps-history" }, /* @__PURE__ */ React.createElement("summary", null, "History (", history.length, ")"), /* @__PURE__ */ React.createElement("ul", null, history.slice().reverse().map((h, i) => /* @__PURE__ */ React.createElement("li", { key: i }, /* @__PURE__ */ React.createElement("span", { className: "ps-muted" }, new Date(h.at).toLocaleString(void 0, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })), " ", who(h.by), ": ", h.text))))));
   }
-  function TodoList({ person, tasks, clients, canAdd, canToggle, mutate, openTask, shareFinalCheck = false, notify, confirm }) {
+  function TodoList({ person, tasks, clients, canAdd, canToggle, mutate, openTask, shareFinalCheck = false, notify, confirm, videos = [], openVideo }) {
     const [shut, setShut] = useState({ done: true });
     const [text, setText] = useState("");
     const [due, setDue] = useState("");
@@ -4873,6 +4927,25 @@
       const d = String(t.due).slice(0, 10);
       buckets[d === todayKey ? "today" : d < todayKey ? "overdue" : "next"].push(t);
     });
+    /* Videos (creatives' front page) sit in the same buckets as tasks, so an
+       editor has one list to work from instead of two. */
+    const vDue = (v) => { const d = dueOf(v); return d ? isoDay(d) : ""; };
+    videos.forEach((v) => {
+      const d = vDue(v);
+      if (!d) return buckets.none.push({ ...v, __video: true });
+      buckets[d === todayKey ? "today" : d < todayKey ? "overdue" : "next"].push({ ...v, __video: true, due: d });
+    });
+    if (videos.length) ["today", "overdue", "next"].forEach((k) => buckets[k].sort((a, b) => String(a.due).slice(0, 10) < String(b.due).slice(0, 10) ? -1 : String(a.due).slice(0, 10) > String(b.due).slice(0, 10) ? 1 : 0));
+    const vrow = (v) => {
+      const c = clients.find((x) => x.id === v.clientId);
+      const dt = dueText(dueOf(v));
+      return /* @__PURE__ */ React.createElement("div", { key: "v" + v.id, className: "ps-todo ps-todo-video" },
+        /* @__PURE__ */ React.createElement("span", { className: "ps-todo-vmark", "aria-hidden": "true" }),
+        /* @__PURE__ */ React.createElement("button", { className: "ps-todo-open", onClick: () => openVideo && openVideo(v.id) },
+          /* @__PURE__ */ React.createElement("span", { className: "ps-todo-text" }, c && /* @__PURE__ */ React.createElement("span", { className: "ps-client-tag" }, c.name), /* @__PURE__ */ React.createElement("span", { className: "ps-kind" }, "Video"), v.title || "Untitled video")),
+        /* @__PURE__ */ React.createElement(OwnerChip, { v }),
+        dt.text && /* @__PURE__ */ React.createElement("span", { className: `ps-due ${dt.tone}` }, dt.text));
+    };
     const groups = [
       ["today", "Today"],
       ["overdue", "Overdue"],
@@ -4881,7 +4954,7 @@
       ["done", "Done"]
     ].filter(([k]) => buckets[k].length);
     return /* @__PURE__ */ React.createElement("div", { className: "ps-todos" },
-      list.length === 0 && /* @__PURE__ */ React.createElement("p", { className: "ps-empty" }, "No tasks."),
+      list.length === 0 && !videos.length && /* @__PURE__ */ React.createElement("p", { className: "ps-empty" }, "No tasks."),
       groups.map(([k, label]) => /* @__PURE__ */ React.createElement("details", {
         key: k,
         className: `ps-tgroup ${k}`,
@@ -4891,7 +4964,7 @@
         /* @__PURE__ */ React.createElement("summary", null,
           /* @__PURE__ */ React.createElement("span", { className: "ps-tgroup-name" }, label),
           /* @__PURE__ */ React.createElement("span", { className: "ps-tgroup-n" }, buckets[k].length)),
-        buckets[k].map(row))),
+        buckets[k].map((t) => t.__video ? vrow(t) : row(t)))),
       removed && /* @__PURE__ */ React.createElement("div", { className: "ps-todo removed", role: "status" }, /* @__PURE__ */ React.createElement("span", null, "Deleted \u201C", removed.text, "\u201D"), /* @__PURE__ */ React.createElement("button", { className: "ps-undo", onClick: restore }, "Undo"), /* @__PURE__ */ React.createElement("button", { className: "ps-x-small", "aria-label": "Dismiss", onClick: () => setRemoved(null) }, "\xD7")), canAdd && /* @__PURE__ */ React.createElement("div", { className: "ps-form" }, /* @__PURE__ */ React.createElement(
       "input",
       {
@@ -5854,10 +5927,11 @@ ${lines.join("\n")}`);
         ...myTasksDone.map((t) => ({ kind: "task", id: t.id, title: t.text, at: t.doneAt })),
         ...myVideosLive.map((v) => ({ kind: "video", id: v.id, title: v.title, at: v.enteredAt }))
       ].sort((a, b) => b.at.localeCompare(a.at)).slice(0, 10);
-      body = /* @__PURE__ */ React.createElement(React.Fragment, null, me.role !== "client" ? /* @__PURE__ */ React.createElement("div", { className: "ps-profile" }, picker(me, 72), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("h1", { className: "ps-h1" }, "My tasks"), /* @__PURE__ */ React.createElement("p", { className: "ps-muted" }, me.name, " \xB7 ", ROLES[me.role].label))) : /* @__PURE__ */ React.createElement("h1", { className: "ps-h1" }, "Hi, ", me.name), me.role !== "client" && /* @__PURE__ */ React.createElement(PinnedNotice, { db, me, mutate, canEdit: lead || me.role === "hr" }), /* @__PURE__ */ React.createElement("p", { className: "ps-lede" }, waitingLine, lead && late.length ? ` ${late.length} past due across the studio.` : ""), client && billingOf(client).id !== "none" && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Your invoices"), /* @__PURE__ */ React.createElement(InvoiceList, { db, client, canEdit: false, toggle: () => {
+      const creative = isCreative(me.role);
+      body = /* @__PURE__ */ React.createElement(React.Fragment, null, creative ? /* @__PURE__ */ React.createElement(CreativeHome, { db, me, mine, picker, openTask: setTaskId, openVideo: setOpenId }) : me.role !== "client" ? /* @__PURE__ */ React.createElement("div", { className: "ps-profile" }, picker(me, 72), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("h1", { className: "ps-h1" }, "My tasks"), /* @__PURE__ */ React.createElement("p", { className: "ps-muted" }, me.name, " \xB7 ", ROLES[me.role].label))) : /* @__PURE__ */ React.createElement("h1", { className: "ps-h1" }, "Hi, ", me.name), me.role !== "client" && /* @__PURE__ */ React.createElement(PinnedNotice, { db, me, mutate, canEdit: lead || me.role === "hr" }), !creative && /* @__PURE__ */ React.createElement("p", { className: "ps-lede" }, waitingLine, lead && late.length ? ` ${late.length} past due across the studio.` : ""), client && billingOf(client).id !== "none" && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Your invoices"), /* @__PURE__ */ React.createElement(InvoiceList, { db, client, canEdit: false, toggle: () => {
     }, addJob: () => {
     }, removeJob: () => {
-    }, openVideo: setOpenId })), me.role !== "hr" && mine.length > 0 && /* @__PURE__ */ React.createElement(React.Fragment, null, me.role !== "client" && /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Videos"), /* @__PURE__ */ React.createElement(VideoTable, { rows: mine, db, me, open: setOpenId, showClient: me.role !== "client" })), me.role !== "client" && canApproveTimeoff(db, me) && /* @__PURE__ */ React.createElement(TimeOffPanel, { db, me, mutate, setToast, queueOnly: true }), me.role !== "client" && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Tasks"), /* @__PURE__ */ React.createElement(TodoList, { person: me, tasks: db.tasks, clients: db.clients, canAdd: false, canToggle: canEditPerson(me), mutate, openTask: setTaskId, shareFinalCheck: lead, notify: notifyTask, confirm: setConfirming }), helping.length > 0 && /* @__PURE__ */ React.createElement("div", { className: "ps-helping" }, /* @__PURE__ */ React.createElement("h4", { className: "ps-h4" }, "Assisting on (", helping.length, ")"), helping.map((t) => {
+    }, openVideo: setOpenId })), me.role !== "hr" && !creative && mine.length > 0 && /* @__PURE__ */ React.createElement(React.Fragment, null, me.role !== "client" && /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Videos"), /* @__PURE__ */ React.createElement(VideoTable, { rows: mine, db, me, open: setOpenId, showClient: me.role !== "client" })), me.role !== "client" && canApproveTimeoff(db, me) && /* @__PURE__ */ React.createElement(TimeOffPanel, { db, me, mutate, setToast, queueOnly: true }), me.role !== "client" && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Tasks"), /* @__PURE__ */ React.createElement(TodoList, { person: me, tasks: db.tasks, clients: db.clients, canAdd: false, canToggle: canEditPerson(me), mutate, openTask: setTaskId, shareFinalCheck: lead, notify: notifyTask, confirm: setConfirming, videos: creative ? mine : [], openVideo: setOpenId }), helping.length > 0 && /* @__PURE__ */ React.createElement("div", { className: "ps-helping" }, /* @__PURE__ */ React.createElement("h4", { className: "ps-h4" }, "Assisting on (", helping.length, ")"), helping.map((t) => {
         const owner = db.people.find((p) => p.id === t.personId);
         return /* @__PURE__ */ React.createElement("button", { key: t.id, className: "ps-helping-row", onClick: () => setTaskId(t.id) }, /* @__PURE__ */ React.createElement("span", { className: "ps-helping-t" }, t.text || "Untitled task"), /* @__PURE__ */ React.createElement("span", { className: "ps-muted" }, owner ? `${owner.name}'s task` : "", " \xB7 ", taskStatusMeta(t).label, t.due ? ` \xB7 ${taskDueText(t.due).text}` : ""));
       }))), (canDelegate(me.role) || canSelfAssign(me.role)) && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, canDelegate(me.role) ? "Delegate" : "Add a task"), /* @__PURE__ */ React.createElement(Delegate, { db, me, draft, setDraft, addTodo: delegateTodo, setToast })), client && waiting.length > 0 && /* @__PURE__ */ React.createElement("details", { className: "ps-fold" }, /* @__PURE__ */ React.createElement("summary", null, waiting.length, " with someone else"), /* @__PURE__ */ React.createElement(VideoTable, { rows: waiting, db, me, open: setOpenId, showClient: false })), me.role !== "client" && /* @__PURE__ */ React.createElement(ActivityHistory, { db, me, mutate, setToast, openTask: setTaskId, openVideo: setOpenId }), !client && recentlyFinished.length > 0 && /* @__PURE__ */ React.createElement("details", { className: "ps-fold" }, /* @__PURE__ */ React.createElement("summary", null, "Recently finished (", recentlyFinished.length, ")"), /* @__PURE__ */ React.createElement("div", { className: "ps-table" }, recentlyFinished.map((f) => /* @__PURE__ */ React.createElement(
@@ -5887,7 +5961,16 @@ ${lines.join("\n")}`);
       setFilter(null);
       setOpenId(null);
       setTaskId(null);
-    } }, Object.keys(ROLES).map((r) => /* @__PURE__ */ React.createElement("optgroup", { key: r, label: ROLES[r].label }, db.people.filter((p) => p.role === r).map((p) => /* @__PURE__ */ React.createElement("option", { key: p.id, value: p.id }, p.name)))))), /* @__PURE__ */ React.createElement("button", { className: "ps-mode", onClick: () => setDark(!dark), "aria-label": "Toggle dark mode" }, dark ? "Light" : "Dark"), typeof window !== "undefined" && window.cutlineAuth && /* @__PURE__ */ React.createElement("button", { className: "ps-mode", onClick: window.cutlineAuth.signOut, title: window.cutlineAuth.email }, "Sign out")), /* @__PURE__ */ React.createElement("div", { className: "ps-shell" }, /* @__PURE__ */ React.createElement("nav", { className: "ps-side" }, nav.map(([k, label, n]) => /* @__PURE__ */ React.createElement("button", { key: k, className: `ps-nav ${page.tab === k ? "on" : ""}`, onClick: () => {
+    } }, Object.keys(ROLES).map((r) => /* @__PURE__ */ React.createElement("optgroup", { key: r, label: ROLES[r].label }, db.people.filter((p) => p.role === r).map((p) => /* @__PURE__ */ React.createElement("option", { key: p.id, value: p.id }, p.name)))))), /* @__PURE__ */ React.createElement("button", { className: `ps-theme ${dark ? "on" : ""}`, role: "switch", "aria-checked": dark, "aria-label": "Dark mode", title: dark ? "Switch to light" : "Switch to dark", onClick: () => {
+      /* The colours fade across for a moment instead of snapping. */
+      const root = document.documentElement;
+      if (!(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches)) {
+        root.classList.add("ps-theming");
+        clearTimeout(window.__psThemeT);
+        window.__psThemeT = setTimeout(() => root.classList.remove("ps-theming"), 650);
+      }
+      setDark(!dark);
+    } }, /* @__PURE__ */ React.createElement("span", { className: "ps-theme-ic moon", "aria-hidden": "true" }, /* @__PURE__ */ React.createElement("svg", { viewBox: "0 0 24 24", width: 14, height: 14 }, /* @__PURE__ */ React.createElement("path", { d: "M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5Z", fill: "none", stroke: "currentColor", strokeWidth: 2, strokeLinejoin: "round" }))), /* @__PURE__ */ React.createElement("span", { className: "ps-theme-ic sun", "aria-hidden": "true" }, /* @__PURE__ */ React.createElement("svg", { viewBox: "0 0 24 24", width: 14, height: 14 }, /* @__PURE__ */ React.createElement("circle", { cx: 12, cy: 12, r: 4, fill: "none", stroke: "currentColor", strokeWidth: 2 }), /* @__PURE__ */ React.createElement("path", { d: "M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.3 5.3l1.4 1.4M17.3 17.3l1.4 1.4M5.3 18.7l1.4-1.4M17.3 6.7l1.4-1.4", stroke: "currentColor", strokeWidth: 2, strokeLinecap: "round" }))), /* @__PURE__ */ React.createElement("span", { className: "ps-theme-knob", "aria-hidden": "true" })), typeof window !== "undefined" && window.cutlineAuth && /* @__PURE__ */ React.createElement("button", { className: "ps-mode", onClick: window.cutlineAuth.signOut, title: window.cutlineAuth.email }, "Sign out")), /* @__PURE__ */ React.createElement("div", { className: "ps-shell" }, /* @__PURE__ */ React.createElement("nav", { className: "ps-side" }, nav.map(([k, label, n]) => /* @__PURE__ */ React.createElement("button", { key: k, className: `ps-nav ${page.tab === k ? "on" : ""}`, onClick: () => {
       setPage({ tab: k });
       setFilter(null);
     } }, label, n ? /* @__PURE__ */ React.createElement("span", { className: "ps-count" }, n) : null)), me.role === "client" ? clientsShown.map((c) => /* @__PURE__ */ React.createElement(
@@ -7757,6 +7840,59 @@ ${lines.join("\n")}`);
   .ps-searchpanel{width:300px}
 }
 @media (prefers-reduced-motion:reduce){.ps-frame{transition:none}.ps-frame:hover{transform:none}.ps-dot{animation:none}}
+
+/* ---- Creative home (test): greeting card for editors, interns, team leaders, QA ---- */
+.ch{margin:0 0 6px}
+.ch-hero{position:relative;overflow:hidden;border-radius:22px;padding:26px 30px 30px;color:#F3F6FA;min-height:230px;
+  background:linear-gradient(172deg,#141B26 0%,#1F2A3A 38%,#3D5670 72%,#8FA7BC 100%);box-shadow:0 18px 40px -22px rgba(26,34,48,.55)}
+.ps-root.dark .ch-hero{background:linear-gradient(172deg,#070A10 0%,#111A26 40%,#22374A 75%,#4E6B82 100%);box-shadow:0 18px 40px -22px rgba(0,0,0,.8)}
+.ch-glow{position:absolute;right:-80px;bottom:-120px;width:420px;height:320px;border-radius:50%;background:radial-gradient(closest-side,rgba(45,212,191,.38),rgba(45,212,191,0));pointer-events:none;animation:ch-drift 9s ease-in-out infinite alternate}
+@keyframes ch-drift{from{transform:translate(0,0)}to{transform:translate(-40px,-18px)}}
+.ch-hero-top{position:relative;display:flex;align-items:center;justify-content:space-between;gap:12px}
+.ch-eyebrow{font-size:11px;font-weight:600;letter-spacing:.14em;text-transform:uppercase;color:rgba(243,246,250,.7)}
+.ch-hero-av .ps-av{box-shadow:0 0 0 2px rgba(255,255,255,.55)}
+.ch-hello{position:relative;margin:18px 0 10px;font-weight:800;font-size:52px;line-height:.98;letter-spacing:-.04em;font-variation-settings:"opsz" 96}
+.ch-sub{position:relative;margin:0;max-width:46ch;color:rgba(243,246,250,.82);font-size:15px}
+.ch-role{position:relative;display:inline-block;margin-top:16px;padding:4px 12px;border-radius:999px;font-size:12px;font-weight:600;background:rgba(255,255,255,.14);border:1px solid rgba(255,255,255,.22);backdrop-filter:blur(6px)}
+.ch-stats{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:14px 0 0}
+.ch-stat{display:flex;flex-direction:column;gap:2px;padding:14px 16px;background:var(--card);border:1px solid var(--line);border-radius:16px}
+.ch-stat-l{font-size:10.5px;font-weight:600;letter-spacing:.12em;text-transform:uppercase;color:var(--muted)}
+.ch-stat-n{font-size:34px;font-weight:800;letter-spacing:-.04em;line-height:1.1}
+.ch-stat-n.late{color:var(--late)}.ch-stat-n.good{color:var(--accent)}
+.ch-stat-note{font-size:12px;color:var(--muted)}
+.ch-cols{display:grid;grid-template-columns:1fr;gap:12px;margin-top:12px}
+.ch-col{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:16px 14px 10px}
+.ch-label{display:block;font-size:10.5px;font-weight:600;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);margin:0 6px 8px}
+.ch-steps{list-style:none;margin:0;padding:0}
+.ch-step{display:flex;align-items:flex-start;gap:12px;width:100%;text-align:left;background:none;border:1px solid transparent;border-radius:12px;padding:10px 10px;cursor:pointer;transition:background .18s,border-color .18s,box-shadow .18s,transform .18s}
+.ch-step:hover,.ch-step:focus-visible{background:var(--paper);border-color:var(--line);box-shadow:0 6px 16px -10px rgba(26,34,48,.35);transform:translateY(-1px)}
+.ch-num{flex:0 0 26px;height:26px;border-radius:50%;border:1.5px solid var(--ink);display:grid;place-items:center;font-size:12px;font-weight:600;margin-top:1px}
+.ch-step:hover .ch-num{background:var(--ink);color:var(--card)}
+.ch-step-main{display:flex;flex-direction:column;min-width:0}
+.ch-step-main b{font-weight:600;font-size:16px;line-height:1.3}
+.ch-step-note{font-size:13px;color:var(--muted)}
+.ch-step-note.late{color:var(--late)}.ch-step-note.soon{color:var(--warn)}
+.ch-empty{color:var(--muted);margin:4px 6px 10px;font-size:14px}
+@media (prefers-reduced-motion:reduce){.ch-glow{animation:none}.ch-step{transition:none}}
+@media (max-width:760px){.ch-stats{grid-template-columns:repeat(2,1fr)}.ch-cols{grid-template-columns:1fr}.ch-hello{font-size:40px}.ch-hero{padding:22px 20px 24px}}
+.ps-todo-vmark{flex:0 0 16px;width:16px;height:16px;margin-top:3px;border-radius:3px;background:var(--line)}
+
+/* ---- Dark/light switch: knob slides, sun in light, moon in dark ---- */
+.ps-theme{position:relative;flex:0 0 auto;width:58px;height:32px;border-radius:999px;border:1px solid var(--line);background:var(--paper);cursor:pointer;padding:0;transition:background .4s,border-color .4s;box-shadow:inset 0 1px 2px rgba(26,34,48,.12)}
+.ps-theme-knob{position:absolute;top:3px;left:3px;width:24px;height:24px;border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.25),0 2px 8px -2px rgba(0,0,0,.25);transition:transform .45s cubic-bezier(.34,1.45,.64,1),width .2s ease}
+.ps-theme:active .ps-theme-knob{width:30px}
+.ps-theme.on:active .ps-theme-knob{transform:translateX(20px)}
+.ps-theme.on .ps-theme-knob{transform:translateX(26px)}
+.ps-theme-ic{position:absolute;top:50%;width:14px;height:14px;margin-top:-7px;display:block;line-height:0;color:var(--muted);transition:opacity .3s,transform .45s cubic-bezier(.34,1.45,.64,1)}
+.ps-theme-ic svg{display:block}
+.ps-theme-ic.sun{right:8px;color:#C27A0E}
+.ps-theme-ic.moon{left:8px;color:#E6EBF2;opacity:0;transform:rotate(-60deg) scale(.6)}
+.ps-theme.on .ps-theme-ic.sun{opacity:0;transform:rotate(90deg) scale(.6)}
+.ps-theme.on .ps-theme-ic.moon{opacity:1;transform:none}
+.ps-root.dark .ps-theme{background:#0B1018;box-shadow:inset 0 1px 3px rgba(0,0,0,.5)}
+html.ps-theming .ps-root,html.ps-theming .ps-root *{transition:background-color .55s ease,color .55s ease,border-color .55s ease,fill .55s ease!important}
+html.ps-theming .ps-theme-knob,html.ps-theming .ps-theme-ic{transition:transform .45s cubic-bezier(.34,1.45,.64,1),opacity .3s!important}
+@media (prefers-reduced-motion:reduce){.ps-theme-knob,.ps-theme-ic{transition:none}}
 `;
   window.ProjeclabStudios = ProjeclabStudios;
 })();

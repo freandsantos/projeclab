@@ -3741,8 +3741,8 @@
       h("div", { className: "ch-hero" },
         h("div", { className: "ch-glow", "aria-hidden": "true" }),
         h("div", { className: "ch-hero-top" },
-          h("span", { className: "ch-eyebrow" }, "Projeclab Studios \xB7 ", today),
-          h("span", { className: "ch-hero-av" }, picker(me, 52))),
+          h("span", { className: "ch-eyebrow" }, "Projeclab Studios \xB7 ", today)),
+        h("span", { className: "ch-hero-av" }, picker(me, 64)),
         h("h1", { className: "ch-hello" }, hello, first ? h(React.Fragment, null, ",", h("br", null), first) : null),
         h("p", { className: "ch-sub" }, sub),
         h("span", { className: "ch-role" }, isClient && info.clientName ? info.clientName : (ROLES[me.role] || {}).label || me.role)),
@@ -7891,8 +7891,9 @@ ${lines.join("\n")}`);
 @keyframes ch-drift{from{transform:translate(0,0)}to{transform:translate(-40px,-18px)}}
 .ch-hero-top{position:relative;display:flex;align-items:center;justify-content:space-between;gap:12px}
 .ch-eyebrow{font-size:11px;font-weight:600;letter-spacing:.14em;text-transform:uppercase;color:rgba(243,246,250,.7)}
+.ch-hero-av{position:relative;display:inline-block;margin-top:18px}
 .ch-hero-av .ps-av{box-shadow:0 0 0 2px rgba(255,255,255,.55)}
-.ch-hello{position:relative;margin:18px 0 10px;font-weight:800;font-size:52px;line-height:.98;letter-spacing:-.04em;font-variation-settings:"opsz" 96}
+.ch-hello{position:relative;margin:12px 0 10px;font-weight:800;font-size:52px;line-height:.98;letter-spacing:-.04em;font-variation-settings:"opsz" 96}
 .ch-sub{position:relative;margin:0;max-width:46ch;color:rgba(243,246,250,.82);font-size:15px}
 .ch-role{position:relative;display:inline-block;margin-top:16px;padding:4px 12px;border-radius:999px;font-size:12px;font-weight:600;background:rgba(255,255,255,.14);border:1px solid rgba(255,255,255,.22);backdrop-filter:blur(6px)}
 .ch-stats{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:14px 0 0}

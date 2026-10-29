@@ -3701,13 +3701,18 @@
      creatives (editors, interns, team leaders, QA). Greeting by Manila time,
      a few quick numbers, what's up next and the clients they're on. ---- */
   var isCreative = (role) => isEditor(role) || role === "qa";
-  function CreativeHome({ db, me, mine, picker, openTask, openVideo }) {
+  function CreativeHome({ db, me, mine, picker, openTask, openVideo, info = {} }) {
     const h = React.createElement;
     const hour = Number(new Date().toLocaleString("en-US", { timeZone: "Asia/Manila", hour: "numeric", hour12: false })) % 24;
     const hello = hour < 12 ? "Good morning" : hour < 18 ? "Good afternoon" : "Good evening";
     const today = new Date().toLocaleDateString("en-US", { timeZone: "Asia/Manila", weekday: "long", month: "short", day: "numeric" });
     const first = (me.name || "").split(/\s+/)[0];
-    const myTasks = (db.tasks || []).filter((t) => !t.done && t.personId === me.id);
+    const role = me.role;
+    const isClient = role === "client";
+    const isMgr = isManager(role);
+    /* Final checks waiting on a manager show up in their list too (reports only for the Lead). */
+    const finalChecks = isMgr ? (db.tasks || []).filter((t) => !t.done && taskStatus(t) === "final_check" && (t.kind !== "report" || role === "lead")) : [];
+    const myTasks = isClient ? [] : (db.tasks || []).filter((t) => !t.done && t.personId === me.id && !finalChecks.includes(t));
     const todayStart = startOfDay(new Date());
     const dueToday = myTasks.filter((t) => t.due && startOfDay(dueDate(t.due)) <= todayStart);
     const lateCount = myTasks.filter((t) => t.due && startOfDay(dueDate(t.due)) < todayStart).length;
@@ -3719,13 +3724,17 @@
     const plural = (n, w) => `${n} ${w}${n === 1 ? "" : "s"}`;
     const parts = [];
     if (myTasks.length) parts.push(plural(myTasks.length, "open task"));
+    if (finalChecks.length) parts.push(plural(finalChecks.length, "final check"));
     if (mine.length) parts.push(plural(mine.length, "video"));
-    const sub = (parts.length ? `${parts.join(" and ")} on your plate.` : "Nothing waiting on you right now.") + " Everything you're working on, in one place.";
+    if (info.approvals) parts.push(plural(info.approvals, "time-off request"));
+    const sub = isClient
+      ? (mine.length ? `${plural(mine.length, "video")} waiting on you. ` : "Nothing waiting on you right now. ") + "All your videos, in one place."
+      : (parts.length ? `${parts.join(", ").replace(/, ([^,]*)$/, " and $1")} on your plate.` : "Nothing waiting on you right now.") + (isMgr ? " Everything across the studio, in one place." : " Everything you're working on, in one place.");
     /* Up next: open tasks and videos, soonest first; undated ones go last. */
     const far = 864e13;
     const next = [
-      ...myTasks.map((t) => ({ key: "t" + t.id, title: t.text || "Untitled task", note: [taskStatusMeta(t).label, taskDueText(t.due).text].filter(Boolean).join(" \xB7 "), tone: taskDueText(t.due).tone, at: t.due ? dueDate(t.due).getTime() : far, open: () => openTask(t.id) })),
-      ...mine.map((v) => { const d = dueOf(v); const s = stageOf(v.stage); const c = (db.clients || []).find((x) => x.id === v.clientId); return { key: "v" + v.id, title: v.title, note: [c && c.name, s && s.name, dueText(d).text].filter(Boolean).join(" \xB7 "), tone: dueText(d).tone, at: d ? d.getTime() : far, open: () => openVideo(v.id) }; })
+      ...[...myTasks, ...finalChecks].map((t) => ({ key: "t" + t.id, title: t.text || "Untitled task", note: [taskStatusMeta(t).label, taskDueText(t.due).text].filter(Boolean).join(" \xB7 "), tone: taskDueText(t.due).tone, at: t.due ? dueDate(t.due).getTime() : far, open: () => openTask(t.id) })),
+      ...mine.map((v) => { const d = isClient ? null : dueOf(v); const s = stageOf(v.stage); const c = (db.clients || []).find((x) => x.id === v.clientId); return { key: "v" + v.id, title: v.title, note: [c && c.name, s && s.name, dueText(d).text].filter(Boolean).join(" \xB7 "), tone: dueText(d).tone, at: d ? d.getTime() : far, open: () => openVideo(v.id) }; })
     ].sort((a, b) => a.at - b.at).slice(0, 5);
     const stat = (label, n, note, tone) => h("div", { className: "ch-stat" }, h("span", { className: "ch-stat-l" }, label), h("b", { className: `ch-stat-n ${tone || ""}` }, n), h("span", { className: "ch-stat-note" }, note));
     return h("section", { className: "ch" },
@@ -3736,12 +3745,28 @@
           h("span", { className: "ch-hero-av" }, picker(me, 52))),
         h("h1", { className: "ch-hello" }, hello, first ? h(React.Fragment, null, ",", h("br", null), first) : null),
         h("p", { className: "ch-sub" }, sub),
-        h("span", { className: "ch-role" }, (ROLES[me.role] || {}).label || me.role)),
-      h("div", { className: "ch-stats" },
+        h("span", { className: "ch-role" }, isClient && info.clientName ? info.clientName : (ROLES[me.role] || {}).label || me.role)),
+      h("div", { className: "ch-stats" }, ...(isClient ? [
+        stat("Waiting on you", mine.length, mine.length ? "ready for your review" : "all clear"),
+        stat("In the works", info.inWorks || 0, "being made by the team"),
+        stat("Delivered this month", info.delivered || 0, info.delivered ? "sent to you" : "none yet", info.delivered ? "good" : ""),
+        stat("Delivered in total", info.deliveredAll || 0, "since you started")
+      ] : role === "hr" ? [
+        stat("Time off to approve", info.approvals || 0, info.approvals ? "waiting on you" : "nothing pending", info.approvals ? "late" : ""),
+        stat("Away today", info.awayToday || 0, info.awayNames || "everyone's in"),
+        stat("Open tasks", myTasks.length, myTasks.length ? "on your list" : "all clear"),
+        stat("Done this week", doneWeek, doneWeek ? "nice work" : "last 7 days", doneWeek ? "good" : "")
+      ] : isMgr ? [
+        stat("Final checks", finalChecks.length, finalChecks.length ? "waiting on you" : "nothing to check"),
+        stat("Past due", info.lateStudio || 0, info.lateStudio ? "across the studio" : "all on time", info.lateStudio ? "late" : ""),
+        stat("Time off to approve", info.approvals || 0, info.approvals ? "waiting on you" : "nothing pending"),
+        stat("Done this week", info.doneStudio || 0, "across the studio", info.doneStudio ? "good" : "")
+      ] : [
         stat("Open tasks", myTasks.length, myTasks.length ? "on your list" : "all clear"),
         stat("Due today", dueToday.length, lateCount ? `${lateCount} past due` : dueToday.length ? "finish these first" : "nothing due", lateCount ? "late" : ""),
         me.role === "qa" ? stat("To review", toReview, toReview ? "waiting on you" : "queue is clear") : stat("With QA", withQa, withQa ? "waiting on review" : "nothing in review"),
-        stat("Done this week", doneWeek, doneWeek ? "nice work" : "last 7 days", doneWeek ? "good" : "")),
+        stat("Done this week", doneWeek, doneWeek ? "nice work" : "last 7 days", doneWeek ? "good" : "")
+      ])),
       h("div", { className: "ch-cols" },
         h("div", { className: "ch-col" },
           h("span", { className: "ch-label" }, "Up next"),
@@ -5927,11 +5952,27 @@ ${lines.join("\n")}`);
         ...myTasksDone.map((t) => ({ kind: "task", id: t.id, title: t.text, at: t.doneAt })),
         ...myVideosLive.map((v) => ({ kind: "video", id: v.id, title: v.title, at: v.enteredAt }))
       ].sort((a, b) => b.at.localeCompare(a.at)).slice(0, 10);
-      const creative = isCreative(me.role);
-      body = /* @__PURE__ */ React.createElement(React.Fragment, null, creative ? /* @__PURE__ */ React.createElement(CreativeHome, { db, me, mine, picker, openTask: setTaskId, openVideo: setOpenId }) : me.role !== "client" ? /* @__PURE__ */ React.createElement("div", { className: "ps-profile" }, picker(me, 72), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("h1", { className: "ps-h1" }, "My tasks"), /* @__PURE__ */ React.createElement("p", { className: "ps-muted" }, me.name, " \xB7 ", ROLES[me.role].label))) : /* @__PURE__ */ React.createElement("h1", { className: "ps-h1" }, "Hi, ", me.name), me.role !== "client" && /* @__PURE__ */ React.createElement(PinnedNotice, { db, me, mutate, canEdit: lead || me.role === "hr" }), !creative && /* @__PURE__ */ React.createElement("p", { className: "ps-lede" }, waitingLine, lead && late.length ? ` ${late.length} past due across the studio.` : ""), client && billingOf(client).id !== "none" && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Your invoices"), /* @__PURE__ */ React.createElement(InvoiceList, { db, client, canEdit: false, toggle: () => {
+      const creative = true; /* everyone gets the home card now */
+      const todayIso = isoDay(new Date());
+      const awayList = db.people.filter((p) => p.role !== "client" && awayOn(p, todayIso));
+      const wkAgo = new Date(Date.now() - 7 * DAY).toISOString();
+      const monthKey = todayIso.slice(0, 7);
+      const clientVids = client ? db.videos.filter((v) => v.clientId === client.id && !v.archived) : [];
+      const homeInfo = {
+        approvals: approvalCount,
+        lateStudio: late.length + db.tasks.filter((t) => !t.done && t.due && String(t.due).slice(0, 10) < todayIso).length,
+        doneStudio: db.tasks.filter((t) => t.done && t.doneAt && t.doneAt >= wkAgo).length,
+        awayToday: awayList.length,
+        awayNames: awayList.map((p) => p.name.split(/\s+/)[0]).slice(0, 3).join(", ") + (awayList.length > 3 ? ` +${awayList.length - 3}` : ""),
+        clientName: client ? client.name : "",
+        inWorks: waiting.length,
+        delivered: clientVids.filter((v) => v.stage === "ready" && (v.enteredAt || "").slice(0, 7) === monthKey).length,
+        deliveredAll: clientVids.filter((v) => v.stage === "ready").length
+      };
+      body = /* @__PURE__ */ React.createElement(React.Fragment, null, creative ? /* @__PURE__ */ React.createElement(CreativeHome, { db, me, mine, picker, openTask: setTaskId, openVideo: setOpenId, info: homeInfo }) : me.role !== "client" ? /* @__PURE__ */ React.createElement("div", { className: "ps-profile" }, picker(me, 72), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("h1", { className: "ps-h1" }, "My tasks"), /* @__PURE__ */ React.createElement("p", { className: "ps-muted" }, me.name, " \xB7 ", ROLES[me.role].label))) : /* @__PURE__ */ React.createElement("h1", { className: "ps-h1" }, "Hi, ", me.name), me.role !== "client" && /* @__PURE__ */ React.createElement(PinnedNotice, { db, me, mutate, canEdit: lead || me.role === "hr" }), !creative && /* @__PURE__ */ React.createElement("p", { className: "ps-lede" }, waitingLine, lead && late.length ? ` ${late.length} past due across the studio.` : ""), client && billingOf(client).id !== "none" && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Your invoices"), /* @__PURE__ */ React.createElement(InvoiceList, { db, client, canEdit: false, toggle: () => {
     }, addJob: () => {
     }, removeJob: () => {
-    }, openVideo: setOpenId })), me.role !== "hr" && !creative && mine.length > 0 && /* @__PURE__ */ React.createElement(React.Fragment, null, me.role !== "client" && /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Videos"), /* @__PURE__ */ React.createElement(VideoTable, { rows: mine, db, me, open: setOpenId, showClient: me.role !== "client" })), me.role !== "client" && canApproveTimeoff(db, me) && /* @__PURE__ */ React.createElement(TimeOffPanel, { db, me, mutate, setToast, queueOnly: true }), me.role !== "client" && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Tasks"), /* @__PURE__ */ React.createElement(TodoList, { person: me, tasks: db.tasks, clients: db.clients, canAdd: false, canToggle: canEditPerson(me), mutate, openTask: setTaskId, shareFinalCheck: lead, notify: notifyTask, confirm: setConfirming, videos: creative ? mine : [], openVideo: setOpenId }), helping.length > 0 && /* @__PURE__ */ React.createElement("div", { className: "ps-helping" }, /* @__PURE__ */ React.createElement("h4", { className: "ps-h4" }, "Assisting on (", helping.length, ")"), helping.map((t) => {
+    }, openVideo: setOpenId })), me.role !== "hr" && (!creative || me.role === "client") && mine.length > 0 && /* @__PURE__ */ React.createElement(React.Fragment, null, me.role !== "client" && /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Videos"), /* @__PURE__ */ React.createElement(VideoTable, { rows: mine, db, me, open: setOpenId, showClient: me.role !== "client" })), me.role !== "client" && canApproveTimeoff(db, me) && /* @__PURE__ */ React.createElement(TimeOffPanel, { db, me, mutate, setToast, queueOnly: true }), me.role !== "client" && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Tasks"), /* @__PURE__ */ React.createElement(TodoList, { person: me, tasks: db.tasks, clients: db.clients, canAdd: false, canToggle: canEditPerson(me), mutate, openTask: setTaskId, shareFinalCheck: lead, notify: notifyTask, confirm: setConfirming, videos: creative && me.role !== "client" ? mine : [], openVideo: setOpenId }), helping.length > 0 && /* @__PURE__ */ React.createElement("div", { className: "ps-helping" }, /* @__PURE__ */ React.createElement("h4", { className: "ps-h4" }, "Assisting on (", helping.length, ")"), helping.map((t) => {
         const owner = db.people.find((p) => p.id === t.personId);
         return /* @__PURE__ */ React.createElement("button", { key: t.id, className: "ps-helping-row", onClick: () => setTaskId(t.id) }, /* @__PURE__ */ React.createElement("span", { className: "ps-helping-t" }, t.text || "Untitled task"), /* @__PURE__ */ React.createElement("span", { className: "ps-muted" }, owner ? `${owner.name}'s task` : "", " \xB7 ", taskStatusMeta(t).label, t.due ? ` \xB7 ${taskDueText(t.due).text}` : ""));
       }))), (canDelegate(me.role) || canSelfAssign(me.role)) && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, canDelegate(me.role) ? "Delegate" : "Add a task"), /* @__PURE__ */ React.createElement(Delegate, { db, me, draft, setDraft, addTodo: delegateTodo, setToast })), client && waiting.length > 0 && /* @__PURE__ */ React.createElement("details", { className: "ps-fold" }, /* @__PURE__ */ React.createElement("summary", null, waiting.length, " with someone else"), /* @__PURE__ */ React.createElement(VideoTable, { rows: waiting, db, me, open: setOpenId, showClient: false })), me.role !== "client" && /* @__PURE__ */ React.createElement(ActivityHistory, { db, me, mutate, setToast, openTask: setTaskId, openVideo: setOpenId }), !client && recentlyFinished.length > 0 && /* @__PURE__ */ React.createElement("details", { className: "ps-fold" }, /* @__PURE__ */ React.createElement("summary", null, "Recently finished (", recentlyFinished.length, ")"), /* @__PURE__ */ React.createElement("div", { className: "ps-table" }, recentlyFinished.map((f) => /* @__PURE__ */ React.createElement(

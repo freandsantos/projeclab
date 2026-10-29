@@ -3909,10 +3909,10 @@
   var ER_KEYS = [["erSss", "SSS"], ["erPagibig", "Pag-IBIG"], ["erPhilhealth", "PhilHealth"]];
   var PAY_TYPES = [["employee", "Employee"], ["contractor", "Contractor"], ["intern", "Intern"]];
   var payTypeLabel = (t) => (PAY_TYPES.find((x) => x[0] === t) || PAY_TYPES[0])[1];
-  /* Interns get their allowance once a month, on the 16th-to-month-end run. */
+  /* Interns get their allowance once a month, on the 1st-to-15th run. */
   /* 13th month: on by default for employees; contractors and interns only when ticked. */
   var gets13th = (pr) => pr ? (pr.in13th == null ? (pr.type || "employee") === "employee" : !!pr.in13th) : false;
-  var internInRun = (per) => Number(per.from.slice(8, 10)) >= 16 || (per.from.slice(8, 10) === "01" && Number(per.to.slice(8, 10)) >= 28);
+  var internInRun = (per) => per.from.slice(8, 10) === "01";
   var WHEN = [["both", "Every payout"], ["first", "1st payout (1–15)"], ["second", "2nd payout (16–end)"]];
   var lastDay = (y, m) => new Date(y, m + 1, 0).getDate();
   var isoOf = (y, m, d) => `${y}-${String(m + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
@@ -4039,7 +4039,7 @@
         !intern && field(f.type === "contractor" ? "Monthly fee (₱)" : "Monthly basic (₱)", "monthly", { money: true, ph: "e.g. 12000" }),
         field("Monthly allowance (₱)", "allowanceMonthly", { money: true, ph: "0" }),
         !intern && field("Start date", "start", { ph: "YYYY-MM-DD" })),
-      intern && h("p", { className: "ps-muted ps-pay-hint" }, "Interns are paid their allowance once a month, on the 16th–end-of-month payroll run", num(f.allowanceMonthly) > 0 ? ` — ${peso(num(f.allowanceMonthly))} each month.` : "."),
+      intern && h("p", { className: "ps-muted ps-pay-hint" }, "Interns are paid their allowance once a month, on the 1st–15th payroll run", num(f.allowanceMonthly) > 0 ? ` — ${peso(num(f.allowanceMonthly))} each month.` : "."),
       !intern && num(f.monthly) > 0 && h("p", { className: "ps-muted ps-pay-hint" }, settings.schedule === "monthly" ? "Each payout: " : "Each payout (half-month): ",
         peso((num(f.monthly)) / (settings.schedule === "monthly" ? 1 : 2)), " basic", num(f.allowanceMonthly) ? ` + ${peso(num(f.allowanceMonthly) / (settings.schedule === "monthly" ? 1 : 2))} allowance` : "",
         " · OT ", peso(rate.hour), "/hour · one day ", peso(rate.day)),
@@ -4142,7 +4142,7 @@
             h(Avatar, { person: p, size: 32 }),
             h("span", { className: "ps-pay-who" }, h("b", null, p.name),
               h("span", { className: "ps-muted" }, pr
-                ? `${payTypeLabel(pr.type)} · ${pr.type === "intern" ? `${peso(num(pr.allowanceMonthly))} allowance / month, paid on the 16th–end run` : `${peso(num(pr.monthly) + num(pr.allowanceMonthly))} / month`} · ${methodLabel(pt.method)}${pt.accountNo ? " " + (pt.method === "gcash" ? gcashPretty(pt.accountNo) : pt.accountNo) : ""}`
+                ? `${payTypeLabel(pr.type)} · ${pr.type === "intern" ? `${peso(num(pr.allowanceMonthly))} allowance / month, paid on the 1–15 run` : `${peso(num(pr.monthly) + num(pr.allowanceMonthly))} / month`} · ${methodLabel(pt.method)}${pt.accountNo ? " " + (pt.method === "gcash" ? gcashPretty(pt.accountNo) : pt.accountNo) : ""}`
                 : "No pay profile yet"),
               pr && pt.method === "gcash" && pt.accountNo && !gcashOk(pt.accountNo) && h("span", { className: "ps-pay-warn" }, "Check this GCash number — it should be 11 digits starting with 09.")),
             h("button", { className: "ps-btn ghost small", onClick: () => setEditing(editing === p.id ? null : p.id) }, editing === p.id ? "Close" : pr ? "Edit" : "Set up pay")),
@@ -4192,7 +4192,7 @@
       const dupe = runs.find((r) => r.from === per.from && r.to === per.to);
       if (dupe) { setToast(`There's already a run for ${periodLabel(per)} — opened it.`); setNewPer(null); setOpenRun(dupe.id); return; }
       const ids = Object.keys(profiles).filter((id) => db.people.some((p) => p.id === id) && (profiles[id].type !== "intern" || internInRun(per)));
-      if (!ids.length) { setToast(Object.keys(profiles).length ? "Nobody is paid in that period (interns are only on the 16th–end run)." : "Set up at least one pay profile first."); if (!Object.keys(profiles).length) setTab("profiles"); return; }
+      if (!ids.length) { setToast(Object.keys(profiles).length ? "Nobody is paid in that period (interns are only on the 1–15 run)." : "Set up at least one pay profile first."); if (!Object.keys(profiles).length) setTab("profiles"); return; }
       const run = note({ id: `run:${uid("pr")}`, ...per, payDate: np.payDate || "", status: "draft", createdBy: me.name, createdAt: (/* @__PURE__ */ new Date()).toISOString(), lines: ids.map((id) => lineFor(id, per)) }, `Started ${periodLabel(per)}${np.payDate ? `, to be paid ${longDate(np.payDate)}` : ""}`);
       put(run.id, "run", run, true);
       setNewPer(null);
@@ -4389,7 +4389,7 @@
                 h(PickerInput, { type: "date", value: newPer.payDate, onChange: (e) => setNewPer({ ...newPer, payDate: e.target.value }), ariaLabel: "Pay date" }))),
             h("p", { className: "ps-muted ps-pay-hint" }, "Paying ", h("b", null, periodLabel(per)),
               newPer.payDate ? ` on ${longDate(newPer.payDate)}` : "", ". ",
-              interns ? (internInRun(per) ? "Interns are included (their monthly allowance)." : "Interns aren't included — they're paid on the 16th–end run.") : "",
+              interns ? (internInRun(per) ? "Interns are included (their monthly allowance)." : "Interns aren't included — they're paid on the 1–15 run.") : "",
               dupe ? " A run for this period already exists — starting will open it." : ""),
             h("div", { className: "ps-btnrow" },
               h("button", { className: "ps-btn ghost small", onClick: () => setNewPer(null) }, "Cancel"),

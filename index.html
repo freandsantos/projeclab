@@ -2820,6 +2820,7 @@
     return h("div", { className: "ps-pin" },
       h("span", { className: "ps-pin-icon", "aria-hidden": "true" }, "📌"),
       h("span", { className: "ps-pin-body" },
+        h("span", { className: "ps-pin-label" }, "Pinned notice"),
         h("span", { className: "ps-pin-text" }, notice.text),
         h("span", { className: "ps-muted ps-pin-by" }, who(notice.by), notice.at ? ` · ${shortDate(notice.at)}` : "")
       ),
@@ -6006,7 +6007,7 @@ ${lines.join("\n")}`);
         delivered: clientVids.filter((v) => v.stage === "ready" && (v.enteredAt || "").slice(0, 7) === monthKey).length,
         deliveredAll: clientVids.filter((v) => v.stage === "ready").length
       };
-      body = /* @__PURE__ */ React.createElement(React.Fragment, null, creative ? /* @__PURE__ */ React.createElement(CreativeHome, { db, me, mine, picker, openTask: setTaskId, openVideo: setOpenId, info: homeInfo }) : me.role !== "client" ? /* @__PURE__ */ React.createElement("div", { className: "ps-profile" }, picker(me, 72), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("h1", { className: "ps-h1" }, "My tasks"), /* @__PURE__ */ React.createElement("p", { className: "ps-muted" }, me.name, " \xB7 ", ROLES[me.role].label))) : /* @__PURE__ */ React.createElement("h1", { className: "ps-h1" }, "Hi, ", me.name), me.role !== "client" && /* @__PURE__ */ React.createElement(PinnedNotice, { db, me, mutate, canEdit: lead || me.role === "hr" }), !creative && /* @__PURE__ */ React.createElement("p", { className: "ps-lede" }, waitingLine, lead && late.length ? ` ${late.length} past due across the studio.` : ""), client && billingOf(client).id !== "none" && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Your invoices"), /* @__PURE__ */ React.createElement(InvoiceList, { db, client, canEdit: false, toggle: () => {
+      body = /* @__PURE__ */ React.createElement(React.Fragment, null, me.role !== "client" && /* @__PURE__ */ React.createElement(PinnedNotice, { db, me, mutate, canEdit: lead || me.role === "hr" }), creative ? /* @__PURE__ */ React.createElement(CreativeHome, { db, me, mine, picker, openTask: setTaskId, openVideo: setOpenId, info: homeInfo }) : me.role !== "client" ? /* @__PURE__ */ React.createElement("div", { className: "ps-profile" }, picker(me, 72), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("h1", { className: "ps-h1" }, "My tasks"), /* @__PURE__ */ React.createElement("p", { className: "ps-muted" }, me.name, " \xB7 ", ROLES[me.role].label))) : /* @__PURE__ */ React.createElement("h1", { className: "ps-h1" }, "Hi, ", me.name), !creative && /* @__PURE__ */ React.createElement("p", { className: "ps-lede" }, waitingLine, lead && late.length ? ` ${late.length} past due across the studio.` : ""), client && billingOf(client).id !== "none" && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Your invoices"), /* @__PURE__ */ React.createElement(InvoiceList, { db, client, canEdit: false, toggle: () => {
     }, addJob: () => {
     }, removeJob: () => {
     }, openVideo: setOpenId })), me.role !== "hr" && (!creative || me.role === "client") && mine.length > 0 && /* @__PURE__ */ React.createElement(React.Fragment, null, me.role !== "client" && /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Videos"), /* @__PURE__ */ React.createElement(VideoTable, { rows: mine, db, me, open: setOpenId, showClient: me.role !== "client" })), me.role !== "client" && canApproveTimeoff(db, me) && /* @__PURE__ */ React.createElement(TimeOffPanel, { db, me, mutate, setToast, queueOnly: true }), me.role !== "client" && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Tasks"), /* @__PURE__ */ React.createElement(TodoList, { person: me, tasks: db.tasks, clients: db.clients, canAdd: false, canToggle: canEditPerson(me), mutate, openTask: setTaskId, shareFinalCheck: lead, notify: notifyTask, confirm: setConfirming, videos: creative && me.role !== "client" ? mine : [], openVideo: setOpenId }), helping.length > 0 && /* @__PURE__ */ React.createElement("div", { className: "ps-helping" }, /* @__PURE__ */ React.createElement("h4", { className: "ps-h4" }, "Assisting on (", helping.length, ")"), helping.map((t) => {
@@ -7982,6 +7983,16 @@ html.ps-theming .ps-theme-knob,html.ps-theming .ps-theme-ic{transition:transform
 .ch-step.static{cursor:default}
 .ch-step.static:hover{background:none;border-color:transparent;box-shadow:none;transform:none}
 .ch-step.static:hover .ch-num{background:none;color:inherit}
+
+/* ---- Pinned notice: sits at the very top of My tasks, big and easy to spot ---- */
+.ps-root .ps-pin{max-width:none;margin:0 0 16px;padding:16px 18px;gap:14px;align-items:center;border-radius:16px;background:var(--warnbg);border:1px solid color-mix(in srgb,var(--warn) 30%,transparent);border-left:5px solid var(--warn);box-shadow:0 10px 24px -18px rgba(154,75,6,.6)}
+.ps-root .ps-pin.editing{flex-direction:column;align-items:stretch}
+.ps-root .ps-pin-icon{font-size:24px;line-height:1;align-self:flex-start;margin-top:2px}
+.ps-pin-label{font-size:10.5px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--warn);opacity:.8}
+.ps-root .ps-pin-text{font-size:18px;font-weight:700;line-height:1.35;color:var(--ink)}
+.ps-root .ps-pin-by{font-size:12.5px}
+.ps-root .ps-pin-add{margin:0 0 16px}
+@media (max-width:760px){.ps-root .ps-pin-text{font-size:16px}.ps-root .ps-pin{padding:14px}}
 `;
   window.ProjeclabStudios = ProjeclabStudios;
 })();

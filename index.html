@@ -6847,7 +6847,7 @@ ${lines.join("\n")}`);
           const mg = HW ? 1.4 : 0.6;
           const pts = [];
           for (const x of [-W / 2 - mg, W / 2 + mg]) for (const z of [-D / 2 - mg, D / 2 + mg]) for (const y of [0, 2.6]) pts.push([x, y, z]);
-          pts.push(...fitExtra);
+          /* Opens fitted to the office only; zoom out to see the billboard and courts. */
           for (const [x, y, z] of pts) {
             v.set(x, y, z).applyMatrix4(inv);
             x0 = Math.min(x0, v.x); x1 = Math.max(x1, v.x); y0 = Math.min(y0, v.y); y1 = Math.max(y1, v.y);
@@ -6880,7 +6880,7 @@ ${lines.join("\n")}`);
           if (ptrs.size === 2) {
             const [a, b] = [...ptrs.values()];
             const d = Math.hypot(a.x - b.x, a.y - b.y);
-            if (pinch) { view.zoom = Math.min(3, Math.max(0.6, view.zoom * d / pinch)); size(); }
+            if (pinch) { view.zoom = Math.min(3, Math.max(0.3, view.zoom * d / pinch)); size(); }
             pinch = d;
             moved += 10;
             return;
@@ -6906,7 +6906,7 @@ ${lines.join("\n")}`);
           if (bh && (!ph || bh.distance < ph.distance)) { setBoardOpen(true); return; }
           setSel(ph ? ph.object.userData.pid : null);
         };
-        const wheel = (e) => { e.preventDefault(); view.zoom = Math.min(3, Math.max(0.6, view.zoom * (e.deltaY > 0 ? 0.9 : 1.1))); size(); };
+        const wheel = (e) => { e.preventDefault(); view.zoom = Math.min(3, Math.max(0.3, view.zoom * (e.deltaY > 0 ? 0.9 : 1.1))); size(); };
         cv.addEventListener("pointerdown", down);
         cv.addEventListener("pointermove", move);
         cv.addEventListener("pointerup", up);

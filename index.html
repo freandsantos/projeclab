@@ -1361,6 +1361,7 @@
   /* ---------- Invoicing: every client bills on their own rhythm ---------- */
   var BILLING_PLANS = [
     { id: "monthly", label: "Monthly", note: "One invoice per calendar month." },
+    { id: "semimonthly", label: "15th & 30th", note: "Two invoices a month: on the 15th and the 30th (last day in February)." },
     { id: "biweekly", label: "Every 2 weeks", note: "One invoice every fortnight." },
     { id: "weekly", label: "Weekly", note: "One invoice per week." },
     { id: "pervideo", label: "Per video", note: "One invoice each time a video is sent to the client." },
@@ -1387,6 +1388,17 @@
         const d = new Date(today.getFullYear(), today.getMonth() + i, 1);
         out.push({ key: `m${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`, label: monthName(d), start: d });
       }
+    } else if (plan === "semimonthly") {
+      /* Billed on the 15th and the 30th; February's second one falls on its last day. */
+      const half = today.getDate() >= 15 ? 1 : 0;
+      for (let i = -5; i <= 2; i++) {
+        const n = half + i;
+        const mo = new Date(today.getFullYear(), today.getMonth() + Math.floor(n / 2), 1);
+        const second = (n % 2 + 2) % 2 === 1;
+        const last = new Date(mo.getFullYear(), mo.getMonth() + 1, 0).getDate();
+        const d = new Date(mo.getFullYear(), mo.getMonth(), second ? Math.min(30, last) : 15);
+        out.push({ key: `s${mo.getFullYear()}-${String(mo.getMonth() + 1).padStart(2, "0")}-${second ? "b" : "a"}`, label: shortDate(d), start: d });
+      }
     } else if (plan === "weekly" || plan === "biweekly") {
       const step = plan === "weekly" ? 7 : 14;
       const anchor = mondayOf(from || today);
@@ -1402,7 +1414,7 @@
     }
     if (!from) return out;
     /* Nothing before the day billing started - for months, that means from its month on. */
-    const floor = plan === "monthly" ? new Date(from.getFullYear(), from.getMonth(), 1) : mondayOf(from);
+    const floor = plan === "monthly" ? new Date(from.getFullYear(), from.getMonth(), 1) : plan === "semimonthly" ? startOfDay(from) : mondayOf(from);
     return out.filter((p) => p.start >= floor);
   };
   /* Per-video clients are billed off the work itself: one line per delivered video. */

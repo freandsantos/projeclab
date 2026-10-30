@@ -749,15 +749,6 @@ function Cutline() {
     body = (
       <>
         <h1 className="cl-h1">Settings</h1>
-        <h3 className="cl-h3">New video</h3>
-        <div className="cl-form">
-          <select value={draft.client} onChange={e => setDraft({ ...draft, client: e.target.value })}>
-            <option value="">Choose a client</option>
-            {db.clients.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-          </select>
-          <input placeholder="Working title" value={draft.title} onChange={e => setDraft({ ...draft, title: e.target.value })} />
-          <button className="cl-btn" onClick={addVideo}>Add video</button>
-        </div>
         <h3 className="cl-h3">Clients</h3>
         <div className="cl-clients">
           {db.clients.map(c => (

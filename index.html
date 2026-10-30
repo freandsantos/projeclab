@@ -8414,6 +8414,8 @@ function OpeningSweep() {
       };
       for (const c of root.children) if (c.tagName !== "STYLE") walk(c);
       const big = vw * vh * 0.12;
+      const side = root.querySelector(".ps-side"), sr = side ? side.getBoundingClientRect() : null;
+      const mainLeft = sr && sr.width ? sr.right : 0, mainMid = mainLeft + (vw - mainLeft) / 2;
       picked.forEach(({ el, r, op, tf, inline }) => {
         const delay = 60 + Math.max(0, r.top) / vh * 760 + Math.max(0, r.left) / vw * 280;
         const base = tf && tf !== "none" ? tf : "";
@@ -8421,7 +8423,14 @@ function OpeningSweep() {
         // Small pieces glide in from slightly lower-left, a touch larger and blurred, then settle.
         // Big panels move less so the layers don't all slide as one block.
         const k = inline ? 0 : area > big ? 0.35 : 1;
-        const from = { opacity: 0, transform: `${base} translate(${-10 * k}px, ${12 * k}px) scale(${1 + 0.04 * k})`.trim() };
+        // Each region enters from its own side: top bar from above, sidebar from the left,
+        // the right half of the content from the right, the rest rises from below.
+        let dx = 0, dy = 0;
+        if (el.closest(".ps-top")) dy = -18;
+        else if (el.closest(".ps-side")) dx = -32;
+        else if (r.left + r.width / 2 > mainMid) dx = 32;
+        else dy = 22;
+        const from = { opacity: 0, transform: `${base} translate(${dx * k}px, ${dy * k}px) scale(${1 + 0.04 * k})`.trim() };
         const to = { opacity: op, transform: `${base} translate(0px, 0px) scale(1)`.trim() };
         if (area < 60000) { from.filter = "blur(6px)"; to.filter = "blur(0px)"; }
         try { el.animate([from, to], { duration: 760, delay, easing: "cubic-bezier(.16,.84,.24,1)", fill: "backwards" }); } catch (e) {}

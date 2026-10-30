@@ -6064,7 +6064,7 @@ ${lines.join("\n")}`);
       setOpenId(null);
       setTaskId(null);
       setPersonId(null);
-    } }, /* @__PURE__ */ React.createElement("img", { className: "ps-logo-mark", src: PS_MARK, alt: "", "aria-hidden": "true" }), /* @__PURE__ */ React.createElement("span", { className: "ps-logo-word" }, "Projeclab", /* @__PURE__ */ React.createElement("span", { className: "ps-logo-sub" }, "Studios")))), /* @__PURE__ */ React.createElement("span", { className: "ps-spacer" }), me.role !== "client" && React.createElement("button", { className: `ps-mbtn s ${mTop === "search" ? "on" : ""}`, "aria-label": "Search", "aria-expanded": mTop === "search", onClick: () => { const o = mTop !== "search"; setMTop(o ? "search" : null); if (o) setTimeout(() => { const i = document.querySelector(".ps-top .ps-search-in"); if (i) i.focus(); }, 30); } }, React.createElement("svg", { viewBox: "0 0 24 24", width: 18, height: 18, "aria-hidden": "true" }, React.createElement("circle", { cx: 11, cy: 11, r: 6.5, fill: "none", stroke: "currentColor", strokeWidth: 2.2 }), React.createElement("path", { d: "M16 16l4.5 4.5", stroke: "currentColor", strokeWidth: 2.2, strokeLinecap: "round" }))), React.createElement("button", { className: `ps-mbtn m ${mTop === "menu" ? "on" : ""}`, "aria-label": "Account menu", "aria-expanded": mTop === "menu", onClick: () => setMTop(mTop === "menu" ? null : "menu") }, React.createElement(Avatar, { person: me, size: 34 })), me.role !== "client" && /* @__PURE__ */ React.createElement(SearchBox, { db, me, lead, openTask: setTaskId, openVideo: setOpenId, openClient: (id) => { setPage({ tab: "client", id }); setFilter(null); } }), me.role !== "client" && /* @__PURE__ */ React.createElement(Notifications, { db, me, mutate, openTask: setTaskId, openVideo: setOpenId, openDay: (d) => { setCalDay(d); setPage({ tab: "calendar" }); } }), React.createElement("span", { className: "ps-acct" }, authLock ? /* @__PURE__ */ React.createElement("span", { className: "ps-viewas" }, /* @__PURE__ */ React.createElement("b", null, me.name), /* @__PURE__ */ React.createElement("span", null, (ROLES[me.role] || {}).label || me.role)) : /* @__PURE__ */ React.createElement("label", { className: "ps-viewas" }, /* @__PURE__ */ React.createElement("span", null, "Viewing as"), /* @__PURE__ */ React.createElement("select", { value: meId, onChange: (e) => {
+    } }, /* @__PURE__ */ React.createElement("img", { className: "ps-logo-mark", src: PS_MARK, alt: "", "aria-hidden": "true" }), /* @__PURE__ */ React.createElement("span", { className: "ps-logo-word" }, pickleOn() ? pickleWord() : "Projeclab", /* @__PURE__ */ React.createElement("span", { className: "ps-logo-sub" }, "Studios")))), /* @__PURE__ */ React.createElement("span", { className: "ps-spacer" }), me.role !== "client" && React.createElement("button", { className: `ps-mbtn s ${mTop === "search" ? "on" : ""}`, "aria-label": "Search", "aria-expanded": mTop === "search", onClick: () => { const o = mTop !== "search"; setMTop(o ? "search" : null); if (o) setTimeout(() => { const i = document.querySelector(".ps-top .ps-search-in"); if (i) i.focus(); }, 30); } }, React.createElement("svg", { viewBox: "0 0 24 24", width: 18, height: 18, "aria-hidden": "true" }, React.createElement("circle", { cx: 11, cy: 11, r: 6.5, fill: "none", stroke: "currentColor", strokeWidth: 2.2 }), React.createElement("path", { d: "M16 16l4.5 4.5", stroke: "currentColor", strokeWidth: 2.2, strokeLinecap: "round" }))), React.createElement("button", { className: `ps-mbtn m ${mTop === "menu" ? "on" : ""}`, "aria-label": "Account menu", "aria-expanded": mTop === "menu", onClick: () => setMTop(mTop === "menu" ? null : "menu") }, React.createElement(Avatar, { person: me, size: 34 })), me.role !== "client" && /* @__PURE__ */ React.createElement(SearchBox, { db, me, lead, openTask: setTaskId, openVideo: setOpenId, openClient: (id) => { setPage({ tab: "client", id }); setFilter(null); } }), me.role !== "client" && /* @__PURE__ */ React.createElement(Notifications, { db, me, mutate, openTask: setTaskId, openVideo: setOpenId, openDay: (d) => { setCalDay(d); setPage({ tab: "calendar" }); } }), React.createElement("span", { className: "ps-acct" }, authLock ? /* @__PURE__ */ React.createElement("span", { className: "ps-viewas" }, /* @__PURE__ */ React.createElement("b", null, me.name), /* @__PURE__ */ React.createElement("span", null, (ROLES[me.role] || {}).label || me.role)) : /* @__PURE__ */ React.createElement("label", { className: "ps-viewas" }, /* @__PURE__ */ React.createElement("span", null, "Viewing as"), /* @__PURE__ */ React.createElement("select", { value: meId, onChange: (e) => {
       setMeId(e.target.value);
       setPage({ tab: "queue" });
       setFilter(null);
@@ -7016,6 +7016,28 @@ ${lines.join("\n")}`);
           React.createElement("span", { className: "h-thread" }, hArt("spider", "h-spider-at")),
           hArt("bat", "h-bat-at"))));
   }
+  /* Pickleball wordmark, Oct 31 - Nov 21 (Manila): the "o" in "Projeclab" becomes
+     a pickleball, as Frean asked. The mark and "Studios" are untouched, and the
+     plain "Projeclab" text comes back by itself on Nov 22. Preview any day with
+     ?preview=pickleball. A hidden "o" keeps the name readable for screen readers. */
+  const PICKLE_FIRST_DAY = "2026-10-31", PICKLE_LAST_DAY = "2026-11-21";
+  const pickleOn = () => {
+    try {
+      if (/[?&]preview=pickleball\b/.test(location.search)) return true;
+      const d = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Manila" });
+      return d >= PICKLE_FIRST_DAY && d <= PICKLE_LAST_DAY;
+    } catch (e) {
+      return false;
+    }
+  };
+  const PICKLE_BALL = '<svg viewBox="0 0 40 40" aria-hidden="true"><defs><radialGradient id="pkb-g" cx="36%" cy="30%" r="75%"><stop offset="0" stop-color="#E9FF7A"/><stop offset=".55" stop-color="#B9E21F"/><stop offset="1" stop-color="#7FA80E"/></radialGradient><radialGradient id="pkb-h" cx="40%" cy="35%" r="70%"><stop offset="0" stop-color="#5E7D06"/><stop offset="1" stop-color="#3F5703"/></radialGradient></defs><circle cx="20" cy="20" r="19" fill="url(#pkb-g)"/><g fill="url(#pkb-h)"><ellipse cx="20" cy="8.5" rx="3" ry="2.4"/><ellipse cx="11" cy="13" rx="2.8" ry="2.6"/><ellipse cx="29" cy="13" rx="2.8" ry="2.6"/><ellipse cx="20" cy="20" rx="3.2" ry="3.2"/><ellipse cx="9" cy="23" rx="2.3" ry="2.8"/><ellipse cx="31" cy="23" rx="2.3" ry="2.8"/><ellipse cx="14.5" cy="30" rx="2.8" ry="2.5"/><ellipse cx="25.5" cy="30" rx="2.8" ry="2.5"/><ellipse cx="20" cy="36" rx="2.4" ry="1.6"/></g><ellipse cx="13" cy="10" rx="5" ry="3" fill="#fff" opacity=".28" transform="rotate(-30 13 10)"/></svg>';
+  function pickleWord() {
+    return React.createElement(React.Fragment, null, "Pr",
+      React.createElement("span", { className: "pk-o", title: "Pickleball" },
+        React.createElement("span", { className: "pk-sr" }, "o"),
+        React.createElement("span", { className: "pk-ball", "aria-hidden": "true", dangerouslySetInnerHTML: { __html: PICKLE_BALL } })),
+      "jeclab");
+  }
   function seasonWrap(logo) {
     if (tourOn()) return tourWrap(logo);
     if (halloOn()) return halloWrap(logo);
@@ -7039,6 +7061,13 @@ ${lines.join("\n")}`);
 .ps-top .ps-logo:hover .ps-logo-word{color:var(--accent)}
 /* Same size, lighter weight - "Studios" reads as a subtitle, not a second name. */
 .ps-top .ps-logo-sub{font-weight:400;font-size:23px;margin-left:.28em}
+/* Pickleball "o" (see pickleOn). Sized to the x-height of the wordmark so it
+   reads as a letter; spins slowly on hover. */
+.pk-o{position:relative;display:inline-block;width:.6em;height:.6em;margin:0 .015em;align-self:baseline}
+.pk-ball{position:absolute;inset:0;display:block;filter:drop-shadow(0 1px 1px rgba(0,0,0,.18))}
+.pk-ball svg{display:block;width:100%;height:100%}
+.pk-sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+@media (prefers-reduced-motion:no-preference){.ps-top .ps-logo:hover .pk-ball{transition:transform .6s ease;transform:rotate(200deg)}.pk-ball{transition:transform .6s ease}}
 .ps-st-stage.hw{background:linear-gradient(180deg,#3B2F5C,#6E4466 55%,#B8683E)}
 .ps-root.dark .ps-st-stage.hw{background:linear-gradient(180deg,#120E1F,#2A1830 60%,#4A2618)}
 .ps-st-bubble{position:absolute;left:0;top:0;z-index:150;pointer-events:none;padding:6px 11px;border-radius:12px;background:#FFF8E8;color:#3A1A1A;border:2px solid #2A1A3D;font-family:'Silkscreen',ui-monospace,monospace;font-size:12px;white-space:nowrap;box-shadow:0 4px 12px rgba(0,0,0,.25);opacity:0;transition:opacity .15s}

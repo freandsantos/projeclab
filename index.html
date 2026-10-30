@@ -6345,11 +6345,16 @@ ${lines.join("\n")}`);
           m.castShadow = true;
           scene.add(m);
         };
-        tree(W / 2 + 2.5, D / 2 + 1.5, 1);
-        tree(-W / 2 - 2, D / 2 + 2.5, 1.3);
-        tree(W / 2 + 3, -D / 2 - 1, 0.9);
-        tree(-W / 2 - 2.5, -D / 2 - 1.5, 1.1);
-        tree(-W / 2 + 1, D / 2 + 3.5, 0.8);
+        /* (moved out of the way of the pickleball courts) */
+        tree(-3.2, D / 2 + 5.6, 1.2);
+        tree(3.6, D / 2 + 7.8, 0.9);
+        tree(W / 2 + 4.6, 0.9, 1.1);
+        tree(W / 2 + 7.4, -2.1, 0.9);
+        tree(-W / 2 - 4.3, -1.3, 1.3);
+        tree(-W / 2 - 6.8, 2.4, 0.9);
+        tree(-4.8, -D / 2 - 7.8, 1);
+        tree(W / 2 + 13.5, D / 2 + 1.4, 1.1);
+        tree(-W / 2 - 12.5, -D / 2 - 1.2, 1.2);
         const plant = (x, z) => {
           box(0.45, 0.45, 0.45, "#D9D3C7", x, 0.38, z);
           const g = new THREE.IcosahedronGeometry(0.42, 0);
@@ -6410,6 +6415,164 @@ ${lines.join("\n")}`);
           const top = BY + 0.1 + BBH + 0.4;
           fitExtra.push([0.6 - BBW / 2, top, BZ], [0.6 + BBW / 2, top, BZ]);
         }
+
+        /* ---------- Pickleball courts around the office ----------
+           Four fenced courts, one off each corner, with lamps, benches and
+           hedges. Two have a game on: 2 v 2 at the front left, 1 v 1 at the
+           back right. The players are just fun - they aren't team members. */
+        const courts = [], cPicks = [], courtStatic = [];
+        {
+          const CL = 11.4, CWd = 5.2, KIT = 1.9;            // court length (x), width (z), kitchen line
+          const FX = CL / 2 + 1.5, FZ = CWd / 2 + 1.2, FH = 1.25; // fence half sizes and height
+          const CXo = W / 2 + 3.6, CZo = D / 2 + 7;
+          const PC = dark
+            ? { apron: "#2D5B3E", court: "#284C86", line: "#CBD3DE", post: "#1E2229", wood: "#6B4E33", hedge: "#2F6B3A", pole: "#23272E" }
+            : { apron: "#4F9A64", court: "#2F63B2", line: "#F5F7FA", post: "#2B3038", wood: "#A87A4E", hedge: "#4E9A3E", pole: "#2B3038" };
+          const bulbM = mat("#3A3020", { emissive: "#FFE2A8", emissiveIntensity: dark ? 1.6 : 0.9 });
+          /* chain-link fence: a small diamond texture, see-through between the wires */
+          const cvs = document.createElement("canvas");
+          cvs.width = cvs.height = 64;
+          const cx2 = cvs.getContext("2d");
+          cx2.strokeStyle = dark ? "#0E1116" : "#1B1F24";
+          cx2.lineWidth = 5;
+          cx2.beginPath(); cx2.moveTo(0, 0); cx2.lineTo(64, 64); cx2.moveTo(64, 0); cx2.lineTo(0, 64); cx2.stroke();
+          const linkTex = new THREE.CanvasTexture(cvs);
+          linkTex.wrapS = linkTex.wrapT = THREE.RepeatWrapping;
+          texs.push(linkTex);
+          const linkM = new THREE.MeshBasicMaterial({ map: linkTex, transparent: true, side: THREE.DoubleSide, depthWrite: false, opacity: 0.9 });
+          extraMats.push(linkM);
+          const meshPanel = (len, x, z, rotY, parent) => {
+            const g = new THREE.PlaneGeometry(len, FH - 0.08);
+            const uv = g.attributes.uv;
+            for (let i = 0; i < uv.count; i++) uv.setXY(i, uv.getX(i) * len / 0.32, uv.getY(i) * (FH - 0.08) / 0.32);
+            geos.push(g);
+            const m = new THREE.Mesh(g, linkM);
+            m.position.set(x, FH / 2 - 0.06, z);
+            m.rotation.y = rotY;
+            m.renderOrder = 2;
+            parent.add(m);
+          };
+          const LINES = [];
+          [[-1, 1], [1, -1], [-1, -1], [1, 1]].forEach(([sx, sz], ci) => {
+            const g = new THREE.Group();
+            g.position.set(sx * CXo, 0, sz * CZo);
+            scene.add(g);
+            collect = courtStatic;
+            /* ground: green apron, blue court, white lines */
+            box(FX * 2, 0.06, FZ * 2, PC.apron, 0, -0.1, 0, g);
+            box(CL, 0.06, CWd, PC.court, 0, -0.09, 0, g);
+            const ln = (w, d, x, z) => { const m = box(w, 0.06, d, PC.line, x, -0.085, z, g); m.castShadow = false; };
+            ln(CL + 0.06, 0.06, 0, CWd / 2); ln(CL + 0.06, 0.06, 0, -CWd / 2);
+            ln(0.06, CWd, CL / 2, 0); ln(0.06, CWd, -CL / 2, 0);
+            ln(0.06, CWd, KIT, 0); ln(0.06, CWd, -KIT, 0);
+            ln(CL / 2 - KIT, 0.06, (CL / 2 + KIT) / 2, 0); ln(CL / 2 - KIT, 0.06, -(CL / 2 + KIT) / 2, 0);
+            /* net */
+            box(0.08, 0.95, 0.08, PC.post, 0, 0.42, CWd / 2 + 0.3, g);
+            box(0.08, 0.95, 0.08, PC.post, 0, 0.42, -CWd / 2 - 0.3, g);
+            box(0.03, 0.07, CWd + 0.6, PC.line, 0, 0.83, 0, g);
+            const net = box(0.02, 0.72, CWd + 0.6, mat("#15181D", { transparent: true, opacity: 0.55 }), 0, 0.44, 0);
+            g.add(net); net.castShadow = false;
+            /* fence posts and top rail; a gap on the side facing the office */
+            const gateX = -sx * (FX - 1.6), gateZ = -sz * FZ;
+            for (let x = -FX; x <= FX + 0.01; x += FX / 4) { box(0.09, FH, 0.09, PC.post, x, FH / 2 - 0.08, FZ, g); box(0.09, FH, 0.09, PC.post, x, FH / 2 - 0.08, -FZ, g); }
+            for (let z = -FZ + FZ / 2; z < FZ - 0.01; z += FZ / 2) { box(0.09, FH, 0.09, PC.post, FX, FH / 2 - 0.08, z, g); box(0.09, FH, 0.09, PC.post, -FX, FH / 2 - 0.08, z, g); }
+            const rail = (x0, x1, z) => { box(x1 - x0, 0.06, 0.06, PC.post, (x0 + x1) / 2, FH - 0.08, z, g); meshPanel(x1 - x0, (x0 + x1) / 2, z, 0, g); };
+            rail(-FX, FX, -gateZ);
+            if (gateX < 0) { rail(-FX, gateX - 0.7, gateZ); rail(gateX + 0.7, FX, gateZ); } else { rail(-FX, gateX - 0.7, gateZ); rail(gateX + 0.7, FX, gateZ); }
+            [-FX, FX].forEach((x) => { box(0.06, 0.06, FZ * 2, PC.post, x, FH - 0.08, 0, g); meshPanel(FZ * 2, x, 0, Math.PI / 2, g); });
+            /* lamp posts on the outer corners */
+            [[sx, sz], [sx, -sz], [-sx, sz]].forEach(([lx, lz]) => {
+              const x = lx * (FX + 0.35), z = lz * (FZ + 0.35);
+              box(0.14, 3.2, 0.14, PC.pole, x, 1.5, z, g);
+              box(0.5, 0.12, 0.3, PC.pole, x - lx * 0.2, 3.12, z - lz * 0.1, g);
+              const b = box(0.36, 0.05, 0.2, bulbM, x - lx * 0.2, 3.04, z - lz * 0.1, g);
+              b.castShadow = false;
+            });
+            /* benches outside the far long side */
+            [-FX / 2, FX / 2].forEach((bx) => {
+              const bz = sz * (FZ + 0.75);
+              box(1.5, 0.08, 0.5, PC.wood, bx, 0.38, bz, g);
+              box(1.5, 0.32, 0.06, PC.wood, bx, 0.62, bz + sz * 0.24, g);
+              [-0.6, 0.6].forEach((o) => box(0.08, 0.4, 0.4, PC.post, bx + o, 0.15, bz, g));
+            });
+            /* hedges along the fence */
+            [-FX + 1.2, -FX / 3, FX / 3, FX - 1.2].forEach((hx, k) => {
+              if (Math.abs(hx - gateX) < 1.4) return;
+              const s2 = 0.5 + (k % 2) * 0.12;
+              box(s2, s2, s2, PC.hedge, hx, s2 / 2 - 0.1, gateZ + (gateZ > 0 ? 0.45 : -0.45), g);
+            });
+            [-FZ / 2, FZ / 2].forEach((hz, k) => { const s2 = 0.55 + k * 0.1; box(s2, s2, s2, PC.hedge, sx * (FX + 0.45), s2 / 2 - 0.1, hz, g); });
+            collect = null;
+            courts.push({ g, ci, sx, sz });
+          });
+          /* the players */
+          const SHIRTS = ["#E4572E", "#F2C14E", "#2BB3A3", "#8E6AD8", "#3E7CB1", "#F07FA6"];
+          const SHORTS = ["#1F2A44", "#F4F1EA", "#2E2E2E", "#3D5A80"];
+          const PADDLE = ["#E63946", "#1D3557", "#F4A261", "#2A9D8F"];
+          const makePlayer = (court, side, homeZ, k) => {
+            const root = new THREE.Group();
+            court.g.add(root);
+            const body = new THREE.Group();
+            root.add(body);
+            const shirt = SHIRTS[k % SHIRTS.length], shorts = SHORTS[k % SHORTS.length], skin = SKIN[(k * 3 + 1) % SKIN.length];
+            const hip = (hx) => {
+              const g = new THREE.Group();
+              g.position.set(hx, 0.62, 0);
+              body.add(g);
+              box(0.21, 0.24, 0.24, shorts, 0, -0.1, 0, g);
+              box(0.17, 0.34, 0.18, skin, 0, -0.38, 0, g);
+              box(0.21, 0.1, 0.3, "#F4F4F4", 0, -0.57, 0.04, g);
+              return g;
+            };
+            const legL = hip(-0.13), legR = hip(0.13);
+            box(0.5, 0.56, 0.32, shirt, 0, 0.94, 0, body);
+            const shoulder = (hx, paddle) => {
+              const g = new THREE.Group();
+              g.position.set(hx, 1.16, 0);
+              body.add(g);
+              box(0.15, 0.2, 0.17, shirt, 0, -0.05, 0, g);
+              box(0.12, 0.34, 0.13, skin, 0, -0.3, 0, g);
+              if (paddle) {
+                box(0.05, 0.14, 0.05, "#222", 0, -0.52, 0.04, g);
+                box(0.04, 0.3, 0.26, PADDLE[k % PADDLE.length], 0, -0.74, 0.06, g);
+              }
+              return g;
+            };
+            const armL = shoulder(-0.33, false), armR = shoulder(0.33, true);
+            const head = new THREE.Group();
+            head.position.set(0, 1.42, 0);
+            body.add(head);
+            box(0.4, 0.4, 0.4, skin, 0, 0, 0, head);
+            box(0.44, 0.12, 0.44, HAIR[(k * 5 + 2) % HAIR.length], 0, 0.22, -0.01, head);
+            box(0.44, 0.24, 0.08, HAIR[(k * 5 + 2) % HAIR.length], 0, 0.06, -0.2, head);
+            if (k % 2 === 0) box(0.46, 0.06, 0.46, shirt, 0, 0.16, 0.02, head);
+            box(0.06, 0.06, 0.02, "#1A1A1A", -0.09, 0.03, 0.205, head);
+            box(0.06, 0.06, 0.02, "#1A1A1A", 0.09, 0.03, 0.205, head);
+            root.rotation.y = side > 0 ? -Math.PI / 2 : Math.PI / 2; // face the net
+            const pl = { root, body, legL, legR, armL, armR, head, side, homeX: side * 3.6, homeZ, z: homeZ, x: side * 3.6, swing: -10, court };
+            root.position.set(pl.x, -0.06, pl.z);
+            const id = cPicks.length ? cPicks[cPicks.length - 1].userData.cid + 1 : 0;
+            root.traverse((o) => { if (o.isMesh) { o.userData.cid = id; o.userData.pl = pl; cPicks.push(o); } });
+            return pl;
+          };
+          const ballG = new THREE.IcosahedronGeometry(0.1, 1);
+          geos.push(ballG);
+          const ballM = mat("#D8E83A", { emissive: "#6A7410", emissiveIntensity: 0.4 });
+          let k = 0;
+          [[courts[0], [[-1, -1.3], [-1, 1.3], [1, -1.3], [1, 1.3]]], [courts[1], [[-1, 0], [1, 0]]]].forEach(([court, list]) => {
+            court.players = list.map(([side, hz]) => makePlayer(court, side, hz, k++));
+            const ball = new THREE.Mesh(ballG, ballM);
+            ball.castShadow = true;
+            court.g.add(ball);
+            court.ball = ball;
+            court.hits = 0;
+            court.rally = null;
+            court.rest = 0.5 + court.ci * 0.7;
+          });
+          const top = 3.4;
+          fitExtra.push([CXo + FX + 0.6, 0, CZo + FZ + 1.2], [-CXo - FX - 0.6, 0, CZo + FZ + 1.2], [CXo + FX + 0.6, top, -CZo - FZ - 0.6], [-CXo - FX - 0.6, top, -CZo - FZ - 0.6], [CXo + FX + 0.6, top, CZo + FZ], [-CXo - FX - 0.6, top, CZo + FZ]);
+        }
+        mergeStatic(courtStatic);
 
         /* ---------- Halloween props: pumpkins, gravestones, string lights ---------- */
         const glow = mat("#2A1400", { emissive: "#FFB020", emissiveIntensity: 1.2 });
@@ -6651,9 +6814,9 @@ ${lines.join("\n")}`);
         const sun = new THREE.DirectionalLight(HW ? "#FFDDB8" : "#FFF4E0", dark ? 0.6 : 0.8);
         sun.position.set(12, 20, 8);
         sun.castShadow = true;
-        sun.shadow.mapSize.set(1024, 1024);
-        const span = Math.max(W, D) / 2 + 6;
-        Object.assign(sun.shadow.camera, { left: -span, right: span, top: span, bottom: -span, near: 1, far: 60 });
+        sun.shadow.mapSize.set(2048, 2048);
+        const span = Math.max(W, D) / 2 + 14;
+        Object.assign(sun.shadow.camera, { left: -span, right: span, top: span, bottom: -span, near: 1, far: 80 });
         sun.shadow.bias = -0.0008;
         scene.add(sun);
 
@@ -6736,6 +6899,8 @@ ${lines.join("\n")}`);
           ray.setFromCamera({ x: (e.clientX - rect.left) / rect.width * 2 - 1, y: -((e.clientY - rect.top) / rect.height) * 2 + 1 }, cam);
           const zh = zPicks.length && ray.intersectObjects(zPicks, false)[0];
           if (zh) { pokeZombie(zh.object.userData.zid); return; }
+          const ch = cPicks.length && ray.intersectObjects(cPicks, false)[0];
+          if (ch) { pokePlayer(ch.object.userData.pl); return; }
           const bh = bPicks.length && ray.intersectObjects(bPicks, false)[0];
           const ph = ray.intersectObjects(pickables, false)[0];
           if (bh && (!ph || bh.distance < ph.distance)) { setBoardOpen(true); return; }
@@ -6814,19 +6979,100 @@ ${lines.join("\n")}`);
               z.head.rotation.x = 0.15;
             }
           });
-          const bb = bubble.current;
-          if (bb) {
-            if (talk && t < talk.until) {
-              v3.set(talk.z.root.position.x, talk.z.root.position.y + 2.05, talk.z.root.position.z).project(cam);
-              bb.style.transform = `translate(${(v3.x + 1) / 2 * el.clientWidth}px, ${(1 - v3.y) / 2 * el.clientHeight}px) translate(-50%, -100%)`;
-            } else if (bb.dataset.on) { bb.dataset.on = ""; talk = null; }
-          }
           if (lights.length && !calm) {
             lights[0].emissiveIntensity = 0.6 + 0.5 * (Math.sin(t * 2.1) > 0 ? 1 : 0.2);
             lights[1].emissiveIntensity = 0.6 + 0.5 * (Math.sin(t * 2.1 + 2) > 0 ? 1 : 0.2);
             lights[2].emissiveIntensity = 0.6 + 0.5 * (Math.sin(t * 2.1 + 4) > 0 ? 1 : 0.2);
           }
           if (HW && !calm) glow.emissiveIntensity = 1.05 + Math.sin(t * 7) * 0.12 + Math.sin(t * 17) * 0.08;
+        };
+        const stepBubble = (t) => {
+          const bb = bubble.current;
+          if (!bb) return;
+          if (talk && t < talk.until) {
+            talk.z.root.getWorldPosition(v3); v3.y += 2.05; v3.project(cam);
+            bb.style.transform = `translate(${(v3.x + 1) / 2 * el.clientWidth}px, ${(1 - v3.y) / 2 * el.clientHeight}px) translate(-50%, -100%)`;
+          } else if (bb.dataset.on) { bb.dataset.on = ""; talk = null; }
+        };
+        /* ---------- Pickleball: rallies on the two busy courts ----------
+           The ball flies over the net, bounces once in front of the receiver,
+           who shuffles over and hits it back. Every few shots someone misses,
+           and after a short break the next serve starts. */
+        const CALLS = ["Nice shot!", "Kitchen!", "That was in!", "Dink it!", "Zero, zero, start!", "My ball!", "Good rally!", "One more game?"];
+        let lastCall = -1;
+        const pokePlayer = (pl) => {
+          if (!pl) return;
+          let g;
+          do { g = Math.floor(Math.random() * CALLS.length); } while (g === lastCall && CALLS.length > 1);
+          lastCall = g;
+          talk = { z: pl, until: performance.now() / 1000 + 2.4 };
+          if (bubble.current) { bubble.current.textContent = CALLS[g]; bubble.current.dataset.on = "1"; }
+        };
+        const paddleAt = (pl, out) => out.set(pl.x - pl.side * 0.3, 0.9, pl.z + pl.side * 0.35);
+        const P0 = new THREE.Vector3(), P1 = new THREE.Vector3();
+        const startRally = (court, t, hitter, serve) => {
+          const opp = court.players.filter((q) => q.side !== hitter.side);
+          const rcv = opp[Math.floor(Math.random() * opp.length)];
+          const tz = Math.max(-2.3, Math.min(2.3, rcv.homeZ + (Math.random() - 0.5) * (opp.length > 1 ? 1.4 : 3.6)));
+          const miss = !serve && court.hits > 4 && Math.random() < 0.22;
+          paddleAt(hitter, P0);
+          court.rally = {
+            t0: t, from: P0.clone(), hitter, rcv, tz, miss,
+            bx: rcv.side * (serve ? 3.0 : 1.4 + Math.random() * 1.6), // where it bounces
+            d1: serve ? 1.0 : 0.7 + Math.random() * 0.25, d2: 0.32
+          };
+          hitter.swing = t;
+          court.hits = serve ? 0 : court.hits + 1;
+        };
+        const stepCourts = (t, dt) => {
+          courts.forEach((court) => {
+            if (!court.players) return;
+            const ps = court.players;
+            if (calm) { court.ball.position.set(ps[0].x - ps[0].side * 0.3, 0.9, ps[0].z + ps[0].side * 0.35); return; }
+            if (!court.rally) {
+              court.rest -= dt;
+              if (court.rest <= 0) startRally(court, t, ps[Math.floor(Math.random() * ps.length)], true);
+            }
+            const r = court.rally;
+            let goal = null;
+            if (r) {
+              const e = t - r.t0;
+              const B = { x: r.bx, z: r.tz };
+              if (e < r.d1) {
+                const f = e / r.d1;
+                court.ball.position.set(r.from.x + (B.x - r.from.x) * f, r.from.y + (0.05 - r.from.y) * f + 4 * 1.0 * f * (1 - f), r.from.z + (B.z - r.from.z) * f);
+              } else if (!r.miss) {
+                paddleAt(r.rcv, P1);
+                const f = Math.min(1, (e - r.d1) / r.d2);
+                court.ball.position.set(B.x + (P1.x - B.x) * f, 0.05 + (P1.y - 0.05) * f + 4 * 0.3 * f * (1 - f), B.z + (P1.z - B.z) * f);
+                if (f >= 1) startRally(court, t, r.rcv, false);
+              } else {
+                /* missed: the ball skips past and rolls to a stop */
+                const f = Math.min(1, (e - r.d1) / 1.4), ease = 1 - (1 - f) * (1 - f);
+                court.ball.position.set(B.x + r.rcv.side * 3.2 * ease, 0.05 + Math.abs(Math.sin(f * Math.PI * 3)) * 0.35 * (1 - f), B.z + 0.6 * ease);
+                if (f >= 1) { court.rally = null; court.rest = 1.4 + Math.random(); }
+              }
+              if (court.rally === r) goal = r;
+            }
+            ps.forEach((pl) => {
+              const wantZ = goal && goal.rcv === pl ? goal.tz - pl.side * 0.35 : pl.homeZ;
+              const wantX = goal && goal.rcv === pl ? pl.side * Math.max(2.4, Math.abs(goal.bx) + 0.9) : pl.homeX;
+              const dz = wantZ - pl.z, dx = wantX - pl.x;
+              const dist = Math.hypot(dx, dz), stepL = Math.min(dist, 3.0 * dt);
+              if (dist > 0.001) { pl.z += dz / dist * stepL; pl.x += dx / dist * stepL; }
+              const moving = dist > 0.05;
+              pl.root.position.set(pl.x, -0.06, pl.z);
+              const ph = t * 12 + pl.homeZ;
+              pl.legL.rotation.x = moving ? Math.sin(ph) * 0.5 : 0;
+              pl.legR.rotation.x = moving ? -Math.sin(ph) * 0.5 : 0;
+              pl.body.position.y = moving ? Math.abs(Math.sin(ph)) * 0.04 : Math.sin(t * 3 + pl.homeZ) * 0.01;
+              pl.body.rotation.x = 0.12; // ready stance
+              const sw = t - pl.swing;
+              pl.armR.rotation.x = sw < 0.35 ? -0.4 - Math.sin(sw / 0.35 * Math.PI) * 1.5 : -0.4;
+              pl.armR.rotation.z = sw < 0.35 ? Math.sin(sw / 0.35 * Math.PI) * 0.3 : 0;
+              pl.armL.rotation.x = -0.25;
+            });
+          });
         };
         const frame = (now) => {
           raf = requestAnimationFrame(frame);
@@ -6878,11 +7124,13 @@ ${lines.join("\n")}`);
           });
           spots.length = 0;
           if (HW) stepZombies(t, dt);
+          stepCourts(t, dt);
+          stepBubble(t);
           frameNo++;
           renderer.render(scene, cam);
         };
         world.current = { rows, desks, THREE };
-        if (window.__psTest) window.__psZ = { zombies, cam, el, THREE, renderer, scene };
+        if (window.__psTest) window.__psZ = { zombies, courts, cam, el, THREE, renderer, scene };
         raf = requestAnimationFrame(frame);
         setReady(true);
         world.current.cleanup = () => {
@@ -6937,7 +7185,7 @@ ${lines.join("\n")}`);
         boardOpen && board && h(AnnouncePopup, { a: board, close: () => setBoardOpen(false), title: "Today on the billboard" }),
         h("div", { className: `ps-st-stage ${HW ? "hw" : ""}` },
           h("div", { className: "ps-st-canvas", ref: mount }),
-          HW && h("div", { className: "ps-st-bubble", ref: bubble, "aria-live": "polite" }),
+          h("div", { className: "ps-st-bubble", ref: bubble, "aria-live": "polite" }),
           h("div", { className: "ps-st-tags", "aria-hidden": !ready }, ready && rows.filter((r) => !unseated.includes(r.p.id)).map((r) => h("button", {
             key: r.p.id,
             ref: (n) => { if (n) tags.current[r.p.id] = n; else delete tags.current[r.p.id]; },

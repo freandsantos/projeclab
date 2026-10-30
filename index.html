@@ -8408,14 +8408,23 @@ function OpeningSweep() {
         if (r.bottom < 0 || r.top > vh || r.right < 0 || r.left > vw) return; // offscreen: skip subtree
         const cs = getComputedStyle(el);
         if (cs.display === "none" || cs.visibility === "hidden") return;
-        if (r.width > 2 && r.height > 2 && isLayer(el, cs)) picked.push({ el, r, op: cs.opacity });
+        if (r.width > 2 && r.height > 2 && isLayer(el, cs)) picked.push({ el, r, op: cs.opacity, tf: cs.transform, inline: cs.display === "inline" });
         if (el.tagName.toUpperCase() === "SVG") return; // animate the icon as one piece
         for (const c of el.children) if (c.tagName !== "STYLE" && c.tagName !== "SCRIPT") walk(c);
       };
       for (const c of root.children) if (c.tagName !== "STYLE") walk(c);
-      picked.forEach(({ el, r, op }) => {
-        const delay = 60 + Math.max(0, r.top) / vh * 720 + Math.max(0, r.left) / vw * 260;
-        try { el.animate([{ opacity: 0 }, { opacity: op }], { duration: 520, delay, easing: "cubic-bezier(.25,.6,.25,1)", fill: "backwards" }); } catch (e) {}
+      const big = vw * vh * 0.12;
+      picked.forEach(({ el, r, op, tf, inline }) => {
+        const delay = 60 + Math.max(0, r.top) / vh * 760 + Math.max(0, r.left) / vw * 280;
+        const base = tf && tf !== "none" ? tf : "";
+        const area = r.width * r.height;
+        // Small pieces glide in from slightly lower-left, a touch larger and blurred, then settle.
+        // Big panels move less so the layers don't all slide as one block.
+        const k = inline ? 0 : area > big ? 0.35 : 1;
+        const from = { opacity: 0, transform: `${base} translate(${-10 * k}px, ${12 * k}px) scale(${1 + 0.04 * k})`.trim() };
+        const to = { opacity: op, transform: `${base} translate(0px, 0px) scale(1)`.trim() };
+        if (area < 60000) { from.filter = "blur(6px)"; to.filter = "blur(0px)"; }
+        try { el.animate([from, to], { duration: 760, delay, easing: "cubic-bezier(.16,.84,.24,1)", fill: "backwards" }); } catch (e) {}
       });
       requestAnimationFrame(finish);
     };

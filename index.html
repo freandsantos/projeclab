@@ -4529,6 +4529,13 @@ html[data-theme="dark"] .ps-open{background:#10151D}
     const [paying, setPaying] = useState(null);
     const [adding, setAdding] = useState(null);
     const [editClient, setEditClient] = useState(null);
+    const [menuFor, setMenuFor] = useState(null);
+    useEffect(() => {
+      if (!menuFor) return;
+      const close = (e) => { if (!(e.target.closest && e.target.closest(".ps-inv-menu"))) setMenuFor(null); };
+      document.addEventListener("click", close);
+      return () => document.removeEventListener("click", close);
+    }, [menuFor]);
 
     const load = async () => {
       try {
@@ -4567,8 +4574,10 @@ html[data-theme="dark"] .ps-open{background:#10151D}
     const clientOf = (id) => clients.find((c) => c.id === id) || { name: "Unknown client", currency: "USD" };
     const invoices = rows.filter((r) => r.kind === "invoice").map((r) => r.data)
       .sort((a, b) => String(b.sentAt || b.date || "").localeCompare(String(a.sentAt || a.date || "")));
-    const unpaid = invoices.filter((i) => !i.paidAt);
-    const shown = show === "unpaid" ? unpaid : show === "paid" ? invoices.filter((i) => i.paidAt) : invoices;
+    /* Unpaid first (oldest-sent on top, since that's the one to chase), then paid, newest first. */
+    const unpaid = invoices.filter((i) => !i.paidAt).reverse();
+    const paidSorted = invoices.filter((i) => i.paidAt);
+    const shown = show === "unpaid" ? unpaid : show === "paid" ? paidSorted : [...unpaid, ...paidSorted];
 
     /* ---------- income summary (per currency, so dollars and pesos never mix) ---------- */
     const today = new Date();
@@ -4677,29 +4686,36 @@ html[data-theme="dark"] .ps-open{background:#10151D}
     const invList = h("div", { className: "ps-pay-list" },
       shown.length === 0
         ? h("p", { className: "ps-empty" }, invoices.length === 0 ? "No invoices yet. Add one, or they'll appear here once you start logging them." : show === "unpaid" ? "Nothing unpaid. 🎉" : "No paid invoices yet.")
-        : shown.map((inv) => {
+        : shown.map((inv, idx) => {
             const c = clientOf(inv.clientId);
             const age = invAge(inv);
-            return h("div", { key: inv.id, className: `ps-pay-person ps-inv-row ${age.cls}` },
+            const open = menuFor === inv.id;
+            /* In "All", a quiet "Paid" label separates the paid ones from what's still owed. */
+            const divider = show === "all" && inv.paidAt && unpaid.length > 0 && idx === unpaid.length
+              ? h("div", { key: "paid-divider", className: "ps-inv-divider" }, "Paid") : null;
+            const row = h("div", { key: inv.id, className: `ps-pay-person ps-inv-row ${age.cls} ${open ? "menu-open" : ""}` },
               h("div", { className: "ps-pay-row" },
                 h("div", { className: "ps-pay-who" },
                   h("b", null, c.name, " · No. ", inv.no, inv.period ? ` · ${inv.period}` : ""),
                   h("span", { className: "ps-muted" },
-                    inv.desc ? `${inv.desc} · ` : "", "Sent ", longDay(inv.sentAt),
-                    inv.paidAt ? ` · Paid ${longDay(inv.paidAt)} via ${viaLabel(inv.paidVia)}` : "",
-                    inv.paidAt && inv.received && num(inv.received) !== num(inv.amount) ? ` · received ${money(inv.received, c.currency)}` : "",
-                    inv.paidAt && inv.php && (c.currency || "USD") !== "PHP" ? ` · ≈ ${peso(inv.php)} at ₱${inv.fx}` : "",
-                    inv.paidNote ? ` · ${inv.paidNote}` : "")),
+                    inv.paidAt
+                      ? `Paid ${longDay(inv.paidAt)} via ${viaLabel(inv.paidVia)}`
+                        + (inv.paidAt && inv.php && (c.currency || "USD") !== "PHP" ? ` · ≈ ${peso(inv.php)}` : "")
+                      : `Sent ${longDay(inv.sentAt)}`)),
                 h("b", { className: "ps-inv-amt" }, money(inv.amount, c.currency)),
-                h("span", { className: `ps-chip ${age.cls === "ok" ? "ok" : age.cls === "warn" ? "warn" : ""} ${age.cls === "late" ? "ps-inv-late" : ""}` }, age.text)),
-              h("div", { className: "ps-btnrow ps-inv-actions" },
-                inv.pdfUrl && h("a", { className: "ps-btn ghost", href: inv.pdfUrl, target: "_blank", rel: "noopener noreferrer" }, "Open PDF"),
                 inv.paidAt
-                  ? h("button", { className: "ps-btn ghost", onClick: () => undoPaid(inv) }, "Undo paid")
+                  ? h("span", { className: "ps-chip ok" }, "Paid")
                   : paying && paying.id === inv.id ? null
-                    : h("button", { className: "ps-btn", onClick: () => setPaying({ id: inv.id, paidAt: isoDay(new Date()), paidVia: c.paidVia || "wise", received: String(inv.amount), fx: "", note: "" }) }, "Mark as paid"),
-                h("button", { className: "ps-x-small", "aria-label": `Delete invoice No. ${inv.no}`, title: "Delete", onClick: () => removeInv(inv) }, "×")),
+                    : h("button", { className: `ps-btn ps-inv-pay ${age.cls}`, title: age.text, onClick: () => setPaying({ id: inv.id, paidAt: isoDay(new Date()), paidVia: c.paidVia || "wise", received: String(inv.amount), fx: "", note: "" }) }, "Mark paid"),
+                h("div", { className: "ps-inv-menu" },
+                  h("button", { className: "ps-inv-more", "aria-label": `More for invoice No. ${inv.no}`, "aria-expanded": open, onClick: () => setMenuFor(open ? null : inv.id) }, "⋯"),
+                  open && h("div", { className: "ps-inv-pop", role: "menu" },
+                    inv.pdfUrl && h("a", { role: "menuitem", href: inv.pdfUrl, target: "_blank", rel: "noopener noreferrer", onClick: () => setMenuFor(null) }, "Open PDF"),
+                    inv.paidAt && h("button", { role: "menuitem", onClick: () => { setMenuFor(null); undoPaid(inv); } }, "Undo paid"),
+                    h("button", { role: "menuitem", className: "danger", onClick: () => { setMenuFor(null); removeInv(inv); } }, "Delete")))),
+              !inv.paidAt && age.cls && h("span", { className: `ps-inv-age ${age.cls}` }, age.text),
               paying && paying.id === inv.id && payForm(inv));
+            return divider ? [divider, row] : row;
           }));
 
     const invoicesTab = h(React.Fragment, null,
@@ -7867,11 +7883,24 @@ ${lines.join("\n")}`);
 .ps-inv-pill.on{background:var(--ink);color:var(--card);border-color:var(--ink)}
 .ps-inv-row.warn{border-color:color-mix(in srgb,var(--warn) 45%,var(--line))}
 .ps-inv-row.late{border-color:var(--late);box-shadow:inset 3px 0 0 var(--late)}
-.ps-inv-row.ok{opacity:.85}
+.ps-inv-row.ok .ps-inv-amt{color:var(--muted)}
 .ps-inv-amt{font-size:16px;white-space:nowrap}
 .ps-chip.ps-inv-late{background:color-mix(in srgb,var(--late) 14%,var(--card));color:var(--late)}
-.ps-btnrow.ps-inv-actions{justify-content:flex-end;align-items:center;margin-top:8px}
-.ps-inv-actions .ps-btn{padding:6px 12px;font-size:13.5px;text-decoration:none}
+.ps-inv-row{padding:12px 14px;position:relative}
+.ps-inv-row.menu-open{z-index:30}
+.ps-inv-row.ok .ps-pay-who b{font-weight:600}
+.ps-btn.ps-inv-pay{padding:6px 14px;font-size:13.5px;white-space:nowrap}
+.ps-btn.ps-inv-pay.late{background:var(--late)}
+.ps-inv-age{display:block;margin-top:4px;font-size:12.5px;font-weight:600;color:var(--warn)}
+.ps-inv-age.late{color:var(--late)}
+.ps-inv-divider{font-size:12px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin:10px 2px 0}
+.ps-inv-menu{position:relative}
+.ps-inv-more{background:none;border:0;color:var(--muted);font-size:18px;line-height:1;padding:4px 6px;border-radius:6px;cursor:pointer}
+.ps-inv-more:hover,.ps-inv-more[aria-expanded="true"]{background:var(--line);color:var(--ink)}
+.ps-inv-pop{position:absolute;right:0;top:calc(100% + 4px);z-index:20;min-width:140px;background:var(--card);border:1px solid var(--line);border-radius:10px;box-shadow:0 8px 24px rgba(0,0,0,.25);padding:4px;display:flex;flex-direction:column}
+.ps-inv-pop a,.ps-inv-pop button{display:block;text-align:left;background:none;border:0;padding:8px 10px;border-radius:6px;font:inherit;font-size:13.5px;color:var(--ink);text-decoration:none;cursor:pointer}
+.ps-inv-pop a:hover,.ps-inv-pop button:hover{background:var(--line)}
+.ps-inv-pop .danger{color:var(--late)}
 .ps-inv-payform{border-top:1px dashed var(--line);padding-top:10px}
 .ps-inv-perclient{margin-top:8px}
 .ps-inv-table{background:var(--card);border:1px solid var(--line);border-radius:12px;overflow:hidden}

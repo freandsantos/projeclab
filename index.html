@@ -4639,7 +4639,11 @@ html[data-theme="dark"] .ps-open{background:#10151D}
     });
 
     /* ---------- add an invoice by hand ---------- */
-    const nextNo = (clientId) => String(invoices.filter((i) => i.clientId === clientId).reduce((m, i) => Math.max(m, parseInt(i.no, 10) || 0), 0) + 1);
+    const nextNo = (clientId) => {
+      const logged = invoices.filter((i) => i.clientId === clientId).reduce((m, i) => Math.max(m, parseInt(i.no, 10) || 0), 0);
+      const set = parseInt((clients.find((c) => c.id === clientId) || {}).nextNo, 10) || 0;
+      return String(Math.max(logged + 1, set, 1));
+    };
     const startAdd = () => {
       const c = clients[0];
       const d = isoDay(new Date());
@@ -4708,7 +4712,7 @@ html[data-theme="dark"] .ps-open{background:#10151D}
       addForm, invList, perClient);
 
     /* ---------- clients & billing details ---------- */
-    const blankClient = () => ({ id: uid("ic"), name: "", contact: "", email: "", desc: "", amount: "", currency: "USD", schedule: "Last day of each month", sendFrom: "", wording: "", paidVia: "wise", notes: "", isNew: true });
+    const blankClient = () => ({ id: uid("ic"), name: "", contact: "", email: "", desc: "", amount: "", currency: "USD", schedule: "Last day of each month", sendFrom: "", subject: "", nextNo: "", wording: "", paidVia: "wise", notes: "", isNew: true });
     const field = (label, key, extra) => h("label", { className: "ps-field" }, h("span", null, label),
       h("input", { value: editClient[key] == null ? "" : editClient[key], onChange: (e) => setEditClient({ ...editClient, [key]: e.target.value }), ...(extra || {}) }));
     const clientForm = editClient && h("div", { className: "ps-pay-newrun" },
@@ -4723,8 +4727,11 @@ html[data-theme="dark"] .ps-open{background:#10151D}
           h("select", { value: editClient.currency, onChange: (e) => setEditClient({ ...editClient, currency: e.target.value }) }, CURRENCIES.map(([k, s]) => h("option", { key: k, value: k }, `${k} (${s})`)))),
         field("When you invoice", "schedule"),
         field("Sent from", "sendFrom", { placeholder: "e.g. Outlook, frean@…" }),
+        field("Email title", "subject", { placeholder: "e.g. Invoice #<No> or <Month> Invoice" }),
+        field("Next invoice no.", "nextNo", { inputMode: "numeric", placeholder: "only if not logged here yet" }),
         h("label", { className: "ps-field" }, h("span", null, "Usually pays via"),
           h("select", { value: editClient.paidVia || "wise", onChange: (e) => setEditClient({ ...editClient, paidVia: e.target.value }) }, PAID_VIA.map(([k, l]) => h("option", { key: k, value: k }, l))))),
+      h("p", { className: "ps-muted ps-pay-hint" }, "In the title and wording, <No> becomes the invoice number and <Month> the month (e.g. November)."),
       h("label", { className: "ps-field" }, h("span", null, "Email wording"),
         h("textarea", { rows: 3, value: editClient.wording || "", onChange: (e) => setEditClient({ ...editClient, wording: e.target.value }) })),
       h("label", { className: "ps-field" }, h("span", null, "Notes"),
@@ -4754,6 +4761,7 @@ html[data-theme="dark"] .ps-open{background:#10151D}
                   h("b", null, c.name),
                   h("span", { className: "ps-muted" }, [c.contact, c.email].filter(Boolean).join(" · ") || "No contact yet"),
                   h("span", { className: "ps-muted" }, [c.desc && c.amount ? `${c.desc} · ${money(c.amount, c.currency)}` : c.amount ? money(c.amount, c.currency) : "", c.schedule, c.sendFrom ? `from ${c.sendFrom}` : ""].filter(Boolean).join(" · ")),
+                  (c.subject || nextNo(c.id) !== "1") && h("span", { className: "ps-muted" }, [c.subject ? `Title: ${c.subject}` : "", `Next invoice: No. ${nextNo(c.id)}`].filter(Boolean).join(" · ")),
                   c.wording && h("span", { className: "ps-muted ps-inv-wording" }, "“", c.wording, "”")),
                 h("button", { className: "ps-btn ghost", onClick: () => setEditClient({ ...c, amount: String(c.amount || "") }) }, "Edit"),
                 h("button", { className: "ps-x-small", "aria-label": `Remove ${c.name}`, onClick: () => removeClient(c) }, "×"))))));

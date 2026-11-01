@@ -4688,32 +4688,50 @@ html[data-theme="dark"] .ps-open{background:#10151D}
       const set = parseInt((clients.find((c) => c.id === clientId) || {}).nextNo, 10) || 0;
       return String(Math.max(logged + 1, set, 1));
     };
+    const itemFrom = (c) => ({ desc: c && c.desc ? c.desc : "", qty: "1", rate: c && c.amount ? String(c.amount) : "" });
     const startAdd = () => {
       const c = clients[0];
       const d = isoDay(new Date());
-      setAdding({ clientId: c ? c.id : "", no: c ? nextNo(c.id) : "1", period: monthLabelOf(d), date: d, sentAt: d, amount: c ? String(c.amount || "") : "", desc: c ? c.desc || "" : "", pdfUrl: "" });
+      setAdding({ clientId: c ? c.id : "", no: c ? nextNo(c.id) : "1", period: monthLabelOf(d), date: d, sentAt: d, items: [itemFrom(c)], pdfUrl: "" });
     };
+    const lineTotal = (it) => r2(num(it.qty) * num(it.rate));
+    const addTotal = adding ? r2((adding.items || []).reduce((s, it) => s + lineTotal(it), 0)) : 0;
+    const setItem = (i, patch) => setAdding({ ...adding, items: adding.items.map((it, j) => j === i ? { ...it, ...patch } : it) });
+    const addCur = adding ? clientOf(adding.clientId).currency : "USD";
     const addForm = adding && h("div", { className: "ps-pay-newrun" },
       h("b", null, "Add an invoice"),
       clients.length === 0 ? h("p", { className: "ps-muted" }, "Add the client first, under Clients.") : h(React.Fragment, null,
         h("div", { className: "ps-pay-grid" },
           h("label", { className: "ps-field" }, h("span", null, "Client"),
-            h("select", { value: adding.clientId, onChange: (e) => { const c = clientOf(e.target.value); setAdding({ ...adding, clientId: e.target.value, no: nextNo(e.target.value), amount: String(c.amount || ""), desc: c.desc || "" }); } },
+            h("select", { value: adding.clientId, onChange: (e) => { const c = clientOf(e.target.value); const blank = adding.items.every((it) => !it.desc && !num(it.rate)) || adding.items.length === 1; setAdding({ ...adding, clientId: e.target.value, no: nextNo(e.target.value), items: blank ? [itemFrom(c)] : adding.items }); } },
               clients.map((c) => h("option", { key: c.id, value: c.id }, c.name)))),
           h("label", { className: "ps-field" }, h("span", null, "Invoice No."), h("input", { value: adding.no, onChange: (e) => setAdding({ ...adding, no: e.target.value }) })),
-          h("label", { className: "ps-field" }, h("span", null, "For (period)"), h("input", { value: adding.period, onChange: (e) => setAdding({ ...adding, period: e.target.value }) })),
-          h("label", { className: "ps-field" }, h("span", null, "What for"), h("input", { value: adding.desc, onChange: (e) => setAdding({ ...adding, desc: e.target.value }) })),
-          h("label", { className: "ps-field" }, h("span", null, "Amount"), h("input", { inputMode: "decimal", value: adding.amount, onChange: (e) => setAdding({ ...adding, amount: e.target.value }) })),
+          h("label", { className: "ps-field" }, h("span", null, "For (period or project)"), h("input", { value: adding.period, onChange: (e) => setAdding({ ...adding, period: e.target.value }) })),
           h("label", { className: "ps-field" }, h("span", null, "Invoice date"), h("input", { type: "date", value: adding.date, onChange: (e) => setAdding({ ...adding, date: e.target.value }) })),
           h("label", { className: "ps-field" }, h("span", null, "Sent on"), h("input", { type: "date", value: adding.sentAt, onChange: (e) => setAdding({ ...adding, sentAt: e.target.value }) })),
-          h("label", { className: "ps-field" }, h("span", null, "PDF link (optional)"), h("input", { value: adding.pdfUrl, placeholder: "OneDrive link", onChange: (e) => setAdding({ ...adding, pdfUrl: e.target.value }) })))),
+          h("label", { className: "ps-field" }, h("span", null, "PDF link (optional)"), h("input", { value: adding.pdfUrl, placeholder: "OneDrive link", onChange: (e) => setAdding({ ...adding, pdfUrl: e.target.value }) }))),
+        h("div", { className: "ps-inv-items" },
+          h("div", { className: "ps-inv-item head" }, h("span", null, "What for"), h("span", null, "Qty"), h("span", null, "Rate"), h("span", null, "Amount"), h("span", null)),
+          adding.items.map((it, i) => h("div", { key: i, className: "ps-inv-item" },
+            h("input", { "aria-label": `Item ${i + 1}`, value: it.desc, placeholder: "e.g. Short-form video", onChange: (e) => setItem(i, { desc: e.target.value }) }),
+            h("input", { "aria-label": `Quantity for item ${i + 1}`, inputMode: "decimal", value: it.qty, onChange: (e) => setItem(i, { qty: e.target.value }) }),
+            h("input", { "aria-label": `Rate for item ${i + 1}`, inputMode: "decimal", value: it.rate, placeholder: "0", onChange: (e) => setItem(i, { rate: e.target.value }) }),
+            h("span", { className: "ps-inv-item-amt" }, money(lineTotal(it), addCur)),
+            adding.items.length > 1 ? h("button", { className: "ps-x-small", "aria-label": `Remove item ${i + 1}`, onClick: () => setAdding({ ...adding, items: adding.items.filter((_, j) => j !== i) }) }, "×") : h("span", null))),
+          h("div", { className: "ps-inv-items-foot" },
+            h("button", { className: "ps-btn ghost", onClick: () => setAdding({ ...adding, items: [...adding.items, { desc: "", qty: "1", rate: "" }] }) }, "+ Add a line"),
+            h("b", null, "Total ", money(addTotal, addCur))))),
       h("div", { className: "ps-btnrow" },
         h("button", { className: "ps-btn ghost", onClick: () => setAdding(null) }, "Cancel"),
         clients.length > 0 && h("button", { className: "ps-btn", onClick: () => {
-          if (!adding.clientId || !num(adding.amount)) { setToast("Pick the client and enter the amount."); return; }
+          const items = adding.items.filter((it) => it.desc.trim() || num(it.rate)).map((it) => ({ desc: it.desc.trim(), qty: num(it.qty) || 1, rate: num(it.rate), amount: r2((num(it.qty) || 1) * num(it.rate)) }));
+          const total = r2(items.reduce((s, it) => s + it.amount, 0));
+          if (!adding.clientId || !items.length || !(total > 0)) { setToast("Pick the client and add at least one line with a rate."); return; }
+          if (items.some((it) => !it.desc)) { setToast("Give every line a description."); return; }
           if (invoices.some((i) => i.clientId === adding.clientId && String(i.no) === String(adding.no).trim())) { setToast(`There's already an invoice No. ${adding.no} for ${clientOf(adding.clientId).name}.`); return; }
           const id = uid("inv");
-          put(id, "invoice", { id, clientId: adding.clientId, no: String(adding.no).trim(), period: adding.period.trim(), desc: adding.desc.trim(), amount: num(adding.amount), date: adding.date, sentAt: adding.sentAt, pdfUrl: adding.pdfUrl.trim(), paidAt: null, addedBy: me.name, addedAt: new Date().toISOString() }, "Invoice added.");
+          const desc = items.length === 1 ? items[0].desc : items.map((it) => (it.qty !== 1 ? `${it.qty} × ` : "") + it.desc).join(", ");
+          put(id, "invoice", { id, clientId: adding.clientId, no: String(adding.no).trim(), period: adding.period.trim(), desc, items, amount: total, date: adding.date, sentAt: adding.sentAt, pdfUrl: adding.pdfUrl.trim(), paidAt: null, addedBy: me.name, addedAt: new Date().toISOString() }, "Invoice added.");
           setAdding(null);
         } }, "Add invoice")));
 
@@ -4748,6 +4766,8 @@ html[data-theme="dark"] .ps-open{background:#10151D}
                     inv.pdfUrl && h("a", { role: "menuitem", href: inv.pdfUrl, target: "_blank", rel: "noopener noreferrer", onClick: () => setMenuFor(null) }, "Open PDF"),
                     inv.paidAt && h("button", { role: "menuitem", onClick: () => { setMenuFor(null); undoPaid(inv); } }, "Undo paid"),
                     h("button", { role: "menuitem", className: "danger", onClick: () => { setMenuFor(null); removeInv(inv); } }, "Delete")))),
+              Array.isArray(inv.items) && inv.items.length > 1 && h("ul", { className: "ps-inv-lines" },
+                inv.items.map((it, j) => h("li", { key: j }, h("span", null, (it.qty && it.qty !== 1 ? `${it.qty} × ` : "") + it.desc), h("span", null, money(it.amount != null ? it.amount : num(it.qty || 1) * num(it.rate), c.currency))))),
               !inv.paidAt && age.cls && h("span", { className: `ps-inv-age ${age.cls}` }, age.text),
               paying && paying.id === inv.id && payForm(inv));
             return divider ? [divider, row] : row;
@@ -7970,6 +7990,16 @@ ${lines.join("\n")}`);
 .ps-inv-pop .danger{color:var(--late)}
 .ps-inv-payform{border-top:1px dashed var(--line);padding-top:10px}
 .ps-inv-perclient{margin-top:8px}
+.ps-inv-items{margin-top:12px;border:1px solid var(--line);border-radius:10px;padding:8px 10px;background:var(--card)}
+.ps-inv-item{display:grid;grid-template-columns:1fr 64px 96px 96px 24px;gap:8px;align-items:center;padding:4px 0}
+.ps-inv-item.head{font-size:12px;font-weight:600;color:var(--muted)}
+.ps-root .ps-inv-item input{width:100%;min-width:0;border:1px solid var(--line);border-radius:8px;padding:7px 9px;background:var(--card);color:var(--ink);font:inherit;font-size:14px}
+.ps-inv-item-amt{text-align:right;font-weight:600;font-size:14px}
+.ps-inv-item.head span:nth-child(4){text-align:right}
+.ps-inv-items-foot{display:flex;justify-content:space-between;align-items:center;margin-top:8px;padding-top:8px;border-top:1px dashed var(--line)}
+.ps-inv-lines{list-style:none;margin:8px 0 0;padding:0;font-size:13px;color:var(--muted)}
+.ps-inv-lines li{display:flex;justify-content:space-between;gap:12px;padding:2px 0;max-width:520px}
+@media (max-width:600px){.ps-inv-item{grid-template-columns:1fr 52px 72px 24px}.ps-inv-item-amt,.ps-inv-item.head span:nth-child(4){display:none}}
 .ps-inv-sched{display:flex;flex-wrap:wrap;align-items:center;gap:6px;font-size:13.5px;color:var(--ink);margin-top:2px}
 .ps-inv-sched .ps-chip{font-size:11.5px;padding:2px 8px}
 .ps-inv-upcoming{margin:0 0 18px}.ps-inv-upcoming .ps-h3{margin-top:18px}

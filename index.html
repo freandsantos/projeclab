@@ -4518,6 +4518,41 @@ html[data-theme="dark"] .ps-open{background:#10151D}
   };
   var longDay = (iso) => iso ? fromIso(String(iso).slice(0, 10)).toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" }) : "";
   var monthLabelOf = (iso) => fromIso(String(iso).slice(0, 10)).toLocaleDateString("en-US", { month: "long", year: "numeric" });
+  /* Invoice schedule per client: how often it goes out, and who sends it. */
+  var INV_CADENCES = [["semi", "15th & last day"], ["monthly-end", "Last day of month"], ["monthly-day", "A set day monthly"], ["manual", "No fixed schedule"]];
+  var INV_CADENCE_LONG = { semi: "Twice a month (15th & last day)", "monthly-end": "Monthly, on the last day" };
+  var INV_SENDING = [["auto", "Sent automatically"], ["draft", "Claude drafts it, I send"], ["manual", "I send it myself"]];
+  var invCadenceOf = (c) => {
+    if (c.cadence) return c.cadence;
+    const s = String(c.schedule || "").toLowerCase();
+    if (/15/.test(s) && /(last|30|31|end)/.test(s)) return "semi";
+    if (/(last|end)/.test(s)) return "monthly-end";
+    return s ? "manual" : "monthly-end";
+  };
+  var ordinal = (n) => n + (n % 10 === 1 && n !== 11 ? "st" : n % 10 === 2 && n !== 12 ? "nd" : n % 10 === 3 && n !== 13 ? "rd" : "th");
+  var invCadenceLabel = (c) => {
+    const k = invCadenceOf(c);
+    if (k === "monthly-day") return `Monthly, on the ${ordinal(Math.min(31, Math.max(1, parseInt(c.cadenceDay, 10) || 1)))}`;
+    if (k === "manual") return c.schedule && !c.cadence ? c.schedule : "No fixed schedule";
+    return INV_CADENCE_LONG[k] || INV_CADENCE_LONG.semi;
+  };
+  var invSendingLabel = (c) => c.sending ? (INV_SENDING.find((x) => x[0] === c.sending) || ["", ""])[1] : "";
+  /* The next invoice day on or after today (skipping one already logged for that day). null if no fixed schedule. */
+  var invNextDue = (c, logged) => {
+    const k = invCadenceOf(c);
+    if (k === "manual") return null;
+    const today = isoDay(new Date());
+    const base = new Date();
+    for (let i = 0; i < 3; i++) {
+      const y = new Date(base.getFullYear(), base.getMonth() + i, 1).getFullYear(), m = new Date(base.getFullYear(), base.getMonth() + i, 1).getMonth();
+      const days = k === "semi" ? [15, lastDay(y, m)] : k === "monthly-end" ? [lastDay(y, m)] : [Math.min(lastDay(y, m), Math.max(1, parseInt(c.cadenceDay, 10) || 1))];
+      for (const d of days) {
+        const iso = isoOf(y, m, d);
+        if (iso >= today && !logged.some((x) => String(x.date).slice(0, 10) === iso)) return iso;
+      }
+    }
+    return null;
+  };
 
   function InvoicesPage({ me, setToast, confirm }) {
     const h = React.createElement;
@@ -4718,8 +4753,25 @@ html[data-theme="dark"] .ps-open{background:#10151D}
             return divider ? [divider, row] : row;
           }));
 
+    /* ---------- coming up: next invoice for each client on a schedule ---------- */
+    const upcoming = clients
+      .map((c) => ({ c, due: invNextDue(c, invoices.filter((i) => i.clientId === c.id)) }))
+      .filter((x) => x.due)
+      .sort((a, b) => a.due.localeCompare(b.due) || a.c.name.localeCompare(b.c.name));
+    const comingUp = upcoming.length > 0 && h("div", { className: "ps-inv-upcoming" },
+      h("h3", { className: "ps-h3" }, "Coming up"),
+      h("div", { className: "ps-inv-table", role: "table" },
+        upcoming.map(({ c, due }) => {
+          const inDays = Math.round((fromIso(due) - startOfDay(new Date())) / 864e5);
+          return h("div", { key: c.id, className: "ps-inv-up", role: "row" },
+            h("span", { className: "ps-inv-up-when" }, h("b", null, longDay(due)), h("span", { className: "ps-muted" }, inDays === 0 ? "Today" : inDays === 1 ? "Tomorrow" : `In ${inDays} days`)),
+            h("span", null, h("b", null, c.name), " · No. ", nextNo(c.id), c.amount ? ` · ${money(c.amount, c.currency)}` : "",
+              h("span", { className: "ps-muted ps-inv-up-sub" }, [invCadenceLabel(c), c.sendFrom ? `from ${c.sendFrom}` : ""].filter(Boolean).join(" · "))),
+            c.sending ? h("span", { className: `ps-chip ${c.sending === "auto" ? "ok" : ""}` }, invSendingLabel(c)) : h("span", null));
+        })));
+
     const invoicesTab = h(React.Fragment, null,
-      summary,
+      summary, comingUp,
       h("div", { className: "ps-btnrow ps-inv-top" },
         h("div", { className: "ps-inv-filter", role: "group", "aria-label": "Show" },
           [["all", `All (${invoices.length})`], ["unpaid", `Unpaid (${unpaid.length})`], ["paid", `Paid (${paidList.length})`]].map(([k, l]) =>
@@ -4728,7 +4780,7 @@ html[data-theme="dark"] .ps-open{background:#10151D}
       addForm, invList, perClient);
 
     /* ---------- clients & billing details ---------- */
-    const blankClient = () => ({ id: uid("ic"), name: "", contact: "", email: "", desc: "", amount: "", currency: "USD", schedule: "Last day of each month", sendFrom: "", subject: "", nextNo: "", wording: "", paidVia: "wise", notes: "", isNew: true });
+    const blankClient = () => ({ id: uid("ic"), name: "", contact: "", email: "", desc: "", amount: "", currency: "USD", cadence: "monthly-end", cadenceDay: "", sending: "", schedule: "Monthly, on the last day", sendFrom: "", subject: "", nextNo: "", wording: "", paidVia: "wise", notes: "", isNew: true });
     const field = (label, key, extra) => h("label", { className: "ps-field" }, h("span", null, label),
       h("input", { value: editClient[key] == null ? "" : editClient[key], onChange: (e) => setEditClient({ ...editClient, [key]: e.target.value }), ...(extra || {}) }));
     const clientForm = editClient && h("div", { className: "ps-pay-newrun" },
@@ -4741,7 +4793,12 @@ html[data-theme="dark"] .ps-open{background:#10151D}
         field("Usual amount", "amount", { inputMode: "decimal" }),
         h("label", { className: "ps-field" }, h("span", null, "Currency"),
           h("select", { value: editClient.currency, onChange: (e) => setEditClient({ ...editClient, currency: e.target.value }) }, CURRENCIES.map(([k, s]) => h("option", { key: k, value: k }, `${k} (${s})`)))),
-        field("When you invoice", "schedule"),
+        h("label", { className: "ps-field" }, h("span", null, "When you invoice"),
+          h("select", { value: invCadenceOf(editClient), onChange: (e) => setEditClient({ ...editClient, cadence: e.target.value }) }, INV_CADENCES.map(([k, l]) => h("option", { key: k, value: k }, l)))),
+        invCadenceOf(editClient) === "monthly-day" && field("Day of the month", "cadenceDay", { inputMode: "numeric", placeholder: "e.g. 5" }),
+        h("label", { className: "ps-field" }, h("span", null, "How it goes out"),
+          h("select", { value: editClient.sending || "", onChange: (e) => setEditClient({ ...editClient, sending: e.target.value }) },
+            h("option", { value: "" }, "Not set"), INV_SENDING.map(([k, l]) => h("option", { key: k, value: k }, l)))),
         field("Sent from", "sendFrom", { placeholder: "e.g. Outlook, frean@…" }),
         field("Email title", "subject", { placeholder: "e.g. Invoice #<No> or <Month> Invoice" }),
         field("Next invoice no.", "nextNo", { inputMode: "numeric", placeholder: "only if not logged here yet" }),
@@ -4757,7 +4814,10 @@ html[data-theme="dark"] .ps-open{background:#10151D}
         h("button", { className: "ps-btn", onClick: () => {
           if (!editClient.name.trim()) { setToast("Give the client a name."); return; }
           const { isNew, ...c } = editClient;
-          put(c.id, "client", { ...c, name: c.name.trim(), amount: num(c.amount) }, isNew ? "Client added." : "Client saved.");
+          const cadence = invCadenceOf(c);
+          if (cadence === "monthly-day" && !(parseInt(c.cadenceDay, 10) >= 1 && parseInt(c.cadenceDay, 10) <= 31)) { setToast("Enter the day of the month (1–31)."); return; }
+          const sched = { ...c, cadence };
+          put(c.id, "client", { ...sched, schedule: invCadenceLabel(sched), name: c.name.trim(), amount: num(c.amount) }, isNew ? "Client added." : "Client saved.");
           setEditClient(null);
         } }, "Save client")));
     const removeClient = (c) => {
@@ -4776,7 +4836,14 @@ html[data-theme="dark"] .ps-open{background:#10151D}
                 h("div", { className: "ps-pay-who" },
                   h("b", null, c.name),
                   h("span", { className: "ps-muted" }, [c.contact, c.email].filter(Boolean).join(" · ") || "No contact yet"),
-                  h("span", { className: "ps-muted" }, [c.desc && c.amount ? `${c.desc} · ${money(c.amount, c.currency)}` : c.amount ? money(c.amount, c.currency) : "", c.schedule, c.sendFrom ? `from ${c.sendFrom}` : ""].filter(Boolean).join(" · ")),
+                  h("span", { className: "ps-muted" }, [c.desc && c.amount ? `${c.desc} · ${money(c.amount, c.currency)}` : c.amount ? money(c.amount, c.currency) : "", c.sendFrom ? `from ${c.sendFrom}` : ""].filter(Boolean).join(" · ")),
+                  (() => {
+                    const due = invNextDue(c, invoices.filter((i) => i.clientId === c.id));
+                    return h("span", { className: "ps-inv-sched" },
+                      "\u{1F4C5} ", invCadenceLabel(c),
+                      due && h(React.Fragment, null, " · Next: ", h("b", null, longDay(due))),
+                      c.sending && h("span", { className: `ps-chip ${c.sending === "auto" ? "ok" : ""}` }, invSendingLabel(c)));
+                  })(),
                   (c.subject || nextNo(c.id) !== "1") && h("span", { className: "ps-muted" }, [c.subject ? `Title: ${c.subject}` : "", `Next invoice: No. ${nextNo(c.id)}`].filter(Boolean).join(" · ")),
                   c.wording && h("span", { className: "ps-muted ps-inv-wording" }, "“", c.wording, "”")),
                 h("button", { className: "ps-btn ghost", onClick: () => setEditClient({ ...c, amount: String(c.amount || "") }) }, "Edit"),
@@ -7903,6 +7970,14 @@ ${lines.join("\n")}`);
 .ps-inv-pop .danger{color:var(--late)}
 .ps-inv-payform{border-top:1px dashed var(--line);padding-top:10px}
 .ps-inv-perclient{margin-top:8px}
+.ps-inv-sched{display:flex;flex-wrap:wrap;align-items:center;gap:6px;font-size:13.5px;color:var(--ink);margin-top:2px}
+.ps-inv-sched .ps-chip{font-size:11.5px;padding:2px 8px}
+.ps-inv-upcoming{margin:0 0 18px}.ps-inv-upcoming .ps-h3{margin-top:18px}
+.ps-inv-up{display:grid;grid-template-columns:150px 1fr auto;gap:12px;align-items:center;padding:10px 14px;border-top:1px solid var(--line);font-size:14px}
+.ps-inv-up:first-child{border-top:0}
+.ps-inv-up-when{display:flex;flex-direction:column;line-height:1.3}.ps-inv-up-when .ps-muted{font-size:12.5px}
+.ps-inv-up-sub{display:block;font-size:12.5px;margin-top:2px}
+@media (max-width:600px){.ps-inv-up{grid-template-columns:1fr auto}.ps-inv-up-when{grid-column:1/-1;flex-direction:row;gap:8px}}
 .ps-inv-table{background:var(--card);border:1px solid var(--line);border-radius:12px;overflow:hidden}
 .ps-inv-tr{display:grid;grid-template-columns:2fr 1fr 1fr .6fr;gap:10px;padding:9px 14px;border-top:1px solid var(--line);font-size:14px}
 .ps-inv-tr:first-child{border-top:0}.ps-inv-tr.head{font-weight:600;color:var(--muted);font-size:12.5px}

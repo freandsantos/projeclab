@@ -4583,6 +4583,9 @@ html[data-theme="dark"] .ps-open{background:#10151D}
     const summary = h("div", { className: "ps-inv-stats" },
       h("div", { className: "ps-inv-stat" }, h("span", { className: "ps-muted" }, "Paid this month"), h("b", null, sumBy(paidList.filter((i) => String(i.paidAt).slice(0, 7) === ym)))),
       h("div", { className: "ps-inv-stat" }, h("span", { className: "ps-muted" }, `Paid in ${yr}`), h("b", null, sumBy(paidList.filter((i) => String(i.paidAt).slice(0, 4) === yr)))),
+      paidList.some((i) => i.php && String(i.paidAt).slice(0, 4) === yr) && h("div", { className: "ps-inv-stat" }, h("span", { className: "ps-muted" }, `In pesos, ${yr}`),
+        h("b", null, peso(paidList.filter((i) => i.php && String(i.paidAt).slice(0, 4) === yr).reduce((s, i) => s + num(i.php), 0))),
+        (() => { const miss = paidList.filter((i) => !i.php && String(i.paidAt).slice(0, 4) === yr).length; return miss ? h("small", { className: "ps-muted" }, `${miss} paid invoice${miss === 1 ? "" : "s"} without a rate`) : null; })()),
       h("div", { className: `ps-inv-stat ${unpaid.length ? "owed" : ""}` }, h("span", { className: "ps-muted" }, "Still owed"), h("b", null, sumBy(unpaid)),
         h("small", { className: "ps-muted" }, unpaid.length ? `${unpaid.length} invoice${unpaid.length === 1 ? "" : "s"}${late.length ? ` · ${late.length} over ${INV_LATE_DAYS} days` : ""}` : "All paid up")));
     const perClient = clients.length > 0 && h("div", { className: "ps-inv-perclient" },
@@ -4607,13 +4610,17 @@ html[data-theme="dark"] .ps-open{background:#10151D}
           h("select", { value: paying.paidVia, onChange: (e) => setPaying({ ...paying, paidVia: e.target.value }) }, PAID_VIA.map(([k, l]) => h("option", { key: k, value: k }, l)))),
         h("label", { className: "ps-field" }, h("span", null, "Amount received"),
           h("input", { inputMode: "decimal", value: paying.received, onChange: (e) => setPaying({ ...paying, received: e.target.value }) })),
+        (clientOf(inv.clientId).currency || "USD") !== "PHP" && h("label", { className: "ps-field" }, h("span", null, `Rate (₱ per 1 ${clientOf(inv.clientId).currency || "USD"})`),
+          h("input", { inputMode: "decimal", value: paying.fx, placeholder: "e.g. 56.20", onChange: (e) => setPaying({ ...paying, fx: e.target.value }) })),
         h("label", { className: "ps-field" }, h("span", null, "Note (optional)"),
           h("input", { value: paying.note, placeholder: "e.g. Wise ref, fees taken", onChange: (e) => setPaying({ ...paying, note: e.target.value }) }))),
+      (clientOf(inv.clientId).currency || "USD") !== "PHP" && num(paying.fx) > 0 && h("p", { className: "ps-muted ps-pay-hint" }, "That's ", h("b", null, peso(num(paying.received) * num(paying.fx))), " in pesos."),
       h("div", { className: "ps-btnrow" },
         h("button", { className: "ps-btn ghost", onClick: () => setPaying(null) }, "Cancel"),
         h("button", { className: "ps-btn", onClick: () => {
           if (!paying.paidAt) { setToast("Pick the day the money arrived."); return; }
-          put(inv.id, "invoice", { ...inv, paidAt: paying.paidAt, paidVia: paying.paidVia, received: num(paying.received), paidNote: paying.note.trim(), confirmedBy: me.name, confirmedAt: new Date().toISOString() },
+          const fx = num(paying.fx), cur = clientOf(inv.clientId).currency || "USD";
+          put(inv.id, "invoice", { ...inv, paidAt: paying.paidAt, paidVia: paying.paidVia, received: num(paying.received), fx: cur !== "PHP" && fx > 0 ? fx : null, php: cur === "PHP" ? num(paying.received) : fx > 0 ? r2(num(paying.received) * fx) : null, paidNote: paying.note.trim(), confirmedBy: me.name, confirmedAt: new Date().toISOString() },
             `Invoice No. ${inv.no} marked as paid.`);
           setPaying(null);
         } }, "Confirm paid")));
@@ -4622,7 +4629,7 @@ html[data-theme="dark"] .ps-open{background:#10151D}
       title: `Undo the PAID mark on invoice No. ${inv.no}?`,
       lines: ["Only do this if the payment didn't actually arrive. It goes back to unpaid."],
       confirmLabel: "Undo PAID",
-      onYes: () => put(inv.id, "invoice", { ...inv, paidAt: null, paidVia: null, received: null, paidNote: "", confirmedBy: null, confirmedAt: null }, "Back to unpaid.")
+      onYes: () => put(inv.id, "invoice", { ...inv, paidAt: null, paidVia: null, received: null, fx: null, php: null, paidNote: "", confirmedBy: null, confirmedAt: null }, "Back to unpaid.")
     });
     const removeInv = (inv) => confirm({
       title: `Delete invoice No. ${inv.no} for ${clientOf(inv.clientId).name}?`,
@@ -4677,6 +4684,7 @@ html[data-theme="dark"] .ps-open{background:#10151D}
                     inv.desc ? `${inv.desc} · ` : "", "Sent ", longDay(inv.sentAt),
                     inv.paidAt ? ` · Paid ${longDay(inv.paidAt)} via ${viaLabel(inv.paidVia)}` : "",
                     inv.paidAt && inv.received && num(inv.received) !== num(inv.amount) ? ` · received ${money(inv.received, c.currency)}` : "",
+                    inv.paidAt && inv.php && (c.currency || "USD") !== "PHP" ? ` · ≈ ${peso(inv.php)} at ₱${inv.fx}` : "",
                     inv.paidNote ? ` · ${inv.paidNote}` : "")),
                 h("b", { className: "ps-inv-amt" }, money(inv.amount, c.currency)),
                 h("span", { className: `ps-chip ${age.cls === "ok" ? "ok" : age.cls === "warn" ? "warn" : ""} ${age.cls === "late" ? "ps-inv-late" : ""}` }, age.text)),
@@ -4685,7 +4693,7 @@ html[data-theme="dark"] .ps-open{background:#10151D}
                 inv.paidAt
                   ? h("button", { className: "ps-btn ghost", onClick: () => undoPaid(inv) }, "Undo paid")
                   : paying && paying.id === inv.id ? null
-                    : h("button", { className: "ps-btn", onClick: () => setPaying({ id: inv.id, paidAt: isoDay(new Date()), paidVia: c.paidVia || "wise", received: String(inv.amount), note: "" }) }, "Mark as paid"),
+                    : h("button", { className: "ps-btn", onClick: () => setPaying({ id: inv.id, paidAt: isoDay(new Date()), paidVia: c.paidVia || "wise", received: String(inv.amount), fx: "", note: "" }) }, "Mark as paid"),
                 h("button", { className: "ps-x-small", "aria-label": `Delete invoice No. ${inv.no}`, title: "Delete", onClick: () => removeInv(inv) }, "×")),
               paying && paying.id === inv.id && payForm(inv));
           }));

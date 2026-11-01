@@ -4478,6 +4478,294 @@ html[data-theme="dark"] .ps-open{background:#10151D}
         h("button", { key: k, className: `ps-tab ${tab === k ? "on" : ""}`, onClick: () => { setTab(k); setOpenRun(null); } }, l))),
       h("div", { className: "ps-pay-body" }, tab === "runs" ? runsTab : tab === "profiles" ? profilesTab : tab === "13th" ? thirteenthTab : settingsTab));
   }
+  /* ---- Invoices (Lead only) ---------------------------------------------------
+     What the studio bills its clients: each invoice sent, and the Lead's own
+     confirmation once the money has arrived. Like payroll, none of this goes
+     into the shared app record - it lives in its own Supabase table that only
+     logins in invoice_admins can read. In the preview a local demo store stands in. */
+  var INV_KEY_DEMO = "ps-invoices-demo";
+  var invDemoStore = {
+    live: false,
+    can: async () => ({ ok: true }),
+    list: async () => { try { return JSON.parse(localStorage.getItem(INV_KEY_DEMO) || "[]"); } catch (e) { return []; } },
+    save: async (id, kind, data) => {
+      let rows = []; try { rows = JSON.parse(localStorage.getItem(INV_KEY_DEMO) || "[]"); } catch (e) {}
+      rows = rows.filter((r) => r.id !== id); rows.push({ id, kind, data, updated_at: new Date().toISOString() });
+      try { localStorage.setItem(INV_KEY_DEMO, JSON.stringify(rows)); } catch (e) {}
+    },
+    remove: async (id) => {
+      let rows = []; try { rows = JSON.parse(localStorage.getItem(INV_KEY_DEMO) || "[]"); } catch (e) {}
+      try { localStorage.setItem(INV_KEY_DEMO, JSON.stringify(rows.filter((r) => r.id !== id))); } catch (e) {}
+    }
+  };
+  var invApi = () => (typeof window !== "undefined" && window.psInvoices) || invDemoStore;
+  var CURRENCIES = [["USD", "$"], ["PHP", "₱"], ["AUD", "A$"], ["GBP", "£"], ["EUR", "€"]];
+  var money = (n, cur) => {
+    const sym = (CURRENCIES.find((c) => c[0] === (cur || "USD")) || CURRENCIES[0])[1];
+    return sym + r2(n).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  };
+  var PAID_VIA = [["wise", "Wise"], ["paypal", "PayPal"], ["bank", "Bank transfer"], ["other", "Other"]];
+  var viaLabel = (v) => (PAID_VIA.find((x) => x[0] === v) || ["", v || "—"])[1];
+  /* Days an invoice has been waiting: amber from 7, red from 14. */
+  var INV_WARN_DAYS = 7, INV_LATE_DAYS = 14;
+  var daysSince = (iso) => iso ? Math.max(0, Math.floor((startOfDay(new Date()) - startOfDay(fromIso(String(iso).slice(0, 10)))) / 864e5)) : 0;
+  var invAge = (inv) => {
+    if (inv.paidAt) return { cls: "ok", text: "Paid" };
+    const d = daysSince(inv.sentAt);
+    if (d >= INV_LATE_DAYS) return { cls: "late", text: `Unpaid · ${d} days` };
+    if (d >= INV_WARN_DAYS) return { cls: "warn", text: `Unpaid · ${d} days` };
+    return { cls: "", text: d === 0 ? "Sent today" : `Sent ${d} day${d === 1 ? "" : "s"} ago` };
+  };
+  var longDay = (iso) => iso ? fromIso(String(iso).slice(0, 10)).toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" }) : "";
+  var monthLabelOf = (iso) => fromIso(String(iso).slice(0, 10)).toLocaleDateString("en-US", { month: "long", year: "numeric" });
+
+  function InvoicesPage({ me, setToast, confirm }) {
+    const h = React.createElement;
+    const api = invApi();
+    const [state, setState] = useState({ loading: true, ok: false, setup: "" });
+    const [rows, setRows] = useState([]);
+    const [tab, setTab] = useState("invoices");
+    const [show, setShow] = useState("all");
+    const [paying, setPaying] = useState(null);
+    const [adding, setAdding] = useState(null);
+    const [editClient, setEditClient] = useState(null);
+
+    const load = async () => {
+      try {
+        const c = await api.can();
+        if (!c.ok) { setState({ loading: false, ok: false, setup: c.setup || "" }); return; }
+        setRows(await api.list());
+        setState({ loading: false, ok: true, setup: "" });
+      } catch (e) {
+        setState({ loading: false, ok: false, setup: "error" });
+      }
+    };
+    useEffect(() => { load(); }, []);
+
+    const put = async (id, kind, data, msg) => {
+      setRows((cur) => [...cur.filter((r) => r.id !== id), { id, kind, data }]);
+      try { await api.save(id, kind, data); setToast(msg || "Saved."); }
+      catch (e) { setToast("That didn't save: " + (e && e.message ? e.message : "check your connection")); }
+    };
+    const drop = async (id) => {
+      setRows((cur) => cur.filter((r) => r.id !== id));
+      try { await api.remove(id); } catch (e) { setToast("That didn't delete: " + (e && e.message ? e.message : "")); }
+    };
+
+    if (state.loading) return h("p", { className: "ps-loading" }, "Opening invoices…");
+    if (!state.ok) return h(React.Fragment, null,
+      h("h1", { className: "ps-h1" }, "Invoices"),
+      h("div", { className: "ps-pay-locked" },
+        h("b", null, state.setup === "missing" ? "Invoices aren't set up in Supabase yet." : "Your login can't open invoices."),
+        h("p", null, state.setup === "missing"
+          ? "Run invoices_setup.sql once in Supabase (SQL Editor → New query → paste → Run), with your login email filled in."
+          : state.setup === "error"
+            ? "Supabase didn't answer. Check your connection and open this page again."
+            : "Only logins listed in Supabase → invoice_admins can see invoices. Add your sign-in email there if this should be you.")));
+
+    const clients = rows.filter((r) => r.kind === "client").map((r) => r.data).sort((a, b) => a.name.localeCompare(b.name));
+    const clientOf = (id) => clients.find((c) => c.id === id) || { name: "Unknown client", currency: "USD" };
+    const invoices = rows.filter((r) => r.kind === "invoice").map((r) => r.data)
+      .sort((a, b) => String(b.sentAt || b.date || "").localeCompare(String(a.sentAt || a.date || "")));
+    const unpaid = invoices.filter((i) => !i.paidAt);
+    const shown = show === "unpaid" ? unpaid : show === "paid" ? invoices.filter((i) => i.paidAt) : invoices;
+
+    /* ---------- income summary (per currency, so dollars and pesos never mix) ---------- */
+    const today = new Date();
+    const ym = isoDay(today).slice(0, 7), yr = ym.slice(0, 4);
+    const sumBy = (list) => {
+      const out = {};
+      list.forEach((i) => { const cur = clientOf(i.clientId).currency || "USD"; out[cur] = (out[cur] || 0) + num(i.amount); });
+      return Object.keys(out).length ? Object.entries(out).map(([cur, n]) => money(n, cur)).join(" + ") : money(0, "USD");
+    };
+    const paidList = invoices.filter((i) => i.paidAt);
+    const late = unpaid.filter((i) => daysSince(i.sentAt) >= INV_LATE_DAYS);
+    const summary = h("div", { className: "ps-inv-stats" },
+      h("div", { className: "ps-inv-stat" }, h("span", { className: "ps-muted" }, "Paid this month"), h("b", null, sumBy(paidList.filter((i) => String(i.paidAt).slice(0, 7) === ym)))),
+      h("div", { className: "ps-inv-stat" }, h("span", { className: "ps-muted" }, `Paid in ${yr}`), h("b", null, sumBy(paidList.filter((i) => String(i.paidAt).slice(0, 4) === yr)))),
+      paidList.some((i) => i.php && String(i.paidAt).slice(0, 4) === yr) && h("div", { className: "ps-inv-stat" }, h("span", { className: "ps-muted" }, `In pesos, ${yr}`),
+        h("b", null, peso(paidList.filter((i) => i.php && String(i.paidAt).slice(0, 4) === yr).reduce((s, i) => s + num(i.php), 0))),
+        (() => { const miss = paidList.filter((i) => !i.php && String(i.paidAt).slice(0, 4) === yr).length; return miss ? h("small", { className: "ps-muted" }, `${miss} paid invoice${miss === 1 ? "" : "s"} without a rate`) : null; })()),
+      h("div", { className: `ps-inv-stat ${unpaid.length ? "owed" : ""}` }, h("span", { className: "ps-muted" }, "Still owed"), h("b", null, sumBy(unpaid)),
+        h("small", { className: "ps-muted" }, unpaid.length ? `${unpaid.length} invoice${unpaid.length === 1 ? "" : "s"}${late.length ? ` · ${late.length} over ${INV_LATE_DAYS} days` : ""}` : "All paid up")));
+    const perClient = clients.length > 0 && h("div", { className: "ps-inv-perclient" },
+      h("h3", { className: "ps-h3" }, "By client"),
+      h("div", { className: "ps-inv-table", role: "table" },
+        h("div", { className: "ps-inv-tr head", role: "row" }, h("span", null, "Client"), h("span", null, `Paid in ${yr}`), h("span", null, "Still owed"), h("span", null, "Invoices")),
+        clients.map((c) => {
+          const mine = invoices.filter((i) => i.clientId === c.id);
+          const paidYr = mine.filter((i) => i.paidAt && String(i.paidAt).slice(0, 4) === yr).reduce((s, i) => s + num(i.amount), 0);
+          const owed = mine.filter((i) => !i.paidAt).reduce((s, i) => s + num(i.amount), 0);
+          return h("div", { key: c.id, className: "ps-inv-tr", role: "row" },
+            h("span", null, c.name), h("span", null, money(paidYr, c.currency)),
+            h("span", { className: owed > 0 ? "ps-inv-owed" : "" }, money(owed, c.currency)), h("span", null, mine.length));
+        })));
+
+    /* ---------- mark as paid ---------- */
+    const payForm = (inv) => h("div", { className: "ps-pay-form ps-inv-payform" },
+      h("div", { className: "ps-pay-grid" },
+        h("label", { className: "ps-field" }, h("span", null, "Paid on"),
+          h("input", { type: "date", value: paying.paidAt, max: isoDay(new Date()), onChange: (e) => setPaying({ ...paying, paidAt: e.target.value }) })),
+        h("label", { className: "ps-field" }, h("span", null, "Paid via"),
+          h("select", { value: paying.paidVia, onChange: (e) => setPaying({ ...paying, paidVia: e.target.value }) }, PAID_VIA.map(([k, l]) => h("option", { key: k, value: k }, l)))),
+        h("label", { className: "ps-field" }, h("span", null, "Amount received"),
+          h("input", { inputMode: "decimal", value: paying.received, onChange: (e) => setPaying({ ...paying, received: e.target.value }) })),
+        (clientOf(inv.clientId).currency || "USD") !== "PHP" && h("label", { className: "ps-field" }, h("span", null, `Rate (₱ per 1 ${clientOf(inv.clientId).currency || "USD"})`),
+          h("input", { inputMode: "decimal", value: paying.fx, placeholder: "e.g. 56.20", onChange: (e) => setPaying({ ...paying, fx: e.target.value }) })),
+        h("label", { className: "ps-field" }, h("span", null, "Note (optional)"),
+          h("input", { value: paying.note, placeholder: "e.g. Wise ref, fees taken", onChange: (e) => setPaying({ ...paying, note: e.target.value }) }))),
+      (clientOf(inv.clientId).currency || "USD") !== "PHP" && num(paying.fx) > 0 && h("p", { className: "ps-muted ps-pay-hint" }, "That's ", h("b", null, peso(num(paying.received) * num(paying.fx))), " in pesos."),
+      h("div", { className: "ps-btnrow" },
+        h("button", { className: "ps-btn ghost", onClick: () => setPaying(null) }, "Cancel"),
+        h("button", { className: "ps-btn", onClick: () => {
+          if (!paying.paidAt) { setToast("Pick the day the money arrived."); return; }
+          const fx = num(paying.fx), cur = clientOf(inv.clientId).currency || "USD";
+          put(inv.id, "invoice", { ...inv, paidAt: paying.paidAt, paidVia: paying.paidVia, received: num(paying.received), fx: cur !== "PHP" && fx > 0 ? fx : null, php: cur === "PHP" ? num(paying.received) : fx > 0 ? r2(num(paying.received) * fx) : null, paidNote: paying.note.trim(), confirmedBy: me.name, confirmedAt: new Date().toISOString() },
+            `Invoice No. ${inv.no} marked as paid.`);
+          setPaying(null);
+        } }, "Confirm paid")));
+
+    const undoPaid = (inv) => confirm({
+      title: `Undo the PAID mark on invoice No. ${inv.no}?`,
+      lines: ["Only do this if the payment didn't actually arrive. It goes back to unpaid."],
+      confirmLabel: "Undo PAID",
+      onYes: () => put(inv.id, "invoice", { ...inv, paidAt: null, paidVia: null, received: null, fx: null, php: null, paidNote: "", confirmedBy: null, confirmedAt: null }, "Back to unpaid.")
+    });
+    const removeInv = (inv) => confirm({
+      title: `Delete invoice No. ${inv.no} for ${clientOf(inv.clientId).name}?`,
+      lines: ["Use this for an invoice added by mistake. It can't be brought back."],
+      confirmLabel: "Delete",
+      onYes: () => drop(inv.id)
+    });
+
+    /* ---------- add an invoice by hand ---------- */
+    const nextNo = (clientId) => String(invoices.filter((i) => i.clientId === clientId).reduce((m, i) => Math.max(m, parseInt(i.no, 10) || 0), 0) + 1);
+    const startAdd = () => {
+      const c = clients[0];
+      const d = isoDay(new Date());
+      setAdding({ clientId: c ? c.id : "", no: c ? nextNo(c.id) : "1", period: monthLabelOf(d), date: d, sentAt: d, amount: c ? String(c.amount || "") : "", desc: c ? c.desc || "" : "", pdfUrl: "" });
+    };
+    const addForm = adding && h("div", { className: "ps-pay-newrun" },
+      h("b", null, "Add an invoice"),
+      clients.length === 0 ? h("p", { className: "ps-muted" }, "Add the client first, under Clients.") : h(React.Fragment, null,
+        h("div", { className: "ps-pay-grid" },
+          h("label", { className: "ps-field" }, h("span", null, "Client"),
+            h("select", { value: adding.clientId, onChange: (e) => { const c = clientOf(e.target.value); setAdding({ ...adding, clientId: e.target.value, no: nextNo(e.target.value), amount: String(c.amount || ""), desc: c.desc || "" }); } },
+              clients.map((c) => h("option", { key: c.id, value: c.id }, c.name)))),
+          h("label", { className: "ps-field" }, h("span", null, "Invoice No."), h("input", { value: adding.no, onChange: (e) => setAdding({ ...adding, no: e.target.value }) })),
+          h("label", { className: "ps-field" }, h("span", null, "For (period)"), h("input", { value: adding.period, onChange: (e) => setAdding({ ...adding, period: e.target.value }) })),
+          h("label", { className: "ps-field" }, h("span", null, "What for"), h("input", { value: adding.desc, onChange: (e) => setAdding({ ...adding, desc: e.target.value }) })),
+          h("label", { className: "ps-field" }, h("span", null, "Amount"), h("input", { inputMode: "decimal", value: adding.amount, onChange: (e) => setAdding({ ...adding, amount: e.target.value }) })),
+          h("label", { className: "ps-field" }, h("span", null, "Invoice date"), h("input", { type: "date", value: adding.date, onChange: (e) => setAdding({ ...adding, date: e.target.value }) })),
+          h("label", { className: "ps-field" }, h("span", null, "Sent on"), h("input", { type: "date", value: adding.sentAt, onChange: (e) => setAdding({ ...adding, sentAt: e.target.value }) })),
+          h("label", { className: "ps-field" }, h("span", null, "PDF link (optional)"), h("input", { value: adding.pdfUrl, placeholder: "OneDrive link", onChange: (e) => setAdding({ ...adding, pdfUrl: e.target.value }) })))),
+      h("div", { className: "ps-btnrow" },
+        h("button", { className: "ps-btn ghost", onClick: () => setAdding(null) }, "Cancel"),
+        clients.length > 0 && h("button", { className: "ps-btn", onClick: () => {
+          if (!adding.clientId || !num(adding.amount)) { setToast("Pick the client and enter the amount."); return; }
+          if (invoices.some((i) => i.clientId === adding.clientId && String(i.no) === String(adding.no).trim())) { setToast(`There's already an invoice No. ${adding.no} for ${clientOf(adding.clientId).name}.`); return; }
+          const id = uid("inv");
+          put(id, "invoice", { id, clientId: adding.clientId, no: String(adding.no).trim(), period: adding.period.trim(), desc: adding.desc.trim(), amount: num(adding.amount), date: adding.date, sentAt: adding.sentAt, pdfUrl: adding.pdfUrl.trim(), paidAt: null, addedBy: me.name, addedAt: new Date().toISOString() }, "Invoice added.");
+          setAdding(null);
+        } }, "Add invoice")));
+
+    /* ---------- the invoice list ---------- */
+    const invList = h("div", { className: "ps-pay-list" },
+      shown.length === 0
+        ? h("p", { className: "ps-empty" }, invoices.length === 0 ? "No invoices yet. Add one, or they'll appear here once you start logging them." : show === "unpaid" ? "Nothing unpaid. 🎉" : "No paid invoices yet.")
+        : shown.map((inv) => {
+            const c = clientOf(inv.clientId);
+            const age = invAge(inv);
+            return h("div", { key: inv.id, className: `ps-pay-person ps-inv-row ${age.cls}` },
+              h("div", { className: "ps-pay-row" },
+                h("div", { className: "ps-pay-who" },
+                  h("b", null, c.name, " · No. ", inv.no, inv.period ? ` · ${inv.period}` : ""),
+                  h("span", { className: "ps-muted" },
+                    inv.desc ? `${inv.desc} · ` : "", "Sent ", longDay(inv.sentAt),
+                    inv.paidAt ? ` · Paid ${longDay(inv.paidAt)} via ${viaLabel(inv.paidVia)}` : "",
+                    inv.paidAt && inv.received && num(inv.received) !== num(inv.amount) ? ` · received ${money(inv.received, c.currency)}` : "",
+                    inv.paidAt && inv.php && (c.currency || "USD") !== "PHP" ? ` · ≈ ${peso(inv.php)} at ₱${inv.fx}` : "",
+                    inv.paidNote ? ` · ${inv.paidNote}` : "")),
+                h("b", { className: "ps-inv-amt" }, money(inv.amount, c.currency)),
+                h("span", { className: `ps-chip ${age.cls === "ok" ? "ok" : age.cls === "warn" ? "warn" : ""} ${age.cls === "late" ? "ps-inv-late" : ""}` }, age.text)),
+              h("div", { className: "ps-btnrow ps-inv-actions" },
+                inv.pdfUrl && h("a", { className: "ps-btn ghost", href: inv.pdfUrl, target: "_blank", rel: "noopener noreferrer" }, "Open PDF"),
+                inv.paidAt
+                  ? h("button", { className: "ps-btn ghost", onClick: () => undoPaid(inv) }, "Undo paid")
+                  : paying && paying.id === inv.id ? null
+                    : h("button", { className: "ps-btn", onClick: () => setPaying({ id: inv.id, paidAt: isoDay(new Date()), paidVia: c.paidVia || "wise", received: String(inv.amount), fx: "", note: "" }) }, "Mark as paid"),
+                h("button", { className: "ps-x-small", "aria-label": `Delete invoice No. ${inv.no}`, title: "Delete", onClick: () => removeInv(inv) }, "×")),
+              paying && paying.id === inv.id && payForm(inv));
+          }));
+
+    const invoicesTab = h(React.Fragment, null,
+      summary,
+      h("div", { className: "ps-btnrow ps-inv-top" },
+        h("div", { className: "ps-inv-filter", role: "group", "aria-label": "Show" },
+          [["all", `All (${invoices.length})`], ["unpaid", `Unpaid (${unpaid.length})`], ["paid", `Paid (${paidList.length})`]].map(([k, l]) =>
+            h("button", { key: k, className: `ps-inv-pill ${show === k ? "on" : ""}`, onClick: () => setShow(k) }, l))),
+        !adding && h("button", { className: "ps-btn", onClick: startAdd }, "Add invoice")),
+      addForm, invList, perClient);
+
+    /* ---------- clients & billing details ---------- */
+    const blankClient = () => ({ id: uid("ic"), name: "", contact: "", email: "", desc: "", amount: "", currency: "USD", schedule: "Last day of each month", sendFrom: "", wording: "", paidVia: "wise", notes: "", isNew: true });
+    const field = (label, key, extra) => h("label", { className: "ps-field" }, h("span", null, label),
+      h("input", { value: editClient[key] == null ? "" : editClient[key], onChange: (e) => setEditClient({ ...editClient, [key]: e.target.value }), ...(extra || {}) }));
+    const clientForm = editClient && h("div", { className: "ps-pay-newrun" },
+      h("b", null, editClient.isNew ? "New client" : `Edit ${editClient.name}`),
+      h("div", { className: "ps-pay-grid" },
+        field("Name on the invoice", "name"),
+        field("Who gets it", "contact", { placeholder: "e.g. Matt (owner)" }),
+        field("Their email", "email", { type: "email" }),
+        field("What you bill", "desc", { placeholder: "e.g. Video Edit" }),
+        field("Usual amount", "amount", { inputMode: "decimal" }),
+        h("label", { className: "ps-field" }, h("span", null, "Currency"),
+          h("select", { value: editClient.currency, onChange: (e) => setEditClient({ ...editClient, currency: e.target.value }) }, CURRENCIES.map(([k, s]) => h("option", { key: k, value: k }, `${k} (${s})`)))),
+        field("When you invoice", "schedule"),
+        field("Sent from", "sendFrom", { placeholder: "e.g. Outlook, frean@…" }),
+        h("label", { className: "ps-field" }, h("span", null, "Usually pays via"),
+          h("select", { value: editClient.paidVia || "wise", onChange: (e) => setEditClient({ ...editClient, paidVia: e.target.value }) }, PAID_VIA.map(([k, l]) => h("option", { key: k, value: k }, l))))),
+      h("label", { className: "ps-field" }, h("span", null, "Email wording"),
+        h("textarea", { rows: 3, value: editClient.wording || "", onChange: (e) => setEditClient({ ...editClient, wording: e.target.value }) })),
+      h("label", { className: "ps-field" }, h("span", null, "Notes"),
+        h("textarea", { rows: 2, value: editClient.notes || "", onChange: (e) => setEditClient({ ...editClient, notes: e.target.value }) })),
+      h("div", { className: "ps-btnrow" },
+        h("button", { className: "ps-btn ghost", onClick: () => setEditClient(null) }, "Cancel"),
+        h("button", { className: "ps-btn", onClick: () => {
+          if (!editClient.name.trim()) { setToast("Give the client a name."); return; }
+          const { isNew, ...c } = editClient;
+          put(c.id, "client", { ...c, name: c.name.trim(), amount: num(c.amount) }, isNew ? "Client added." : "Client saved.");
+          setEditClient(null);
+        } }, "Save client")));
+    const removeClient = (c) => {
+      if (invoices.some((i) => i.clientId === c.id)) { setToast(`${c.name} has invoices logged - delete those first.`); return; }
+      confirm({ title: `Remove ${c.name}?`, lines: ["Their billing details are deleted."], confirmLabel: "Remove", onYes: () => drop(c.id) });
+    };
+    const clientsTab = h(React.Fragment, null,
+      h("div", { className: "ps-btnrow ps-inv-top" },
+        h("p", { className: "ps-muted", style: { margin: 0, flex: 1 } }, "Billing details for each client you invoice."),
+        !editClient && h("button", { className: "ps-btn", onClick: () => setEditClient(blankClient()) }, "Add client")),
+      clientForm,
+      h("div", { className: "ps-pay-list" },
+        clients.length === 0 ? h("p", { className: "ps-empty" }, "No clients yet.")
+          : clients.map((c) => h("div", { key: c.id, className: "ps-pay-person" },
+              h("div", { className: "ps-pay-row" },
+                h("div", { className: "ps-pay-who" },
+                  h("b", null, c.name),
+                  h("span", { className: "ps-muted" }, [c.contact, c.email].filter(Boolean).join(" · ") || "No contact yet"),
+                  h("span", { className: "ps-muted" }, [c.desc && c.amount ? `${c.desc} · ${money(c.amount, c.currency)}` : c.amount ? money(c.amount, c.currency) : "", c.schedule, c.sendFrom ? `from ${c.sendFrom}` : ""].filter(Boolean).join(" · ")),
+                  c.wording && h("span", { className: "ps-muted ps-inv-wording" }, "“", c.wording, "”")),
+                h("button", { className: "ps-btn ghost", onClick: () => setEditClient({ ...c, amount: String(c.amount || "") }) }, "Edit"),
+                h("button", { className: "ps-x-small", "aria-label": `Remove ${c.name}`, onClick: () => removeClient(c) }, "×"))))));
+
+    return h(React.Fragment, null,
+      h("div", { className: "ps-ovhead" }, h("span", { className: "ps-ovicon", "aria-hidden": "true" }, "\u{1F9FE}"), h("h1", { className: "ps-h1" }, "Invoices")),
+      !api.live && h("p", { className: "ps-pay-demo" }, "Demo mode — this preview isn't connected to Supabase, so anything here stays in this browser only. On your site it saves to the locked invoices table."),
+      h("p", { className: "ps-lede" }, "Only you can open this page. Invoices you've sent, and your confirmation once each one is paid."),
+      h("div", { className: "ps-tabs" }, [["invoices", "Invoices"], ["clients", "Clients"]].map(([k, l]) =>
+        h("button", { key: k, className: `ps-tab ${tab === k ? "on" : ""}`, onClick: () => { setTab(k); setPaying(null); } }, l))),
+      h("div", { className: "ps-pay-body" }, tab === "invoices" ? invoicesTab : clientsTab));
+  }
   function TaskModal({ t, db, me, lead, updateTask, mutate, setToast, close, confirm, openTask }) {
     const [note, setNote] = useState("");
     const [comment, setComment] = useState("");
@@ -5929,6 +6217,7 @@ ${lines.join("\n")}`);
       ...me.role !== "client" ? [["studio", "Studio", ""]] : [],
       ...me.role !== "client" ? [["archive", "Archive", ""]] : [],
       ...me.role === "lead" || me.role === "hr" ? [["payroll", "Payroll", ""]] : [],
+      ...me.role === "lead" ? [["invoices", "Invoices", ""]] : [],
       ...me.role !== "client" && !isLead ? [["timeoff", "Time off", leaveStats(db, me.id).left]] : [],
       ...isLead ? [["settings", "Settings", ""]] : []
     ];
@@ -5951,6 +6240,8 @@ ${lines.join("\n")}`);
       body = c ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("h1", { className: "ps-h1" }, c.name), /* @__PURE__ */ React.createElement("div", { className: "ps-meta" }, /* @__PURE__ */ React.createElement("span", { className: `ps-chip ${clientKindOf(c).id === "personal" ? "warn" : "ok"}` }, clientKindOf(c).label)), /* @__PURE__ */ React.createElement(EditorTools, { db, me, client: c, canEdit: lead, mutate }), lead && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Invoices"), /* @__PURE__ */ React.createElement("p", { className: "ps-muted" }, billingOf(c).label, " \xB7 ", billingOf(c).note, unpaidFor(db, c).length > 0 ? ` \u2014 ${unpaidFor(db, c).length} unpaid` : billingOf(c).id === "none" ? "" : " \u2014 all settled", billingOf(c).id !== "none" ? ". Click a line to mark it paid or unpaid." : ""), /* @__PURE__ */ React.createElement(InvoiceList, { db, client: c, canEdit: lead, toggle: (k) => toggleInvoice(c.id, k), addJob: (label) => addJobInvoice(c.id, label), removeJob: (k) => removeJobInvoice(c.id, k), openVideo: setOpenId })), /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Pipeline"), /* @__PURE__ */ React.createElement(FilmStrip, { videos: [...rows, ...clientTasks], filter, setFilter }), /* @__PURE__ */ rows.some((v) => !v.archived && v.stage !== "ready") ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "In production"), /* @__PURE__ */ React.createElement(VideoTable, { rows: rows.filter((v) => !v.archived && v.stage !== "ready" && (!filter || v.stage === filter)), db, me, open: setOpenId, showClient: false })) : null, /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, filter ? `Tasks \u00b7 ${stageOf(filter).name}` : "Tasks"), /* @__PURE__ */ React.createElement(ClientTasks, { db, me, client: c, openTask: setTaskId, filter }), /* @__PURE__ */ React.createElement(SentToClient, { db, me, client: c, openTask: setTaskId, openVideo: setOpenId }), /* @__PURE__ */ React.createElement(ClientBrief, { db, client: c, canEdit: lead, mutate, setToast })) : /* @__PURE__ */ React.createElement("p", { className: "ps-empty" }, "That client no longer exists.");
     } else if (page.tab === "timeoff") {
       body = /* @__PURE__ */ React.createElement(TimeOffPage, { db, me, mutate, setToast });
+    } else if (page.tab === "invoices" && me.role === "lead") {
+      body = /* @__PURE__ */ React.createElement(InvoicesPage, { me, setToast, confirm: setConfirming });
     } else if (page.tab === "payroll" && (me.role === "lead" || me.role === "hr")) {
       body = /* @__PURE__ */ React.createElement(PayrollPage, { db, me, setToast, confirm: setConfirming });
     } else if (page.tab === "archive" && me.role !== "client") {
@@ -7558,6 +7849,30 @@ ${lines.join("\n")}`);
 .ps-pay-check{display:flex;align-items:flex-start;gap:8px;margin:10px 0 4px;cursor:pointer;font-weight:600}.ps-pay-check input{margin-top:3px}.ps-pay-check small{font-weight:400}
 .ps-pay-newrun{border:1px solid var(--line);background:var(--card);border-radius:12px;padding:14px 16px;margin-bottom:14px;display:flex;flex-direction:column;gap:10px}
 .ps-pay-archived{margin-top:14px}
+.ps-inv-stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;margin-bottom:14px}
+.ps-inv-stat{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px 14px;display:flex;flex-direction:column;gap:2px}
+.ps-inv-stat span{font-size:13px}.ps-inv-stat b{font-size:22px}.ps-inv-stat small{font-size:12.5px}
+.ps-inv-stat.owed b{color:var(--warn)}
+.ps-btnrow.ps-inv-top{align-items:center;margin:0 0 12px}
+.ps-inv-filter{display:flex;gap:6px;flex-wrap:wrap}
+.ps-inv-pill{border:1px solid var(--line);background:var(--card);border-radius:999px;padding:5px 12px;font-weight:600;font-size:13px;cursor:pointer;color:var(--muted)}
+.ps-inv-pill.on{background:var(--ink);color:var(--card);border-color:var(--ink)}
+.ps-inv-row.warn{border-color:color-mix(in srgb,var(--warn) 45%,var(--line))}
+.ps-inv-row.late{border-color:var(--late);box-shadow:inset 3px 0 0 var(--late)}
+.ps-inv-row.ok{opacity:.85}
+.ps-inv-amt{font-size:16px;white-space:nowrap}
+.ps-chip.ps-inv-late{background:color-mix(in srgb,var(--late) 14%,var(--card));color:var(--late)}
+.ps-btnrow.ps-inv-actions{justify-content:flex-end;align-items:center;margin-top:8px}
+.ps-inv-actions .ps-btn{padding:6px 12px;font-size:13.5px;text-decoration:none}
+.ps-inv-payform{border-top:1px dashed var(--line);padding-top:10px}
+.ps-inv-perclient{margin-top:8px}
+.ps-inv-table{background:var(--card);border:1px solid var(--line);border-radius:12px;overflow:hidden}
+.ps-inv-tr{display:grid;grid-template-columns:2fr 1fr 1fr .6fr;gap:10px;padding:9px 14px;border-top:1px solid var(--line);font-size:14px}
+.ps-inv-tr:first-child{border-top:0}.ps-inv-tr.head{font-weight:600;color:var(--muted);font-size:12.5px}
+.ps-inv-owed{color:var(--warn);font-weight:600}
+.ps-inv-wording{font-style:italic;font-size:12.5px}
+.ps-root .ps-field textarea{border:1px solid var(--line);border-radius:8px;padding:8px 10px;background:var(--card);color:var(--ink);resize:vertical}
+@media (max-width:640px){.ps-inv-tr{grid-template-columns:1.4fr 1fr 1fr;}.ps-inv-tr span:last-child{display:none}.ps-inv-row .ps-pay-row{flex-wrap:wrap}}
 .ps-root .ps-pay-runrow.archived{cursor:default;opacity:.85;flex-wrap:wrap;margin-top:8px}
 .ps-pay-runrow.archived .ps-btnrow{margin-left:auto}
 .ps-root .ps-pay-runrow{display:flex;align-items:center;gap:14px;width:100%;text-align:left;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px 14px;margin-bottom:8px;cursor:pointer}
@@ -8535,6 +8850,34 @@ if (sb) {
     },
     remove: async (id) => {
       const { error } = await sb.from("payroll").delete().eq("id", id);
+      if (error) throw error;
+    }
+  };
+}
+
+/* Invoices live in their own Supabase table that only logins listed in
+   invoice_admins can read or write (enforced by the database, not the app).
+   Nothing here goes through the shared app data, Realtime or Slack. */
+if (sb) {
+  window.psInvoices = {
+    live: true,
+    can: async () => {
+      const { data, error } = await sb.rpc("is_invoice_admin");
+      if (error) return { ok: false, setup: /function|does not exist|schema cache/i.test(error.message || "") ? "missing" : "error" };
+      return { ok: data === true };
+    },
+    list: async () => {
+      const { data, error } = await sb.from("invoices").select("id, kind, data, updated_at, updated_by");
+      if (error) throw error;
+      return data || [];
+    },
+    save: async (id, kind, data) => {
+      const { data: u } = await sb.auth.getUser();
+      const { error } = await sb.from("invoices").upsert({ id, kind, data, updated_at: new Date().toISOString(), updated_by: (u && u.user && u.user.email) || null });
+      if (error) throw error;
+    },
+    remove: async (id) => {
+      const { error } = await sb.from("invoices").delete().eq("id", id);
       if (error) throw error;
     }
   };

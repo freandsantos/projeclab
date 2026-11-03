@@ -3819,15 +3819,15 @@ html[data-theme="dark"] .ps-open{background:#10151D}
             h("p", { className: "ch-empty" }, "You're all caught up. New work shows up here."))));
   }
   /* ---- My to-dos -----------------------------------------------------------
-     A private checklist for the signed-in person (the Lead for now; set
-     TODO_ROLES to open it to others). Rows live in db.todos (in COLLECTIONS),
+     A private checklist for the signed-in person (the Lead and HR; set
+     TODO_ROLES to open it to others). Each person only sees their own rows. Rows live in db.todos (in COLLECTIONS),
      keyed by id, so they merge like everything else:
        { id, owner, text, notes, due: "YYYY-MM-DD" | "", pri: "high"|"normal"|"low",
          list, clientId, repeat: ""|"daily"|"weekdays"|"weekly"|"monthly", dom,
          steps: [{ id, text, done }], done, doneAt, created, at }
      Dates are Manila days. Finishing a repeating to-do ticks it off and adds
      the next one, with its steps unticked. */
-  var TODO_ROLES = ["lead"];
+  var TODO_ROLES = ["lead", "hr"];
   var canTodo = (me) => !!me && TODO_ROLES.includes(me.role);
   var TODO_LISTS = ["Studio", "Clients", "Admin", "Personal"];
   var TODO_PRI = [["high", "High"], ["normal", "Normal"], ["low", "Low"]];

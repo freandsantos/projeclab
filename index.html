@@ -3831,7 +3831,8 @@ html[data-theme="dark"] .ps-open{background:#10151D}
   var canTodo = (me) => !!me && TODO_ROLES.includes(me.role);
   var TODO_LISTS = ["Studio", "Clients", "Admin", "Personal"];
   var TODO_PRI = [["high", "High"], ["normal", "Normal"], ["low", "Low"]];
-  var TODO_REPEAT = [["", "Doesn't repeat"], ["daily", "Every day"], ["weekdays", "Every weekday"], ["weekly", "Every week"], ["monthly", "Every month"]];
+  var TODO_REPEAT = [["", "Doesn't repeat"], ["daily", "Every day"], ["weekdays", "Every weekday"], ["weekly", "Every week"], ["biweekly", "Every 2 weeks"], ["monthly", "Every month"], ["yearly", "Every year"]];
+  var TODO_REPEAT_SHORT = { daily: "Daily", weekdays: "Weekdays", weekly: "Weekly", biweekly: "Every 2 weeks", monthly: "Monthly", yearly: "Yearly" };
   var tdAdd = (iso, n) => { const d = new Date(iso + "T00:00:00Z"); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); };
   var tdDow = (iso) => new Date(iso + "T00:00:00Z").getUTCDay();
   var tdDiff = (a, b) => Math.round((new Date(a + "T00:00:00Z") - new Date(b + "T00:00:00Z")) / 864e5);
@@ -3850,6 +3851,8 @@ html[data-theme="dark"] .ps-open{background:#10151D}
     for (let i = 0; i < 800; i++) {
       if (t.repeat === "daily") d = tdAdd(d, 1);
       else if (t.repeat === "weekly") d = tdAdd(d, 7);
+      else if (t.repeat === "biweekly") d = tdAdd(d, 14);
+      else if (t.repeat === "yearly") { const y = Number(d.slice(0, 4)) + 1, md = d.slice(5); d = md === "02-29" ? `${y}-02-28` : `${y}-${md}`; }
       else if (t.repeat === "monthly") d = tdMonthly(d, dom);
       else if (t.repeat === "weekdays") { d = tdAdd(d, 1); while (tdDow(d) === 0 || tdDow(d) === 6) d = tdAdd(d, 1); }
       else return "";
@@ -3890,7 +3893,7 @@ html[data-theme="dark"] .ps-open{background:#10151D}
     const addStep = () => { const v = step.trim(); if (!v) return; update(t.id, { steps: [...steps, { id: uid("s"), text: v, done: false }] }); setStep(""); };
     const sub = [
       t.done && t.doneAt ? "Done " + shortDate(t.doneAt) : !t.done && t.due ? tdFmt(t.due, { weekday: "short", month: "short", day: "numeric" }) + (late ? ` \xB7 ${tdWhen(t.due, today).toLowerCase()}` : "") : "",
-      t.repeat ? "↻ " + ({ daily: "daily", weekdays: "weekdays", weekly: "weekly", monthly: "monthly" }[t.repeat] || "") : "",
+      t.repeat ? "↻ " + (TODO_REPEAT_SHORT[t.repeat] || "") : "",
       steps.length ? `${stepsDone}/${steps.length} steps` : ""
     ].filter(Boolean).join("  \xB7  ");
     return h("div", { className: `ps-td-row ${open ? "open" : ""} ${t.done ? "done" : ""}` },
@@ -3928,6 +3931,8 @@ html[data-theme="dark"] .ps-open{background:#10151D}
     const [text, setText] = useState("");
     const [due, setDue] = useState("");
     const [showDone, setShowDone] = useState(false);
+    const [rep, setRep] = useState("");
+    const [showRep, setShowRep] = useState(true);
     const mine = myTodos(db, me);
     const stamp = () => (/* @__PURE__ */ new Date()).toISOString();
     const update = (id, patch) => mutate((n) => {
@@ -3936,10 +3941,12 @@ html[data-theme="dark"] .ps-open{background:#10151D}
     const add = () => {
       const v = text.trim();
       if (!v) return;
-      const row = { id: uid("td"), owner: me.id, text: v, notes: "", due, dom: due ? Number(due.slice(8, 10)) : void 0, pri: "normal", list: "", clientId: "", repeat: "", steps: [], done: false, created: stamp(), at: stamp() };
+      const d = due || (rep ? today : "");
+      const row = { id: uid("td"), owner: me.id, text: v, notes: "", due: d, dom: d ? Number(d.slice(8, 10)) : void 0, pri: "normal", list: "", clientId: "", repeat: rep, steps: [], done: false, created: stamp(), at: stamp() };
       mutate((n) => { n.todos = [...(n.todos || []), row]; });
       setText("");
       setDue("");
+      setRep("");
     };
     const toggle = (t) => {
       if (t.done) { update(t.id, { done: false, doneAt: null }); return; }
@@ -3965,6 +3972,7 @@ html[data-theme="dark"] .ps-open{background:#10151D}
       onYes: () => { mutate((n) => { n.todos = (n.todos || []).filter((x) => !(x.owner === me.id && x.done)); }); setShowDone(false); }
     });
     const open = mine.filter((t) => !t.done);
+    const recurring = open.filter((t) => t.repeat).sort((a, b) => String(a.due || "").localeCompare(String(b.due || "")));
     const groups = [
       ["Late", open.filter((t) => t.due && t.due < today)],
       ["Today", open.filter((t) => t.due === today)],
@@ -3980,11 +3988,21 @@ html[data-theme="dark"] .ps-open{background:#10151D}
         h("input", { className: "ps-td-addtext", placeholder: "Add a to-do", value: text, onChange: (e) => setText(e.target.value), onKeyDown: (e) => { if (e.key === "Enter") add(); }, "aria-label": "New to-do" }),
         h("label", { className: `ps-td-date ${due ? "on" : ""}`, title: "Due date" },
           h("span", null, dateChip),
-          h("input", { type: "date", value: due, onChange: (e) => setDue(e.target.value), "aria-label": "Due date" }))),
+          h("input", { type: "date", value: due, onChange: (e) => setDue(e.target.value), "aria-label": "Due date" })),
+        h("label", { className: `ps-td-date ${rep ? "on" : ""}`, title: "Repeat" },
+          h("span", null, "\u21BB ", rep ? TODO_REPEAT_SHORT[rep] : "Repeat"),
+          h("select", { value: rep, onChange: (e) => setRep(e.target.value), "aria-label": "Repeat" }, TODO_REPEAT.map(([k, l]) => h("option", { key: k, value: k }, l))))),
       open.length === 0 && h("p", { className: "ps-td-empty" }, mine.length ? "All clear." : "Nothing here yet. Type a to-do above and press Enter."),
       groups.filter(([, rows]) => rows.length).map(([k, rows]) => h("section", { key: k, className: `ps-td-group ${k === "Late" ? "late" : ""}` },
         h("h3", { className: "ps-td-gh" }, k, " ", h("span", null, rows.length)),
         rows.map(row))),
+      recurring.length > 0 && h("section", { className: "ps-td-group" },
+        h("div", { className: "ps-td-gh-row" },
+          h("button", { className: "ps-td-gh fold", onClick: () => setShowRep(!showRep), "aria-expanded": showRep }, showRep ? "\u25BE" : "\u25B8", " Recurring ", h("span", null, recurring.length))),
+        showRep && recurring.map((t) => h("div", { key: "r" + t.id, className: "ps-td-rec", onClick: () => setOpenId(t.id) },
+          h("span", { className: "ps-td-rec-icon", "aria-hidden": "true" }, "\u21BB"),
+          h("span", { className: "ps-td-rec-text" }, t.text),
+          h("span", { className: "ps-td-rec-when" }, TODO_REPEAT_SHORT[t.repeat] || "", t.due ? ` \xB7 ${t.due < today ? "late" : /^(Today|Tomorrow)$/.test(tdWhen(t.due, today)) ? "due " + tdWhen(t.due, today).toLowerCase() : "next " + tdFmt(t.due, { month: "short", day: "numeric" })}` : "")))),
       done.length > 0 && h("section", { className: "ps-td-group donegrp" },
         h("div", { className: "ps-td-gh-row" },
           h("button", { className: "ps-td-gh fold", onClick: () => setShowDone(!showDone), "aria-expanded": showDone }, showDone ? "▾" : "▸", " Completed ", h("span", null, done.length)),
@@ -9008,6 +9026,12 @@ html.ps-theming .ps-theme-knob,html.ps-theming .ps-theme-ic{transition:transform
 .ps-td-date{position:relative;font-size:13px;font-weight:600;color:var(--muted);padding:4px 10px;border-radius:999px;cursor:pointer;white-space:nowrap}
 .ps-td-date:hover{background:var(--card)}
 .ps-td-date.on{color:var(--accent);background:var(--okbg)}
+.ps-root .ps-td-date select{position:absolute;inset:0;opacity:0;cursor:pointer;width:100%;padding:0;border:0}
+.ps-td-rec{display:flex;align-items:center;gap:12px;padding:8px 0;cursor:pointer;font-size:14.5px}
+.ps-td-rec:hover .ps-td-rec-text{color:var(--accent)}
+.ps-td-rec-icon{width:20px;text-align:center;color:var(--accent);font-weight:700}
+.ps-td-rec-text{flex:1;min-width:0;overflow-wrap:anywhere}
+.ps-td-rec-when{font-size:12.5px;color:var(--muted);white-space:nowrap}
 .ps-root .ps-td-date input{position:absolute;inset:0;opacity:0;cursor:pointer;width:100%;padding:0;border:0}
 .ps-td-empty{color:var(--muted);text-align:center;padding:30px 0}
 .ps-td-group{margin-bottom:22px}

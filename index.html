@@ -1834,7 +1834,7 @@ html[data-theme="dark"] .ps-open{background:#10151D}
   var STORE_KEY = "cutline-state-v2";
   /* Every list in the saved file. Each row carries an id, which is how two
      people's edits are reconciled instead of one flattening the other. */
-  var COLLECTIONS = ["clients", "people", "videos", "invoices", "tasks", "meetings", "timeoff", "templates", "archive", "trash", "billboards", "wordlists"];
+  var COLLECTIONS = ["clients", "people", "videos", "invoices", "tasks", "meetings", "timeoff", "templates", "archive", "trash", "billboards", "wordlists", "todos"];
   /* Archive and Trash. A task moves out of `tasks` into one of these, so every
      list, count, notification and the Studio leave it out without being told.
      Trash empties itself after TRASH_DAYS; the archive keeps things. */
@@ -3818,6 +3818,198 @@ html[data-theme="dark"] .ps-open{background:#10151D}
               h("span", { className: "ch-step-main" }, h("b", null, x.title), h("span", { className: `ch-step-note ${x.tone || ""}` }, x.note || "No due date")))))) :
             h("p", { className: "ch-empty" }, "You're all caught up. New work shows up here."))));
   }
+  /* ---- My to-dos -----------------------------------------------------------
+     A private checklist for the signed-in person (the Lead for now; set
+     TODO_ROLES to open it to others). Rows live in db.todos (in COLLECTIONS),
+     keyed by id, so they merge like everything else:
+       { id, owner, text, notes, due: "YYYY-MM-DD" | "", pri: "high"|"normal"|"low",
+         list, clientId, repeat: ""|"daily"|"weekdays"|"weekly"|"monthly", dom,
+         steps: [{ id, text, done }], done, doneAt, created, at }
+     Dates are Manila days. Finishing a repeating to-do ticks it off and adds
+     the next one, with its steps unticked. */
+  var TODO_ROLES = ["lead"];
+  var canTodo = (me) => !!me && TODO_ROLES.includes(me.role);
+  var TODO_LISTS = ["Studio", "Clients", "Admin", "Personal"];
+  var TODO_PRI = [["high", "High"], ["normal", "Normal"], ["low", "Low"]];
+  var TODO_REPEAT = [["", "Doesn't repeat"], ["daily", "Every day"], ["weekdays", "Every weekday"], ["weekly", "Every week"], ["biweekly", "Every 2 weeks"], ["monthly", "Every month"], ["yearly", "Every year"]];
+  var TODO_REPEAT_SHORT = { daily: "Daily", weekdays: "Weekdays", weekly: "Weekly", biweekly: "Every 2 weeks", monthly: "Monthly", yearly: "Yearly" };
+  var tdAdd = (iso, n) => { const d = new Date(iso + "T00:00:00Z"); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); };
+  var tdDow = (iso) => new Date(iso + "T00:00:00Z").getUTCDay();
+  var tdDiff = (a, b) => Math.round((new Date(a + "T00:00:00Z") - new Date(b + "T00:00:00Z")) / 864e5);
+  var tdFmt = (iso, o) => new Date(iso + "T00:00:00Z").toLocaleDateString(void 0, { timeZone: "UTC", ...o });
+  var tdMonthly = (iso, dom) => {
+    const [y, m] = iso.split("-").map(Number);
+    const ny = m === 12 ? y + 1 : y, nm = m === 12 ? 1 : m + 1;
+    const last = new Date(Date.UTC(ny, nm, 0)).getUTCDate();
+    return `${ny}-${String(nm).padStart(2, "0")}-${String(Math.min(dom, last)).padStart(2, "0")}`;
+  };
+  /* The next date for a repeating to-do: one step on from its due date (or
+     today), and never in the past. */
+  var tdNext = (t, today) => {
+    let d = t.due || today;
+    const dom = t.dom || Number(d.slice(8, 10));
+    for (let i = 0; i < 800; i++) {
+      if (t.repeat === "daily") d = tdAdd(d, 1);
+      else if (t.repeat === "weekly") d = tdAdd(d, 7);
+      else if (t.repeat === "biweekly") d = tdAdd(d, 14);
+      else if (t.repeat === "yearly") { const y = Number(d.slice(0, 4)) + 1, md = d.slice(5); d = md === "02-29" ? `${y}-02-28` : `${y}-${md}`; }
+      else if (t.repeat === "monthly") d = tdMonthly(d, dom);
+      else if (t.repeat === "weekdays") { d = tdAdd(d, 1); while (tdDow(d) === 0 || tdDow(d) === 6) d = tdAdd(d, 1); }
+      else return "";
+      if (d > today) return d;
+    }
+    return d;
+  };
+  var tdWhen = (iso, today) => {
+    if (!iso) return "";
+    const n = tdDiff(iso, today);
+    if (n === 0) return "Today";
+    if (n === 1) return "Tomorrow";
+    if (n === -1) return "Yesterday";
+    if (n < 0) return `${-n} days late`;
+    if (n < 7) return tdFmt(iso, { weekday: "long" });
+    return tdFmt(iso, { month: "short", day: "numeric", ...(iso.slice(0, 4) !== today.slice(0, 4) ? { year: "numeric" } : {}) });
+  };
+  var myTodos = (db, me) => ((db && db.todos) || []).filter((t) => t && t.owner === (me && me.id));
+  /* The number on the sidebar: open to-dos due today or late. */
+  var todoBadge = (db, me) => {
+    const today = manilaDay();
+    return myTodos(db, me).filter((t) => !t.done && t.due && t.due <= today).length;
+  };
+  var PRI_RANK = { high: 0, normal: 1, low: 2 };
+  var tdSort = (a, b) => (PRI_RANK[a.pri] ?? 1) - (PRI_RANK[b.pri] ?? 1) || String(a.due || "9999").localeCompare(String(b.due || "9999")) || String(a.created || "").localeCompare(String(b.created || ""));
+
+  function TodoRow({ t, db, today, open, setOpen, update, toggle, remove }) {
+    const h = React.createElement;
+    const [text, setText] = useState(t.text || "");
+    const [notes, setNotes] = useState(t.notes || "");
+    const [step, setStep] = useState("");
+    useEffect(() => { setText(t.text || ""); }, [t.text]);
+    useEffect(() => { setNotes(t.notes || ""); }, [t.notes]);
+    const late = !t.done && t.due && t.due < today;
+    const steps = t.steps || [];
+    const stepsDone = steps.filter((s) => s.done).length;
+    const commitText = () => { const v = text.trim(); if (!v) { setText(t.text || ""); return; } if (v !== t.text) update(t.id, { text: v }); };
+    const addStep = () => { const v = step.trim(); if (!v) return; update(t.id, { steps: [...steps, { id: uid("s"), text: v, done: false }] }); setStep(""); };
+    const sub = [
+      t.done && t.doneAt ? "Done " + shortDate(t.doneAt) : !t.done && t.due ? tdFmt(t.due, { weekday: "short", month: "short", day: "numeric" }) + (late ? ` \xB7 ${tdWhen(t.due, today).toLowerCase()}` : "") : "",
+      t.repeat ? "↻ " + (TODO_REPEAT_SHORT[t.repeat] || "") : "",
+      steps.length ? `${stepsDone}/${steps.length} steps` : ""
+    ].filter(Boolean).join("  \xB7  ");
+    return h("div", { className: `ps-td-row ${open ? "open" : ""} ${t.done ? "done" : ""}` },
+      h("div", { className: "ps-td-line" },
+        h("button", { className: `ps-td-tick ${t.done ? "on" : ""}`, "aria-label": t.done ? "Mark not done" : "Mark done", onClick: () => toggle(t) }, t.done ? "✓" : ""),
+        open ? h("div", { className: "ps-td-main" }, h("input", { className: "ps-td-title", autoFocus: true, value: text, onChange: (e) => setText(e.target.value), onBlur: commitText, onKeyDown: (e) => { if (e.key === "Enter") e.target.blur(); }, "aria-label": "To-do" })) : h("div", { className: "ps-td-main", onClick: () => setOpen(t.id) },
+          h("span", { className: "ps-td-text" }, t.pri === "high" && !t.done ? h("span", { className: "ps-td-flag", title: "High priority" }, "!") : null, t.text || "Untitled"),
+          sub ? h("span", { className: `ps-td-sub ${late ? "late" : ""}` }, sub) : null),
+        h("div", { className: "ps-td-icons" },
+          h("button", { className: "ps-td-icon", title: "Edit", "aria-label": "Edit", onClick: () => setOpen(open ? null : t.id) },
+            h("svg", { viewBox: "0 0 24 24", width: 17, height: 17, fill: "none", stroke: "currentColor", strokeWidth: 1.8, strokeLinecap: "round", strokeLinejoin: "round" }, h("path", { d: "M4 20h4L19 9l-4-4L4 16v4z" }), h("path", { d: "M13.5 6.5l4 4" }))),
+          h("button", { className: "ps-td-icon", title: "Delete", "aria-label": "Delete", onClick: () => remove(t) },
+            h("svg", { viewBox: "0 0 24 24", width: 17, height: 17, fill: "none", stroke: "currentColor", strokeWidth: 1.8, strokeLinecap: "round", strokeLinejoin: "round" }, h("path", { d: "M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13" }))))),
+      open && h("div", { className: "ps-td-edit" },
+        h("textarea", { rows: 2, value: notes, placeholder: "Notes", onChange: (e) => setNotes(e.target.value), onBlur: () => { if (notes !== (t.notes || "")) update(t.id, { notes }); } }),
+        steps.length > 0 && h("div", { className: "ps-td-steps" }, steps.map((s) => h("div", { key: s.id, className: `ps-td-step ${s.done ? "on" : ""}` },
+          h("input", { type: "checkbox", checked: !!s.done, onChange: () => update(t.id, { steps: steps.map((x) => x.id === s.id ? { ...x, done: !x.done } : x) }) }),
+          h("span", null, s.text),
+          h("button", { className: "ps-x-small", "aria-label": "Remove step", onClick: () => update(t.id, { steps: steps.filter((x) => x.id !== s.id) }) }, "\xD7")))),
+        h("input", { className: "ps-td-stepin", value: step, placeholder: "+ Add a step", onChange: (e) => setStep(e.target.value), onKeyDown: (e) => { if (e.key === "Enter") addStep(); }, onBlur: addStep }),
+        h("div", { className: "ps-td-opts" },
+          h("input", { type: "date", value: t.due || "", "aria-label": "Due date", onChange: (e) => update(t.id, { due: e.target.value, dom: e.target.value ? Number(e.target.value.slice(8, 10)) : void 0 }) }),
+          h("select", { value: t.repeat || "", "aria-label": "Repeat", onChange: (e) => update(t.id, { repeat: e.target.value, ...(e.target.value && !t.due ? { due: today, dom: Number(today.slice(8, 10)) } : {}) }) }, TODO_REPEAT.map(([k, l]) => h("option", { key: k, value: k }, l))),
+          h("select", { value: t.pri || "normal", "aria-label": "Priority", onChange: (e) => update(t.id, { pri: e.target.value }) }, TODO_PRI.map(([k, l]) => h("option", { key: k, value: k }, l + " priority"))),
+          h("select", { value: t.clientId || "", "aria-label": "Client", onChange: (e) => update(t.id, { clientId: e.target.value }) },
+            h("option", { value: "" }, "No client"),
+            (db.clients || []).slice().sort((a, b) => String(a.name).localeCompare(String(b.name))).map((c) => h("option", { key: c.id, value: c.id }, c.name))),
+          h("button", { className: "ps-btn small", onClick: () => setOpen(null) }, "Done"))));
+  }
+
+  function TodosPage({ db, me, mutate, setToast, confirm }) {
+    const h = React.createElement;
+    const today = manilaDay();
+    const [openId, setOpenId] = useState(null);
+    const [text, setText] = useState("");
+    const [due, setDue] = useState("");
+    const [showDone, setShowDone] = useState(false);
+    const [rep, setRep] = useState("");
+    const [showRep, setShowRep] = useState(true);
+    const mine = myTodos(db, me);
+    const stamp = () => (/* @__PURE__ */ new Date()).toISOString();
+    const update = (id, patch) => mutate((n) => {
+      n.todos = (n.todos || []).map((x) => x.id === id ? { ...x, ...patch, at: stamp() } : x);
+    });
+    const add = () => {
+      const v = text.trim();
+      if (!v) return;
+      const d = due || (rep ? today : "");
+      const row = { id: uid("td"), owner: me.id, text: v, notes: "", due: d, dom: d ? Number(d.slice(8, 10)) : void 0, pri: "normal", list: "", clientId: "", repeat: rep, steps: [], done: false, created: stamp(), at: stamp() };
+      mutate((n) => { n.todos = [...(n.todos || []), row]; });
+      setText("");
+      setDue("");
+      setRep("");
+    };
+    const toggle = (t) => {
+      if (t.done) { update(t.id, { done: false, doneAt: null }); return; }
+      const next = t.repeat ? { ...t, id: uid("td"), due: tdNext(t, today), steps: (t.steps || []).map((s) => ({ ...s, done: false })), done: false, doneAt: null, created: stamp(), at: stamp() } : null;
+      mutate((n) => {
+        n.todos = (n.todos || []).map((x) => x.id === t.id ? { ...x, done: true, doneAt: stamp(), at: stamp(), repeat: "" } : x);
+        if (next) n.todos.push(next);
+      });
+      if (openId === t.id) setOpenId(null);
+      if (next) setToast(`Done. The next one is due ${/^(Today|Tomorrow)$/.test(tdWhen(next.due, today)) ? tdWhen(next.due, today).toLowerCase() : tdFmt(next.due, { weekday: "short", month: "short", day: "numeric" })}.`);
+    };
+    const remove = (t) => confirm({
+      title: "Delete this to-do?",
+      lines: [`“${t.text}”`, "This cannot be undone."],
+      confirmLabel: "Delete",
+      onYes: () => { mutate((n) => { n.todos = (n.todos || []).filter((x) => x.id !== t.id); }); setOpenId(null); }
+    });
+    const done = mine.filter((t) => t.done).sort((a, b) => String(b.doneAt || "").localeCompare(String(a.doneAt || "")));
+    const clearDone = () => confirm({
+      title: `Clear ${done.length} completed to-do${done.length === 1 ? "" : "s"}?`,
+      lines: ["They're removed for good."],
+      confirmLabel: "Clear",
+      onYes: () => { mutate((n) => { n.todos = (n.todos || []).filter((x) => !(x.owner === me.id && x.done)); }); setShowDone(false); }
+    });
+    const open = mine.filter((t) => !t.done);
+    const recurring = open.filter((t) => t.repeat).sort((a, b) => String(a.due || "").localeCompare(String(b.due || "")));
+    const groups = [
+      ["Late", open.filter((t) => t.due && t.due < today)],
+      ["Today", open.filter((t) => t.due === today)],
+      ["Upcoming", open.filter((t) => t.due > today)],
+      ["Someday", open.filter((t) => !t.due)]
+    ].map(([k, rows]) => [k, rows.slice().sort(k === "Upcoming" ? (a, b) => a.due.localeCompare(b.due) || tdSort(a, b) : tdSort)]);
+    const row = (t) => h(TodoRow, { key: t.id, t, db, today, open: openId === t.id, setOpen: setOpenId, update, toggle, remove });
+    const dateChip = due ? (due === today ? "Today" : due === tdAdd(today, 1) ? "Tomorrow" : tdFmt(due, { month: "short", day: "numeric" })) : "No date";
+    return h("div", { className: "ps-td" },
+      h("h1", { className: "ps-td-h1" }, "To-dos"),
+      h("div", { className: "ps-td-add" },
+        h("span", { className: "ps-td-plus", "aria-hidden": "true" }, "+"),
+        h("input", { className: "ps-td-addtext", placeholder: "Add a to-do", value: text, onChange: (e) => setText(e.target.value), onKeyDown: (e) => { if (e.key === "Enter") add(); }, "aria-label": "New to-do" }),
+        h("label", { className: `ps-td-date ${due ? "on" : ""}`, title: "Due date" },
+          h("span", null, dateChip),
+          h("input", { type: "date", value: due, onChange: (e) => setDue(e.target.value), "aria-label": "Due date" })),
+        h("label", { className: `ps-td-date ${rep ? "on" : ""}`, title: "Repeat" },
+          h("span", null, "\u21BB ", rep ? TODO_REPEAT_SHORT[rep] : "Repeat"),
+          h("select", { value: rep, onChange: (e) => setRep(e.target.value), "aria-label": "Repeat" }, TODO_REPEAT.map(([k, l]) => h("option", { key: k, value: k }, l))))),
+      open.length === 0 && h("p", { className: "ps-td-empty" }, mine.length ? "All clear." : "Nothing here yet. Type a to-do above and press Enter."),
+      groups.filter(([, rows]) => rows.length).map(([k, rows]) => h("section", { key: k, className: `ps-td-group ${k === "Late" ? "late" : ""}` },
+        h("h3", { className: "ps-td-gh" }, k, " ", h("span", null, rows.length)),
+        rows.map(row))),
+      recurring.length > 0 && h("section", { className: "ps-td-group" },
+        h("div", { className: "ps-td-gh-row" },
+          h("button", { className: "ps-td-gh fold", onClick: () => setShowRep(!showRep), "aria-expanded": showRep }, showRep ? "\u25BE" : "\u25B8", " Recurring ", h("span", null, recurring.length))),
+        showRep && recurring.map((t) => h("div", { key: "r" + t.id, className: "ps-td-rec", onClick: () => setOpenId(t.id) },
+          h("span", { className: "ps-td-rec-icon", "aria-hidden": "true" }, "\u21BB"),
+          h("span", { className: "ps-td-rec-text" }, t.text),
+          h("span", { className: "ps-td-rec-when" }, TODO_REPEAT_SHORT[t.repeat] || "", t.due ? ` \xB7 ${t.due < today ? "late" : /^(Today|Tomorrow)$/.test(tdWhen(t.due, today)) ? "due " + tdWhen(t.due, today).toLowerCase() : "next " + tdFmt(t.due, { month: "short", day: "numeric" })}` : "")))),
+      done.length > 0 && h("section", { className: "ps-td-group donegrp" },
+        h("div", { className: "ps-td-gh-row" },
+          h("button", { className: "ps-td-gh fold", onClick: () => setShowDone(!showDone), "aria-expanded": showDone }, showDone ? "▾" : "▸", " Completed ", h("span", null, done.length)),
+          showDone && h("button", { className: "ps-td-clear", onClick: clearDone }, "Clear")),
+        showDone && done.map(row)));
+  }
+
   function ArchivePage({ db, me, mutate, setToast, confirm }) {
     const h = React.createElement;
     const [tab, setTab] = useState("archive");
@@ -6325,6 +6517,7 @@ ${lines.join("\n")}`);
          plus a trimmed Team overview: the work, not the personnel. */
       ...!lead && me.role !== "client" ? [["pipeline", "Pipeline", mineInMotion.length || ""]] : [],
       ...!lead && me.role !== "hr" && me.role !== "client" ? [["overview", "Team overview", ""]] : [],
+      ...canTodo(me) ? [["todos", "My to-dos", todoBadge(db, me) || ""]] : [],
       ...me.role !== "client" ? [["studio", "Studio", ""]] : [],
       ...me.role !== "client" ? [["archive", "Archive", ""]] : [],
       ...me.role === "lead" || me.role === "hr" ? [["payroll", "Payroll", ""]] : [],
@@ -6355,6 +6548,8 @@ ${lines.join("\n")}`);
       body = /* @__PURE__ */ React.createElement(InvoicesPage, { me, setToast, confirm: setConfirming });
     } else if (page.tab === "payroll" && (me.role === "lead" || me.role === "hr")) {
       body = /* @__PURE__ */ React.createElement(PayrollPage, { db, me, setToast, confirm: setConfirming });
+    } else if (page.tab === "todos" && canTodo(me)) {
+      body = /* @__PURE__ */ React.createElement(TodosPage, { db, me, mutate, setToast, confirm: setConfirming });
     } else if (page.tab === "archive" && me.role !== "client") {
       body = /* @__PURE__ */ React.createElement(ArchivePage, { db, me, mutate, setToast, confirm: setConfirming });
     } else if (page.tab === "studio" && me.role !== "client") {
@@ -8821,6 +9016,64 @@ html.ps-theming .ps-theme-knob,html.ps-theming .ps-theme-ic{transition:transform
 .ps-root .ps-pin-by{font-size:12.5px}
 .ps-root .ps-pin-add{margin:0 0 16px}
 @media (max-width:760px){.ps-root .ps-pin-text{font-size:16px}.ps-root .ps-pin{padding:14px}}
+/* My to-dos */
+.ps-td{max-width:640px;margin:0 auto;padding-top:8px}
+.ps-td-h1{font-size:28px;font-weight:800;letter-spacing:-.02em;margin:0 0 18px}
+.ps-td-add{display:flex;align-items:center;gap:10px;border-bottom:1px solid var(--line);padding:6px 2px 10px;margin-bottom:22px}
+.ps-td-plus{color:var(--muted);font-size:22px;line-height:1;width:22px;text-align:center}
+.ps-root .ps-td-addtext{flex:1;min-width:0;border:0;background:none;padding:6px 0;font-size:16px;border-radius:0}
+.ps-root .ps-td-addtext:focus-visible{outline:0}
+.ps-td-date{position:relative;font-size:13px;font-weight:600;color:var(--muted);padding:4px 10px;border-radius:999px;cursor:pointer;white-space:nowrap}
+.ps-td-date:hover{background:var(--card)}
+.ps-td-date.on{color:var(--accent);background:var(--okbg)}
+.ps-root .ps-td-date select{position:absolute;inset:0;opacity:0;cursor:pointer;width:100%;padding:0;border:0}
+.ps-td-rec{display:flex;align-items:center;gap:12px;padding:8px 0;cursor:pointer;font-size:14.5px}
+.ps-td-rec:hover .ps-td-rec-text{color:var(--accent)}
+.ps-td-rec-icon{width:20px;text-align:center;color:var(--accent);font-weight:700}
+.ps-td-rec-text{flex:1;min-width:0;overflow-wrap:anywhere}
+.ps-td-rec-when{font-size:12.5px;color:var(--muted);white-space:nowrap}
+.ps-root .ps-td-date input{position:absolute;inset:0;opacity:0;cursor:pointer;width:100%;padding:0;border:0}
+.ps-td-empty{color:var(--muted);text-align:center;padding:30px 0}
+.ps-td-group{margin-bottom:22px}
+.ps-root .ps-td-gh{font-size:13px;font-weight:700;color:var(--muted);margin:0 0 4px;text-transform:uppercase;letter-spacing:.04em;background:none;border:0;padding:0}
+.ps-td-gh span{font-weight:500;opacity:.8}
+.ps-td-group.late .ps-td-gh{color:var(--late)}
+.ps-root .ps-td-gh.fold{cursor:pointer}
+.ps-td-gh-row{display:flex;align-items:center;justify-content:space-between}
+.ps-root .ps-td-clear{background:none;border:0;color:var(--muted);font-size:12.5px;cursor:pointer;padding:0}
+.ps-root .ps-td-clear:hover{color:var(--late)}
+.ps-td-row{border-radius:8px}
+.ps-td-row.open{background:var(--card);box-shadow:0 1px 6px rgba(0,0,0,.07);margin:4px -10px;padding:0 10px}
+.ps-td-line{display:flex;align-items:flex-start;gap:12px;padding:9px 0}
+.ps-root .ps-td-tick{flex:0 0 auto;width:20px;height:20px;margin-top:2px;border-radius:5px;border:1.5px solid var(--muted);background:none;cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:800;padding:0;color:#fff;line-height:1}
+.ps-root .ps-td-tick:hover{border-color:var(--accent)}
+.ps-root .ps-td-tick.on{background:var(--accent);border-color:var(--accent)}
+.ps-root.dark .ps-td-tick.on{color:#05201D}
+.ps-td-main{flex:1;min-width:0;display:flex;flex-direction:column;gap:1px;cursor:pointer}
+.ps-td-text{font-size:15px;overflow-wrap:anywhere}
+.ps-td-row.done .ps-td-text{text-decoration:line-through;color:var(--muted)}
+.ps-td-flag{color:var(--late);font-weight:800;margin-right:5px}
+.ps-td-sub{font-size:12.5px;color:var(--muted)}
+.ps-td-sub.late{color:var(--late)}
+.ps-td-icons{display:flex;gap:2px;opacity:0;transition:opacity .12s}
+.ps-td-row:hover .ps-td-icons,.ps-td-row.open .ps-td-icons,.ps-td-icons:focus-within{opacity:1}
+@media (hover:none){.ps-td-icons{opacity:1}}
+.ps-root .ps-td-icon{background:none;border:0;color:var(--muted);padding:4px;border-radius:6px;cursor:pointer;display:flex}
+.ps-root .ps-td-icon:hover{color:var(--ink);background:var(--paper)}
+.ps-td-edit{display:flex;flex-direction:column;gap:8px;padding:0 0 12px 32px}
+.ps-root .ps-td-edit input,.ps-root .ps-td-edit textarea,.ps-root .ps-td-edit select{border-color:transparent;background:var(--paper);font-size:14px;padding:6px 9px}
+.ps-root .ps-td-main .ps-td-title{font-size:15px;border:0;background:none;padding:0;border-radius:0;width:100%}
+.ps-root .ps-td-main .ps-td-title:focus-visible{outline:0;box-shadow:0 1px 0 var(--accent)}
+.ps-root .ps-td-edit textarea{resize:vertical}
+.ps-td-steps{display:flex;flex-direction:column;gap:3px}
+.ps-td-step{display:flex;align-items:center;gap:8px;font-size:14px}
+.ps-root .ps-td-step input{width:16px;height:16px;accent-color:var(--accent);flex:0 0 auto;padding:0}
+.ps-td-step span{flex:1;overflow-wrap:anywhere}
+.ps-td-step.on span{text-decoration:line-through;color:var(--muted)}
+.ps-root .ps-td-edit .ps-td-stepin{background:none}
+.ps-td-opts{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.ps-td-opts .ps-btn{margin-left:auto}
+@media (max-width:640px){.ps-td-edit{padding-left:0}.ps-td-opts select,.ps-td-opts input{flex:1 1 40%}.ps-td-opts .ps-btn{width:100%}}
 `;
   window.ProjeclabStudios = ProjeclabStudios;
 })();

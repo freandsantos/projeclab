@@ -4746,6 +4746,217 @@ html[data-theme="dark"] .ps-open{background:#10151D}
     return null;
   };
 
+  /* ---------- Send an invoice by email (Gmail, Google sign-in pop-up) ----------
+     The browser asks Google for a 1-hour "send mail" pass for the client's sender address,
+     checks the signed-in account really is that address, then sends through the Gmail API.
+     Nothing is stored except the public Google Client ID (invoices table, row "inv-settings"). */
+  var INV_SETTINGS_ID = "inv-settings";
+  var INV_ME = { name: "Frean John Delos Santos", title: "Creative Director / Video Editor / Designer" };
+  var invEsc = (x) => String(x == null ? "" : x).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  /* "Outlook, frean@x.com" -> { email, outlook } */
+  var invSender = (sendFrom) => {
+    const t = String(sendFrom || "");
+    const m = t.match(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/);
+    return { email: m ? m[0].toLowerCase() : "", outlook: /outlook|office|microsoft|365/i.test(t) };
+  };
+  var invEmails = (s) => String(s || "").split(/[,;\s]+/).map((x) => x.trim()).filter((x) => /@/.test(x));
+  var invMonthName = (inv) => {
+    const m = String(inv.period || "").match(/(January|February|March|April|May|June|July|August|September|October|November|December)/i);
+    if (m) return m[1].charAt(0).toUpperCase() + m[1].slice(1).toLowerCase();
+    return inv.date ? fromIso(String(inv.date).slice(0, 10)).toLocaleDateString("en-US", { month: "long" }) : "";
+  };
+  var invFill = (str, inv) => String(str || "")
+    .replace(/[<(]\s*(no|number|num|#)\s*>/gi, String(inv.no))
+    .replace(/<\s*month\s*>/gi, invMonthName(inv))
+    .replace(/<\s*period\s*>/gi, inv.period || "");
+  var invItemsOf = (inv) => (Array.isArray(inv.items) && inv.items.length ? inv.items : [{ desc: inv.desc || "Services", qty: 1, rate: num(inv.amount), amount: num(inv.amount) }])
+    .map((it) => ({ desc: it.desc || "", qty: num(it.qty) || 1, rate: it.rate != null ? num(it.rate) : num(it.amount), amount: it.amount != null ? num(it.amount) : r2((num(it.qty) || 1) * num(it.rate)) }));
+  var invBillTo = (c) => {
+    const lines = [];
+    const contact = String(c.contact || "").trim();
+    const m = contact.match(/^(.*?)\s*\((.*)\)\s*$/);
+    if (contact) { lines.push(m ? m[1] : contact); if (m && m[2]) lines.push(m[2]); }
+    if (c.name && c.name !== (m ? m[1] : contact)) lines.push(c.name);
+    const em = invEmails(c.email)[0];
+    if (em) lines.push(em);
+    return lines;
+  };
+  /* The email body, same layout as the OnBlends invoices (Poppins, "Invoice." title, From / Bill To, table, payment details). */
+  var invEmailHtml = (inv, c, o) => {
+    const F = "font-family:Poppins,Arial,Helvetica,sans-serif;";
+    const cur = c.currency || "USD";
+    const items = invItemsOf(inv);
+    const qtyTotal = items.reduce((s2, it) => s2 + it.qty, 0);
+    const total = r2(items.reduce((s2, it) => s2 + it.amount, 0));
+    const td = "border-bottom:1px solid #33343a;padding:14px 8px;vertical-align:top;font-weight:300;";
+    const th = "border-top:1px solid #33343a;border-bottom:3px solid #33343a;padding:12px 8px;font-weight:600;";
+    const para = String(o.message || "").split(/\n\s*\n/).map((p) => p.trim()).filter(Boolean)
+      .map((p, i) => `<p style="margin:${i ? "12px" : "0"} 0 4px">${invEsc(p).replace(/\n/g, "<br>")}</p>`).join("");
+    const bill = invBillTo(c).map((l, i) => i === 0 ? `<div style="font-weight:700">${invEsc(l)}</div>` : /@/.test(l) ? `<div><a href="mailto:${invEsc(l)}">${invEsc(l)}</a></div>` : `<div>${invEsc(l)}</div>`).join("");
+    const rows = items.map((it, i) => `<tr><td style="${td}width:6%">${i + 1}.</td><td style="${td}"><div style="font-weight:600">${invEsc(it.desc)}</div></td><td style="${td}text-align:center;width:11%">${it.qty}</td><td style="${td}text-align:right;width:14%">${invEsc(money(it.rate, cur))}</td><td style="${td}text-align:right;width:16%">${invEsc(money(it.amount, cur))}</td></tr>`).join("");
+    const pay = o.payDetails ? `<tr><td style="padding:16px 40px 34px 40px"><table cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;border-top:3px solid #33343a"><tr><td style="padding:18px 0 0 0;${F}font-size:13px;line-height:21px;color:#33343a">
+<div style="color:#8a6d3b;font-weight:700;font-size:14px;margin-bottom:8px">Payment Details:</div>
+<div style="font-weight:600">Wise</div>
+<div>Account holder: <b>Frean John Centillas De los Santos</b></div>
+<div>ACH and Wire routing number: <b>026073150</b></div>
+<div>Account number: <b>8313133137</b></div>
+<div>Account type: <b>Checking</b></div>
+<div>Wise's address: 30 W. 26th Street, Sixth Floor, New York NY 10010 United States</div>
+<div style="font-weight:600;margin-top:12px">PayPal</div>
+<div><b>freandsantos@gmail.com</b></div>
+</td></tr></table></td></tr>` : `<tr><td style="padding:0 40px 24px"></td></tr>`;
+    return `<div style="${F}color:#33343a;font-size:14px">${para}<div style="height:20px"></div>
+<table cellpadding="0" cellspacing="0" width="640" style="width:640px;max-width:100%;border-collapse:collapse;border:1px solid #e3e5ea">
+<tr><td style="padding:34px 40px 10px 40px"><table cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse"><tr>
+<td valign="top" style="${F}font-size:64px;line-height:64px;font-weight:700;letter-spacing:-4px;color:#33343a">Invoice.</td>
+<td valign="top" align="right" style="${F}text-align:right">
+<div style="font-weight:700;font-size:15px">Invoice No :</div><div style="font-weight:300;font-size:16px;margin-bottom:10px">No. ${invEsc(inv.no)}</div>
+<div style="font-weight:700;font-size:15px">Invoice Date:</div><div style="font-weight:300;font-size:16px;margin-bottom:10px">${invEsc(longDay(inv.date || inv.sentAt))}</div>
+<div style="font-weight:700;font-size:15px">Due:</div><div style="font-weight:300;font-size:16px">On receipt</div>
+</td></tr></table></td></tr>
+<tr><td style="padding:22px 40px 6px 40px"><table cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;${F}font-size:13px;line-height:20px"><tr>
+<td valign="top" width="50%" style="padding-right:16px"><div style="font-weight:300;font-size:14px;margin-bottom:4px">From :</div><div style="font-weight:700">${invEsc(INV_ME.name)}</div><div>${invEsc(INV_ME.title)}</div>${o.from ? `<div><a href="mailto:${invEsc(o.from)}">${invEsc(o.from)}</a></div>` : ""}</td>
+<td valign="top" width="50%"><div style="font-weight:300;font-size:14px;margin-bottom:4px">Bill To :</div>${bill}</td>
+</tr></table></td></tr>
+<tr><td style="padding:22px 40px 10px 40px"><table cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;${F}font-size:14px">
+<tr><td style="${th}">No</td><td style="${th}">Description</td><td style="${th}text-align:center">Qty</td><td style="${th}text-align:right">Rate</td><td style="${th}text-align:right">Amount</td></tr>
+${rows}
+<tr><td colspan="2" style="padding:18px 8px;font-weight:700">Total</td><td style="padding:18px 8px;font-weight:700;text-align:center">${qtyTotal}</td><td></td><td style="padding:18px 8px;font-weight:700;text-align:right">${invEsc(money(total, cur))}</td></tr>
+</table></td></tr>
+${pay}
+</table></div>`;
+  };
+  var invEmailText = (inv, c, o) => {
+    const cur = c.currency || "USD";
+    const items = invItemsOf(inv);
+    const lines = [String(o.message || "").trim(), "", `INVOICE No. ${inv.no}`, `Invoice date: ${longDay(inv.date || inv.sentAt)}`, "Due: On receipt", "",
+      `From: ${INV_ME.name}${o.from ? ", " + o.from : ""}`, `Bill to: ${invBillTo(c).join(", ")}`, ""];
+    items.forEach((it, i) => lines.push(`${i + 1}. ${it.desc} - ${it.qty} x ${money(it.rate, cur)} = ${money(it.amount, cur)}`));
+    lines.push(`Total: ${money(items.reduce((s2, it) => s2 + it.amount, 0), cur)}`);
+    if (o.payDetails) lines.push("", "Payment Details:", "Wise", "Account holder: Frean John Centillas De los Santos", "ACH and Wire routing number: 026073150", "Account number: 8313133137", "Account type: Checking", "Wise's address: 30 W. 26th Street, Sixth Floor, New York NY 10010 United States", "", "PayPal: freandsantos@gmail.com");
+    return lines.join("\n");
+  };
+  /* --- Google sign-in (Google Identity Services) and the Gmail send call --- */
+  var gisPromise = null;
+  var loadGis = () => {
+    if (typeof window !== "undefined" && window.google && window.google.accounts && window.google.accounts.oauth2) return Promise.resolve();
+    if (!gisPromise) gisPromise = new Promise((res, rej) => {
+      const sc = document.createElement("script");
+      sc.src = "https://accounts.google.com/gsi/client"; sc.async = true;
+      sc.onload = () => res(); sc.onerror = () => { gisPromise = null; rej(new Error("Google sign-in didn't load. Check your connection.")); };
+      document.head.appendChild(sc);
+    });
+    return gisPromise;
+  };
+  var gmailPasses = {}; /* email -> { token, exp } kept in memory only, for this tab */
+  var GMAIL_SCOPE = "https://www.googleapis.com/auth/gmail.send openid email";
+  /* Must be called straight from a click (pop-up blockers). Resolves with { token, email }. */
+  var gmailPass = (clientId, email) => new Promise((resolve, reject) => {
+    const have = gmailPasses[email];
+    if (have && have.exp > Date.now() + 60000) { resolve({ token: have.token, email }); return; }
+    const g = window.google && window.google.accounts && window.google.accounts.oauth2;
+    if (!g) { reject(new Error("Google sign-in is still loading. Try again in a second.")); return; }
+    const tc = g.initTokenClient({
+      client_id: clientId, scope: GMAIL_SCOPE, hint: email, prompt: "",
+      callback: async (r) => {
+        if (!r || r.error || !r.access_token) { reject(new Error(r && r.error === "access_denied" ? "Google sign-in was cancelled." : "Google didn't give permission to send.")); return; }
+        try {
+          const who = await fetch("https://www.googleapis.com/oauth2/v3/userinfo", { headers: { Authorization: "Bearer " + r.access_token } }).then((x) => x.json());
+          const got = String(who && who.email || "").toLowerCase();
+          if (got !== email) {
+            try { g.revoke(r.access_token, () => {}); } catch (e) {}
+            reject(new Error(`You picked ${got || "a different account"}, but this client's invoices go out from ${email}. Nothing was sent. Try again and choose ${email}.`));
+            return;
+          }
+          gmailPasses[email] = { token: r.access_token, exp: Date.now() + (num(r.expires_in) || 3600) * 1000 };
+          resolve({ token: r.access_token, email });
+        } catch (e) { reject(new Error("Couldn't check which Google account you picked.")); }
+      },
+      error_callback: (e) => reject(new Error(e && e.type === "popup_closed" ? "The Google window was closed before you picked an account." : e && e.type === "popup_failed_to_open" ? "Your browser blocked the Google pop-up. Allow pop-ups for this site and try again." : "Google sign-in didn't finish."))
+    });
+    tc.requestAccessToken({ hint: email });
+  });
+  var b64utf8 = (str) => btoa(unescape(encodeURIComponent(str)));
+  var wrap76 = (b) => b.replace(/.{1,76}/g, "$&\r\n");
+  var gmailSend = async (token, { to, subject, text, html }) => {
+    const bnd = "ps_" + Math.random().toString(36).slice(2);
+    const mime = [
+      `To: ${to.join(", ")}`,
+      `Subject: =?UTF-8?B?${b64utf8(subject)}?=`,
+      "MIME-Version: 1.0",
+      `Content-Type: multipart/alternative; boundary="${bnd}"`, "",
+      `--${bnd}`, "Content-Type: text/plain; charset=UTF-8", "Content-Transfer-Encoding: base64", "", wrap76(b64utf8(text)),
+      `--${bnd}`, "Content-Type: text/html; charset=UTF-8", "Content-Transfer-Encoding: base64", "", wrap76(b64utf8(html)),
+      `--${bnd}--`, ""
+    ].join("\r\n");
+    const raw = b64utf8(mime).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+    const res = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/messages/send", {
+      method: "POST", headers: { Authorization: "Bearer " + token, "Content-Type": "application/json" }, body: JSON.stringify({ raw })
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error((body && body.error && body.error.message) || `Gmail said no (error ${res.status}).`);
+    return body;
+  };
+
+  /* The "Send email" panel under an invoice row. */
+  function InvoiceSendPanel({ inv, c, settings, saveSettings, onSent, onClose, setToast }) {
+    const h = React.createElement;
+    const snd = invSender(c.sendFrom);
+    const [to, setTo] = useState(invEmails(c.email).join(", "));
+    const [subject, setSubject] = useState(invFill(c.subject || "Invoice #<No>", inv));
+    const [message, setMessage] = useState(invFill(c.wording || "Hi,\n\nPlease see the invoice below.\n\nThank you", inv));
+    const [payDetails, setPayDetails] = useState(!c.noPayDetails);
+    const [cid, setCid] = useState("");
+    const [busy, setBusy] = useState(false);
+    const [err, setErr] = useState("");
+    const [ready, setReady] = useState(false);
+    const clientId = settings && settings.googleClientId;
+    useEffect(() => { if (clientId) loadGis().then(() => setReady(true), (e) => setErr(e.message)); }, [clientId]);
+    const html = invEmailHtml(inv, c, { from: snd.email, message, payDetails });
+    const toList = invEmails(to);
+    const canSend = snd.email && !snd.outlook && clientId;
+    const go = () => {
+      setErr("");
+      if (!toList.length) { setErr("Add the client's email address."); return; }
+      if (!subject.trim()) { setErr("Add an email title."); return; }
+      setBusy(true);
+      gmailPass(clientId, snd.email)
+        .then(({ token }) => gmailSend(token, { to: toList, subject: subject.trim(), text: invEmailText(inv, c, { from: snd.email, message, payDetails }), html }))
+        .then((r) => { setBusy(false); onSent({ to: toList, from: snd.email, subject: subject.trim(), payDetails, gmailId: r.id, gmailThreadId: r.threadId }); })
+        .catch((e) => { setBusy(false); setErr(e && e.message ? e.message : "That didn't send."); });
+    };
+    return h("div", { className: "ps-pay-form ps-inv-send" },
+      h("b", null, `Email invoice No. ${inv.no}`),
+      snd.outlook || !snd.email
+        ? h("p", { className: "ps-inv-send-note" }, snd.outlook
+            ? `${c.name}'s invoices go out from Outlook (${snd.email || "Microsoft"}). The app can only send from Gmail, so send this one from Outlook or ask Claude.`
+            : `Set "Sent from" for ${c.name} under Clients first (the Gmail address their invoices come from).`)
+        : !clientId
+          ? h("div", { className: "ps-inv-send-note" },
+              h("p", null, h("b", null, "One-time setup: "), "paste your Google Client ID (from Google Cloud → APIs & Services → Credentials). It's a public ID, not a password."),
+              h("div", { className: "ps-btnrow" },
+                h("input", { className: "ps-inv-cid", value: cid, placeholder: "1234567890-abc….apps.googleusercontent.com", onChange: (e) => setCid(e.target.value) }),
+                h("button", { className: "ps-btn", onClick: () => {
+                  const v = cid.trim();
+                  if (!/^[0-9]+-[a-z0-9]+\.apps\.googleusercontent\.com$/i.test(v)) { setToast("That doesn't look like a Google Client ID. It ends in .apps.googleusercontent.com"); return; }
+                  saveSettings({ ...(settings || {}), googleClientId: v });
+                } }, "Save")))
+          : null,
+      h("div", { className: "ps-pay-grid" },
+        h("label", { className: "ps-field" }, h("span", null, "From"), h("input", { value: snd.email || "—", readOnly: true })),
+        h("label", { className: "ps-field" }, h("span", null, "To"), h("input", { value: to, onChange: (e) => setTo(e.target.value) })),
+        h("label", { className: "ps-field ps-inv-send-wide" }, h("span", null, "Email title"), h("input", { value: subject, onChange: (e) => setSubject(e.target.value) }))),
+      h("label", { className: "ps-field" }, h("span", null, "Message (above the invoice)"), h("textarea", { rows: 4, value: message, onChange: (e) => setMessage(e.target.value) })),
+      h("label", { className: "ps-check" }, h("input", { type: "checkbox", checked: payDetails, onChange: (e) => setPayDetails(e.target.checked) }), " Include payment details (Wise & PayPal)"),
+      h("span", { className: "ps-muted" }, "Preview"),
+      h("iframe", { className: "ps-inv-preview", title: "Email preview", sandbox: "", srcDoc: `<!doctype html><html><head><meta charset="utf-8"><link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;600;700&display=swap" rel="stylesheet"></head><body style="margin:12px;background:#fff">${html}</body></html>` }),
+      inv.emailedAt && h("p", { className: "ps-muted" }, `Already emailed ${longDay(inv.emailedAt)} from ${inv.emailedFrom}. Sending again sends a second copy.`),
+      err && h("p", { className: "ps-inv-send-err", role: "alert" }, err),
+      h("div", { className: "ps-btnrow" },
+        h("button", { className: "ps-btn ghost", onClick: onClose, disabled: busy }, "Cancel"),
+        canSend && h("button", { className: "ps-btn", disabled: busy || !ready, onClick: go }, busy ? "Sending…" : !ready ? "Loading Google…" : `Send from ${snd.email}`)));
+  }
+
   function InvoicesPage({ me, setToast, confirm }) {
     const h = React.createElement;
     const api = invApi();
@@ -4757,6 +4968,7 @@ html[data-theme="dark"] .ps-open{background:#10151D}
     const [adding, setAdding] = useState(null);
     const [editClient, setEditClient] = useState(null);
     const [menuFor, setMenuFor] = useState(null);
+    const [sendFor, setSendFor] = useState(null);
     useEffect(() => {
       if (!menuFor) return;
       const close = (e) => { if (!(e.target.closest && e.target.closest(".ps-inv-menu"))) setMenuFor(null); };
@@ -4798,6 +5010,16 @@ html[data-theme="dark"] .ps-open{background:#10151D}
             : "Only logins listed in Supabase → invoice_admins can see invoices. Add your sign-in email there if this should be you.")));
 
     const clients = rows.filter((r) => r.kind === "client").map((r) => r.data).sort((a, b) => a.name.localeCompare(b.name));
+    const invSettings = (rows.find((r) => r.id === INV_SETTINGS_ID) || {}).data || {};
+    const saveInvSettings = (data) => put(INV_SETTINGS_ID, "settings", data, "Google Client ID saved.");
+    const markEmailed = (inv, r) => {
+      const c = clientOf(inv.clientId);
+      put(inv.id, "invoice", { ...inv, sentAt: isoDay(new Date()), emailedAt: new Date().toISOString(), emailedFrom: r.from, emailedTo: r.to.join(", "), emailSubject: r.subject, gmailId: r.gmailId, gmailThreadId: r.gmailThreadId },
+        `Invoice No. ${inv.no} sent to ${r.to.join(", ")}.`);
+      /* Remember the payment-details choice for this client. */
+      if (!!c.noPayDetails === r.payDetails) put(c.id, "client", { ...c, noPayDetails: !r.payDetails }, `Invoice No. ${inv.no} sent to ${r.to.join(", ")}.`);
+      setSendFor(null);
+    };
     const clientOf = (id) => clients.find((c) => c.id === id) || { name: "Unknown client", currency: "USD" };
     const invoices = rows.filter((r) => r.kind === "invoice").map((r) => r.data)
       .sort((a, b) => String(b.sentAt || b.date || "").localeCompare(String(a.sentAt || a.date || "")));
@@ -4915,7 +5137,9 @@ html[data-theme="dark"] .ps-open{background:#10151D}
             h("b", null, "Total ", money(addTotal, addCur))))),
       h("div", { className: "ps-btnrow" },
         h("button", { className: "ps-btn ghost", onClick: () => setAdding(null) }, "Cancel"),
-        clients.length > 0 && h("button", { className: "ps-btn", onClick: () => {
+        clients.length > 0 && h("button", { className: "ps-btn ghost", onClick: () => saveAdd(false) }, "Add invoice"),
+        clients.length > 0 && h("button", { className: "ps-btn", onClick: () => saveAdd(true) }, "Add and email it")));
+    function saveAdd(thenSend) {
           const items = adding.items.filter((it) => it.desc.trim() || num(it.rate)).map((it) => ({ desc: it.desc.trim(), qty: num(it.qty) || 1, rate: num(it.rate), amount: r2((num(it.qty) || 1) * num(it.rate)) }));
           const total = r2(items.reduce((s, it) => s + it.amount, 0));
           if (!adding.clientId || !items.length || !(total > 0)) { setToast("Pick the client and add at least one line with a rate."); return; }
@@ -4924,8 +5148,9 @@ html[data-theme="dark"] .ps-open{background:#10151D}
           const id = uid("inv");
           const desc = items.length === 1 ? items[0].desc : items.map((it) => (it.qty !== 1 ? `${it.qty} × ` : "") + it.desc).join(", ");
           put(id, "invoice", { id, clientId: adding.clientId, no: String(adding.no).trim(), period: adding.period.trim(), desc, items, amount: total, date: adding.date, sentAt: adding.sentAt, pdfUrl: adding.pdfUrl.trim(), paidAt: null, addedBy: me.name, addedAt: new Date().toISOString() }, "Invoice added.");
+          if (thenSend) { setShow("all"); setSendFor(id); }
           setAdding(null);
-        } }, "Add invoice")));
+    }
 
     /* ---------- the invoice list ---------- */
     const invList = h("div", { className: "ps-pay-list" },
@@ -4946,7 +5171,8 @@ html[data-theme="dark"] .ps-open{background:#10151D}
                     inv.paidAt
                       ? `Paid ${longDay(inv.paidAt)} via ${viaLabel(inv.paidVia)}`
                         + (inv.paidAt && inv.php && (c.currency || "USD") !== "PHP" ? ` · ≈ ${peso(inv.php)}` : "")
-                      : `Sent ${longDay(inv.sentAt)}`)),
+                      : `Sent ${longDay(inv.sentAt)}`,
+                    inv.emailedAt ? ` · emailed from ${inv.emailedFrom}` : "")),
                 h("b", { className: "ps-inv-amt" }, money(inv.amount, c.currency)),
                 inv.paidAt
                   ? h("span", { className: "ps-chip ok" }, "Paid")
@@ -4955,13 +5181,15 @@ html[data-theme="dark"] .ps-open{background:#10151D}
                 h("div", { className: "ps-inv-menu" },
                   h("button", { className: "ps-inv-more", "aria-label": `More for invoice No. ${inv.no}`, "aria-expanded": open, onClick: () => setMenuFor(open ? null : inv.id) }, "⋯"),
                   open && h("div", { className: "ps-inv-pop", role: "menu" },
+                    h("button", { role: "menuitem", onClick: () => { setMenuFor(null); setPaying(null); setSendFor(inv.id); } }, inv.emailedAt ? "Send email again" : "Send email"),
                     inv.pdfUrl && h("a", { role: "menuitem", href: inv.pdfUrl, target: "_blank", rel: "noopener noreferrer", onClick: () => setMenuFor(null) }, "Open PDF"),
                     inv.paidAt && h("button", { role: "menuitem", onClick: () => { setMenuFor(null); undoPaid(inv); } }, "Undo paid"),
                     h("button", { role: "menuitem", className: "danger", onClick: () => { setMenuFor(null); removeInv(inv); } }, "Delete")))),
               Array.isArray(inv.items) && inv.items.length > 1 && h("ul", { className: "ps-inv-lines" },
                 inv.items.map((it, j) => h("li", { key: j }, h("span", null, (it.qty && it.qty !== 1 ? `${it.qty} × ` : "") + it.desc), h("span", null, money(it.amount != null ? it.amount : num(it.qty || 1) * num(it.rate), c.currency))))),
               !inv.paidAt && age.cls && h("span", { className: `ps-inv-age ${age.cls}` }, age.text),
-              paying && paying.id === inv.id && payForm(inv));
+              paying && paying.id === inv.id && payForm(inv),
+              sendFor === inv.id && h(InvoiceSendPanel, { key: "send-" + inv.id, inv, c, settings: invSettings, saveSettings: saveInvSettings, setToast, onClose: () => setSendFor(null), onSent: (r) => markEmailed(inv, r) }));
             return divider ? [divider, row] : row;
           }));
 
@@ -8151,6 +8379,15 @@ ${lines.join("\n")}`);
 .ps-pay-sub{margin-top:6px;font-size:14px}
 .ps-pay-hint{margin:0;font-size:12.5px}
 .ps-pay-form .ps-btnrow{justify-content:flex-end}
+.ps-inv-send .ps-pay-grid{grid-template-columns:1fr 1fr}
+.ps-inv-send-wide{grid-column:1/-1}
+.ps-inv-preview{width:100%;height:560px;border:1px solid var(--line);border-radius:10px;background:#fff}
+.ps-inv-send-note{background:var(--line);border-radius:10px;padding:10px 12px;margin:0;font-size:13.5px;line-height:1.5}
+.ps-inv-send-note p{margin:0 0 8px}
+.ps-inv-cid{flex:1;min-width:200px;border:1px solid var(--line);border-radius:8px;padding:8px 10px;background:var(--card);color:var(--ink);font:inherit}
+.ps-inv-send-err{color:var(--late);margin:0;font-size:13.5px}
+.ps-inv-send .ps-check{display:flex;align-items:center;gap:6px;font-size:13.5px}
+@media (max-width:640px){.ps-inv-send .ps-pay-grid{grid-template-columns:1fr}.ps-inv-preview{height:460px}}
 .ps-pay-top{margin-bottom:10px}
 .ps-pay-check{display:flex;align-items:flex-start;gap:8px;margin:10px 0 4px;cursor:pointer;font-weight:600}.ps-pay-check input{margin-top:3px}.ps-pay-check small{font-weight:400}
 .ps-pay-newrun{border:1px solid var(--line);background:var(--card);border-radius:12px;padding:14px 16px;margin-bottom:14px;display:flex;flex-direction:column;gap:10px}

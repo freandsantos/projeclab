@@ -6975,7 +6975,7 @@ ${lines.join("\n")}`);
     });
     return threeLoading;
   };
-  var STUDIO_SKIP = ["jose", "admin"];
+  var STUDIO_SKIP = ["admin", "raiza", "raizza"];
   var STUDIO_ORDER = ["lead", "coordinator", "hr", "teamlead", "qa", "editor", "intern"];
   var STUDIO_STATE = {
     working: { label: "working", color: "#22A06B" },
@@ -7470,11 +7470,11 @@ ${lines.join("\n")}`);
           { name: "mark", r: [288, 532, 355, 634], face: "w" },
           { name: "jay", r: [610, 559, 728, 625], face: "s" },
           { name: "ady", r: [740, 559, 858, 625], face: "s" },
-          { name: "raiza", r: [866, 559, 984, 625], face: "s" },
+          { name: "jose", r: [866, 559, 984, 625], face: "s" },
           { name: "al", r: [994, 559, 1112, 625], face: "s" },
           { name: "jl", r: [1155, 508, 1283, 574], face: "n" }
         ];
-        /* Names are matched loosely ("Raizza" sits at "Raiza"), and only the two
+        /* Names are matched loosely (one letter off still counts), and only the two
            spare desks on the plan are handed out - the middle of the room stays
            empty, like the real one. Anyone left over is listed but has no desk. */
         const norm = (x) => String(x || "").toLowerCase().replace(/[^a-z]/g, "");

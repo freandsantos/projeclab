@@ -1450,6 +1450,7 @@ html[data-theme="dark"] .ps-open{background:#10151D}
 .ws.sb .sb-row{display:flex;gap:6px;flex-wrap:wrap;align-items:center}\
 .ws.sb .sb-row input{flex:1 1 200px;min-width:0}\
 .ws.sb .sb-row button{padding:4px 9px;font-size:12px}\
+.ws.sb a.sb-stock{font-size:12px;padding:4px 9px;border:1px solid var(--line);background:#20242e;color:var(--txt);border-radius:8px;text-decoration:none;white-space:nowrap}.ws.sb a.sb-stock:hover{border-color:#3a4252}\
 .ws.sb .sb-lim{font-size:11px;color:var(--mut);white-space:nowrap}.ws.sb .sb-lim.over{color:#ffb38a}\
 .ws.sb .sb-clip{display:inline-flex;gap:4px;align-items:center;background:#0b0d11;border:1px solid var(--line);border-radius:99px;padding:2px 4px 2px 10px;font-size:12px;max-width:100%}\
 .ws.sb .sb-clip a{color:#7dfccb;text-decoration:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:300px}\
@@ -1612,7 +1613,7 @@ html[data-theme="dark"] .ps-open{background:#10151D}
       // B-roll
       var q = el('input', { type: 'text', value: b.broll || '', placeholder: 'What to show (search words)' });
       var links = el('span', { class: 'sb-row' });
-      var drawLinks = function () { links.innerHTML = ''; if (!q.value.trim()) return; stockLinks(q.value).forEach(function (s) { links.appendChild(el('button', { text: s.name + ' ↗', title: 'Search free ' + s.name + ' videos for "' + q.value.trim() + '"', onclick: function () { window.open(s.url, '_blank', 'noopener'); } })); }); };
+      var drawLinks = function () { links.innerHTML = ''; if (!q.value.trim()) return; stockLinks(q.value).forEach(function (s) { links.appendChild(el('a', { class: 'sb-stock', href: s.url, target: '_blank', rel: 'noopener', text: s.name + ' ↗', title: 'Search free ' + s.name + ' videos for "' + q.value.trim() + '"' })); }); };
       q.oninput = function () { b.broll = q.value; drawLinks(); save(); };
       drawLinks();
       var clipsBox = el('div', { class: 'sb-row', style: 'margin-top:4px' });

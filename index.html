@@ -1812,6 +1812,38 @@ html[data-theme="dark"] .ps-open{background:#10151D}
   Object.keys(GFX2).forEach(function (k) { GFX[k] = GFX2[k]; });
 
   var GFX_OK = function (fx) { return !!GFX[fx]; };
+  // Live thumbnails: each beat's picture is its graphic drawn with the beat's own text, at the moment everything is on screen.
+  var thumbCache = {}, thumbQ = [], thumbBusy = false, THUMB_BG = 'radial-gradient(ellipse at 40% 35%,#6b7a80,#2d3539 70%,#1a1f22)';
+  function thumbKey(b) { return JSON.stringify([b.fx, b.variant || 0, b.onscreen || '', b.gfx || null, Math.round(((b.end - b.start) || 4) * 10)]); }
+  function applyThumb(node, url) { node.style.backgroundImage = 'url(' + url + '), ' + THUMB_BG; node.classList.add('live'); }
+  function holdTime(b, f) {
+    var T0 = Math.max(3, (b.end - b.start) || 4), last = 0;
+    var arr = f.items || f.photos; if (arr && arr.length) { var ts = itemTimes(arr, T0); last = Math.max.apply(null, ts) + 0.5; if (f.bar) last += 0.6; }
+    if (b.fx === 'ARTICLE_HIGHLIGHT') last = (+f.sweepAt || 1.2) + 1;
+    var t = Math.max(T0 - 0.85, last, 1.7); return { t: t, T: t + 0.9 };
+  }
+  function drawThumb(b, node, key) {
+    var v = b.variant || 0, f = GFX[b.fx].from(b, v), ht = holdTime(b, f);
+    var cv = document.createElement('canvas'); cv.width = 480; cv.height = 270;
+    try { renderAt(cv.getContext('2d'), 0.25, b.fx, v, f, ht.t, ht.T); var url = cv.toDataURL('image/png'); thumbCache[key] = url; if (node.isConnected) applyThumb(node, url); } catch (e) { /* keep the template still */ }
+  }
+  function queueThumb(b, node) {
+    if (!b || !node || !GFX_OK(b.fx)) return;
+    var key = thumbKey(b); node.dataset.tk = key;
+    if (thumbCache[key]) { applyThumb(node, thumbCache[key]); return; }
+    thumbQ.push([b, node, key]);
+    if (thumbBusy) return; thumbBusy = true;
+    ensureFonts().then(function step() {
+      var n = 0;
+      while (thumbQ.length && n < 6) {
+        var j = thumbQ.shift(), bb = j[0], nd = j[1], k = j[2]; n++;
+        if (nd.dataset.tk !== k) continue;
+        var urls = GFX[bb.fx].urls ? GFX[bb.fx].urls(GFX[bb.fx].from(bb, bb.variant || 0)).filter(Boolean) : [];
+        if (urls.length) imgsReady(urls).then(drawThumb.bind(null, bb, nd, k)); else drawThumb(bb, nd, k);
+      }
+      if (thumbQ.length) setTimeout(step, 16); else thumbBusy = false;
+    });
+  }
   function renderAt(c, k, fx, v, f, t, T) {
     c.setTransform(k, 0, 0, k, 0, 0); c.clearRect(0, 0, 1920, 1080);
     GFX[fx].draw(c, f, t, T, v || 0);
@@ -2152,6 +2184,8 @@ html[data-theme="dark"] .ps-open{background:#10151D}
       var row = el('div', { class: 'sb-beat' + (b.done ? ' done' : ''), style: '--fx:' + f.color, id: 'sb-beat-' + b.id });
       var thumb = el('div', { class: 'sb-thumb', style: file && THUMBS[file] ? 'background-image:url(' + THUMBS[file] + ')' : '' }, [file ? null : el('span', { text: b.fx === 'PUNCH_IN' ? 'Punch-in 112%\non the talking head' : '' })]);
       var left = el('div', null, [thumb, el('div', { class: 'sb-file', text: file ? file + '.mp4' : 'No graphic' }), el('div', { class: 'sb-file', text: f.use })]);
+      queueThumb(b, thumb);
+      var thumbTimer = 0, reThumb = function () { clearTimeout(thumbTimer); thumbTimer = setTimeout(function () { queueThumb(b, thumb); }, 350); };
       var doneIn = el('input', { type: 'checkbox' }); doneIn.checked = !!b.done;
       doneIn.onchange = function () { b.done = doneIn.checked; row.classList.toggle('done', b.done); renderStats(); save(); };
       var head = el('div', { class: 'sb-head' }, [
@@ -2172,7 +2206,7 @@ html[data-theme="dark"] .ps-open{background:#10151D}
         var osIn = el('input', { type: 'text', value: b.onscreen || '', placeholder: b.fx === 'SPLIT_SCREEN' || b.fx === 'BROLL_PANEL' ? 'Heading and items, e.g. YOU DON\'T NEED | FOREIGN JOB OFFER · EUROPEAN ANCESTRY' : b.fx === 'QR_CTA' || b.fx === 'YT_CTA' ? 'Card copy is fixed. Add a note if needed.' : b.fx === 'ARTICLE_HIGHLIGHT' ? 'Source page and the passage to highlight' : 'ON-SCREEN TEXT (use | for the line break)' });
         var limLbl = el('span', { class: 'sb-lim' });
         var upd = function () { if (!lim) { limLbl.textContent = ''; return; } var n = osIn.value.replace(/\|/g, ' ').split(/\s+/).filter(Boolean).length; limLbl.textContent = n + '/' + lim + ' words'; limLbl.className = 'sb-lim' + (n > lim ? ' over' : ''); };
-        osIn.oninput = function () { b.onscreen = osIn.value; b.auto = false; upd(); save(); };
+        osIn.oninput = function () { b.onscreen = osIn.value; b.auto = false; if (b.gfx && b.fx !== 'LOWER_THIRD') { if (b.fx === 'CHAPTER_CARD') { var pp = osIn.value.split('|'); b.gfx = Object.assign({}, b.gfx, { title: (pp[0] || '').trim(), sub: (pp[1] || '').trim() }); } } upd(); save(); reThumb(); };
         upd();
         right.appendChild(el('div', { class: 'sb-kv' }, [el('span', { text: 'On screen' }), el('div', { class: 'sb-row' }, [osIn, limLbl])]));
       }
@@ -2207,7 +2241,8 @@ html[data-theme="dark"] .ps-open{background:#10151D}
     function boardCard(b) {
       var f = FXI[b.fx] || FXI.PUNCH_IN, file = f.files[b.variant || 0];
       var card = el('div', { class: 'sb-card' + (b.done ? ' done' : ''), style: '--fx:' + f.color, title: 'Click to edit this beat' });
-      card.appendChild(el('div', { class: 'sb-thumb', style: file && THUMBS[file] ? 'background-image:url(' + THUMBS[file] + ')' : '' }, [file ? null : el('span', { text: b.fx === 'PUNCH_IN' ? 'A-ROLL · punch-in 112%' : '' })]));
+      var cth = el('div', { class: 'sb-thumb', style: file && THUMBS[file] ? 'background-image:url(' + THUMBS[file] + ')' : '' }, [file ? null : el('span', { text: b.fx === 'PUNCH_IN' ? 'A-ROLL · punch-in 112%' : '' })]);
+      card.appendChild(cth); queueThumb(b, cth);
       card.appendChild(el('div', { class: 'sb-ct' }, [el('b', { text: b.id + '. ' + (f.short || f.name), title: f.name }), el('span', { text: (f.labels ? f.labels[b.variant || 0] + ' · ' : '') + tc(b.start) })]));
       card.appendChild(el('p', { class: 'sb-cvo', text: b.text }));
       if (b.onscreen && b.fx !== 'PUNCH_IN') card.appendChild(el('p', { class: 'sb-cos', text: b.onscreen.replace(/\s*\|\s*/g, ' / ') }));

@@ -1147,19 +1147,19 @@ html[data-theme="dark"] .ps-open{background:#10151D}
 
   // ---------- Savvy Nomad template library (Frean's own effect files) ----------
   var FX = [
-    { id: 'CHAPTER_CARD', name: 'Chapter card', color: '#c6b3ff', full: true, files: ['Chapter Card_Main', 'Chapter Card_Main with Country B roll', 'Chapter Card_Secondary'], labels: ['Main', 'Main + country B-roll', 'Secondary (light)'], use: 'First beat of every section. Title like "STEP 1: …" plus a short subtitle.', limit: 6, broll: [1] },
-    { id: 'BROLL_STATEMENT', name: 'B-roll statement', color: '#8fb4ff', full: true, files: ['B roll statement'], use: 'Hooks, stakes, pain points, punchlines. 2–3 short lines over darkened B-roll.', limit: 14, broll: [0] },
-    { id: 'BLUR_STATEMENT', name: 'Dialogue highlight (blur)', color: '#6fe1f0', full: true, files: ['Dialogue Highlight_Green'], use: "The section's thesis or rule of thumb. Max one per section.", limit: 14 },
-    { id: 'AROLL_CAPTION', name: '2-line A-roll statement', color: '#7dfccb', files: ['2 line A roll statement'], use: 'Direct advice spoken to camera. Two balanced lines.', limit: 12 },
-    { id: 'BROLL_LABEL', name: '1-line color pill', color: '#ffe08a', files: ['1 line Color Pill_Green', '1 line Color Pill_White'], labels: ['Green', 'White'], use: 'A place, named thing or one fact you can show. One line over B-roll.', limit: 6, broll: [0, 1] },
-    { id: 'ARTICLE_HIGHLIGHT', name: 'Article segment', color: '#ff9d9d', full: true, files: ['Article Segment'], use: 'A law, agency, date, official number or processing time is named. Needs a page screenshot.', limit: 0 },
-    { id: 'SPLIT_SCREEN', name: 'SP1 · Split screen', color: '#ffa8dc', files: ['Split Screen Visual_SP1', 'Split Screen Visual_SP1 Creator B roll'], labels: ['Cards', 'Photos (creator B-roll)'], use: 'Lists of 3–5 requirements, documents, steps or costs. Talking head on the right.', limit: 0 },
-    { id: 'BROLL_PANEL', name: 'SP2 · B-roll list panel', color: '#a6f5d8', files: ['Split Screen Visual_SP2'], use: 'Lists of 3–6 things you can show (places, lifestyle, climate, perks) over B-roll.', limit: 0, broll: [0] },
-    { id: 'QR_CTA', name: 'QR card', color: '#c8f59a', full: true, files: ['Savvy Nomad QR_CTA_Florida Residence', 'Savvy Nomad QR_CTA_Move Abroad Checklist'], labels: ['Green · Florida residency', 'White · Checklist'], use: 'Green: Florida residency / US home base / Savvy Nomad service. White: the checklist CTA. Used as supplied.', limit: 0 },
-    { id: 'YT_CTA', name: 'Subscribe CTA', color: '#ffc27a', files: ['Savvy Nomad YT_CTA_Expat', 'Savvy Nomad YT_CTA_Nomad'], labels: ['Expat', 'Nomad'], use: 'The VO asks viewers to subscribe for more updates.', limit: 0 },
-    { id: 'LOWER_THIRD', name: 'Lower third (name)', color: '#b9c4ff', files: ['Lower Third Name with SN Logo'], use: "The presenter's first appearance or introduction.", limit: 0 },
-    { id: 'LOGO_OUTRO', name: 'Logo outro', color: '#e6e6e6', full: true, files: ['Savvy Nomad Logo Outro'], use: 'End of the video.', limit: 0 },
-    { id: 'PUNCH_IN', name: 'Punch-in (no graphic)', color: '#d9c7a3', files: [], use: 'Rhythm filler: talking head scaled to 112% on a cut.', limit: 0 }
+    { id: 'CHAPTER_CARD', short: 'Chapter', name: 'Chapter card', color: '#c6b3ff', full: true, files: ['Chapter Card_Main', 'Chapter Card_Main with Country B roll', 'Chapter Card_Secondary'], labels: ['Main', 'Main + country B-roll', 'Secondary (light)'], use: 'First beat of every section. Title like "STEP 1: …" plus a short subtitle.', limit: 6, broll: [1] },
+    { id: 'BROLL_STATEMENT', short: 'B-roll text', name: 'B-roll statement', color: '#8fb4ff', full: true, files: ['B roll statement'], use: 'Hooks, stakes, pain points, punchlines. 2–3 short lines over darkened B-roll.', limit: 14, broll: [0] },
+    { id: 'BLUR_STATEMENT', short: 'Blur text', name: 'Dialogue highlight (blur)', color: '#6fe1f0', full: true, files: ['Dialogue Highlight_Green'], use: "The section's thesis or rule of thumb. Max one per section.", limit: 14 },
+    { id: 'AROLL_CAPTION', short: 'A-roll text', name: '2-line A-roll statement', color: '#7dfccb', files: ['2 line A roll statement'], use: 'Direct advice spoken to camera. Two balanced lines.', limit: 12 },
+    { id: 'BROLL_LABEL', short: 'Pill', name: '1-line color pill', color: '#ffe08a', files: ['1 line Color Pill_Green', '1 line Color Pill_White'], labels: ['Green', 'White'], use: 'A place, named thing or one fact you can show. One line over B-roll.', limit: 6, broll: [0, 1] },
+    { id: 'ARTICLE_HIGHLIGHT', short: 'Article', name: 'Article segment', color: '#ff9d9d', full: true, files: ['Article Segment'], use: 'A law, agency, date, official number or processing time is named. Needs a page screenshot.', limit: 0 },
+    { id: 'SPLIT_SCREEN', short: 'SP1 split', name: 'SP1 · Split screen', color: '#ffa8dc', files: ['Split Screen Visual_SP1', 'Split Screen Visual_SP1 Creator B roll'], labels: ['Cards', 'Photos (creator B-roll)'], use: 'Lists of 3–5 requirements, documents, steps or costs. Talking head on the right.', limit: 0 },
+    { id: 'BROLL_PANEL', short: 'SP2 panel', name: 'SP2 · B-roll list panel', color: '#a6f5d8', files: ['Split Screen Visual_SP2'], use: 'Lists of 3–6 things you can show (places, lifestyle, climate, perks) over B-roll.', limit: 0, broll: [0] },
+    { id: 'QR_CTA', short: 'QR card', name: 'QR card', color: '#c8f59a', full: true, files: ['Savvy Nomad QR_CTA_Florida Residence', 'Savvy Nomad QR_CTA_Move Abroad Checklist'], labels: ['Green · Florida residency', 'White · Checklist'], use: 'Green: Florida residency / US home base / Savvy Nomad service. White: the checklist CTA. Used as supplied.', limit: 0 },
+    { id: 'YT_CTA', short: 'Subscribe', name: 'Subscribe CTA', color: '#ffc27a', files: ['Savvy Nomad YT_CTA_Expat', 'Savvy Nomad YT_CTA_Nomad'], labels: ['Expat', 'Nomad'], use: 'The VO asks viewers to subscribe for more updates.', limit: 0 },
+    { id: 'LOWER_THIRD', short: 'Lower third', name: 'Lower third (name)', color: '#b9c4ff', files: ['Lower Third Name with SN Logo'], use: "The presenter's first appearance or introduction.", limit: 0 },
+    { id: 'LOGO_OUTRO', short: 'Outro', name: 'Logo outro', color: '#e6e6e6', full: true, files: ['Savvy Nomad Logo Outro'], use: 'End of the video.', limit: 0 },
+    { id: 'PUNCH_IN', short: 'A-roll', name: 'Punch-in (no graphic)', color: '#d9c7a3', files: [], use: 'Rhythm filler: talking head scaled to 112% on a cut.', limit: 0 }
   ];
   var FXI = {}; FX.forEach(function (f) { FXI[f.id] = f; });
   var FULL = { CHAPTER_CARD: 1, BROLL_STATEMENT: 1, BLUR_STATEMENT: 1, ARTICLE_HIGHLIGHT: 1, QR_CTA: 1, LOGO_OUTRO: 1 };
@@ -1450,6 +1450,19 @@ html[data-theme="dark"] .ps-open{background:#10151D}
 .ws.sb .sb-row{display:flex;gap:6px;flex-wrap:wrap;align-items:center}\
 .ws.sb .sb-row input{flex:1 1 200px;min-width:0}\
 .ws.sb .sb-row button{padding:4px 9px;font-size:12px}\
+.ws.sb .sb-seg{display:inline-flex;border:1px solid var(--line);border-radius:9px;overflow:hidden;margin-right:6px}.ws.sb .sb-seg button{border:0;border-radius:0;padding:6px 14px}.ws.sb .sb-seg button.on{background:var(--acc);color:#1b1406;font-weight:600}\
+.ws.sb .sb-board{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:26px 22px;margin-top:6px}\
+.ws.sb .sb-card{cursor:pointer;border-radius:12px;padding:6px;margin:-6px;border:1px solid transparent;min-width:0}\
+.ws.sb .sb-card:hover{border-color:var(--line);background:var(--panel)}\
+.ws.sb .sb-card.done{opacity:.5}\
+.ws.sb .sb-card .sb-thumb{width:100%;border-top:3px solid var(--fx,#888)}\
+.ws.sb .sb-ct{display:flex;justify-content:space-between;gap:8px;margin:9px 0 5px;font-size:12px;font-weight:800;letter-spacing:.1em;text-transform:uppercase;color:var(--mut)}\
+.ws.sb .sb-ct b{color:var(--fx,#ccc);font-weight:800;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.ws.sb .sb-ct span{font-weight:600;letter-spacing:0;text-transform:none;white-space:nowrap}\
+.ws.sb .sb-cvo{font-size:14px;line-height:1.45;margin:0}\
+.ws.sb .sb-cos{font-size:12.5px;font-weight:700;letter-spacing:.02em;color:#7dfccb;margin:6px 0 0}\
+.ws.sb .sb-cbr{font-size:13px;font-style:italic;color:var(--mut);margin:5px 0 0;line-height:1.4}\
+.ws.sb .sb-bsec{grid-column:1/-1;font-size:11px;font-weight:800;letter-spacing:.16em;text-transform:uppercase;color:#7dfccb;margin:6px 0 -14px;border-top:1px solid var(--line);padding-top:12px}\
+.ws.sb .sb-beat.flash{box-shadow:0 0 0 2px var(--acc)}\
 .ws.sb a.sb-stock{font-size:12px;padding:4px 9px;border:1px solid var(--line);background:#20242e;color:var(--txt);border-radius:8px;text-decoration:none;white-space:nowrap}.ws.sb a.sb-stock:hover{border-color:#3a4252}\
 .ws.sb .sb-lim{font-size:11px;color:var(--mut);white-space:nowrap}.ws.sb .sb-lim.over{color:#ffb38a}\
 .ws.sb .sb-clip{display:inline-flex;gap:4px;align-items:center;background:#0b0d11;border:1px solid var(--line);border-radius:99px;padding:2px 4px 2px 10px;font-size:12px;max-width:100%}\
@@ -1480,7 +1493,8 @@ html[data-theme="dark"] .ps-open{background:#10151D}
     if (!init && !cfg.shared) { try { init = JSON.parse(localStorage.getItem(STORE) || 'null'); } catch (e) { } }
     var data = { script: '', wpm: 160, timing: '', duration: 0, srt: '', beats: [] };
     if (init) Object.keys(data).forEach(function (k) { if (init[k] != null) data[k] = init[k]; });
-    var envObj = null, filter = null, saveTimer = null;
+    var envObj = null, filter = null, saveTimer = null, view = 'list';
+    try { view = localStorage.getItem('ps-sb-view') === 'board' ? 'board' : 'list'; } catch (e) { }
     function snapshot() { return JSON.parse(JSON.stringify(data)); }
     function save() {
       if (cfg.shared) { clearTimeout(saveTimer); saveTimer = setTimeout(function () { saveTimer = null; cfg.shared(snapshot()); }, 700); return; }
@@ -1561,6 +1575,10 @@ html[data-theme="dark"] .ps-open{background:#10151D}
     var statsBox = el('div', { class: 'sb-stats' }), chips = el('div', { class: 'sb-chips' }), warns = el('div'), list = el('div', { class: 'sb-beats' });
     var tools = el('div', { class: 'row2', style: 'margin:6px 0 4px' });
     wrap.appendChild(statsBox); wrap.appendChild(tools); wrap.appendChild(chips); wrap.appendChild(warns); wrap.appendChild(list);
+    var segList = el('button', { text: 'List', title: 'One row per beat, with everything to edit' }), segBoard = el('button', { text: 'Board', title: 'All beats as cards on one page' });
+    var setView = function (v) { view = v; try { localStorage.setItem('ps-sb-view', v); } catch (e) { } render(); };
+    segList.onclick = function () { setView('list'); }; segBoard.onclick = function () { setView('board'); };
+    tools.appendChild(el('span', { class: 'sb-seg' }, [segList, segBoard]));
     tools.appendChild(el('button', { text: 'Download CSV', onclick: function () { downloadCsv(); } }));
     tools.appendChild(el('button', { text: 'Copy shot list', onclick: function () { copyList(); } }));
     var copyMsg = el('span', { class: 'sub' }); tools.appendChild(copyMsg);
@@ -1638,6 +1656,22 @@ html[data-theme="dark"] .ps-open{background:#10151D}
       row.appendChild(left); row.appendChild(right);
       return row;
     }
+    function boardCard(b) {
+      var f = FXI[b.fx] || FXI.PUNCH_IN, file = f.files[b.variant || 0];
+      var card = el('div', { class: 'sb-card' + (b.done ? ' done' : ''), style: '--fx:' + f.color, title: 'Click to edit this beat' });
+      card.appendChild(el('div', { class: 'sb-thumb', style: file && THUMBS[file] ? 'background-image:url(' + THUMBS[file] + ')' : '' }, [file ? null : el('span', { text: b.fx === 'PUNCH_IN' ? 'A-ROLL · punch-in 112%' : '' })]));
+      card.appendChild(el('div', { class: 'sb-ct' }, [el('b', { text: b.id + '. ' + (f.short || f.name), title: f.name }), el('span', { text: (f.labels ? f.labels[b.variant || 0] + ' · ' : '') + tc(b.start) })]));
+      card.appendChild(el('p', { class: 'sb-cvo', text: b.text }));
+      if (b.onscreen && b.fx !== 'PUNCH_IN') card.appendChild(el('p', { class: 'sb-cos', text: b.onscreen.replace(/\s*\|\s*/g, ' / ') }));
+      var br = [b.broll, (b.clips || []).length ? (b.clips.length + ' clip' + (b.clips.length > 1 ? 's' : '') + ' picked') : '', b.notes].filter(Boolean).join(' · ');
+      if (br) card.appendChild(el('p', { class: 'sb-cbr', text: br }));
+      card.onclick = function () {
+        setView('list');
+        var r = document.getElementById('sb-beat-' + b.id);
+        if (r) { r.scrollIntoView({ block: 'center' }); r.classList.add('flash'); setTimeout(function () { r.classList.remove('flash'); }, 1600); }
+      };
+      return card;
+    }
     function checkRhythm() {
       var w = [], B = data.beats, nogfx = 0;
       for (var i = 0; i < B.length; i++) {
@@ -1678,12 +1712,14 @@ html[data-theme="dark"] .ps-open{background:#10151D}
       FX.forEach(function (f) { if (counts[f.id]) chips.appendChild(mk(f.id, f.name, counts[f.id], f.color)); });
       var w = checkRhythm();
       warns.appendChild(w.length ? el('div', { class: 'sb-warn', text: 'Check: ' + w.slice(0, 8).join(' · ') + (w.length > 8 ? ' · +' + (w.length - 8) + ' more' : '') }) : el('div', { class: 'hint', style: 'color:#7dfccb', text: 'Rhythm OK: no repeats, no back-to-back full-frame graphics. ' + timingNote() }));
-      var lastSec = null;
+      segList.className = view === 'list' ? 'on' : ''; segBoard.className = view === 'board' ? 'on' : '';
+      var lastSec = null, board = view === 'board' ? el('div', { class: 'sb-board' }) : null;
+      if (board) list.appendChild(board);
       B.forEach(function (b) {
         if (filter === '__todo' ? b.done : filter && b.fx !== filter) return;
-        if (!filter && b.section !== lastSec && b.section) list.appendChild(el('div', { class: 'sb-sec', text: b.section }));
+        if (!filter && b.section !== lastSec && b.section) (board || list).appendChild(el('div', { class: board ? 'sb-bsec' : 'sb-sec', text: b.section }));
         lastSec = b.section;
-        list.appendChild(beatRow(b));
+        (board || list).appendChild(board ? boardCard(b) : beatRow(b));
       });
     }
     function rows() {

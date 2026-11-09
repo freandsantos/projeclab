@@ -5861,12 +5861,12 @@ html[data-theme="dark"] .ps-open{background:#10151D}
         h("button", { className: "ps-btn small", onClick: () => { put(`profile:${p.id}`, "profile", { ...f, personId: p.id, monthly: intern ? 0 : num(f.monthly), allowanceMonthly: num(f.allowanceMonthly) }); setEditing(null); } }, "Save pay profile")));
   }
 
-  function PayrollPage({ db, me, setToast, confirm }) {
+  function PayrollPage({ db, me, setToast, confirm, bare, only }) {
     const h = React.createElement;
     const api = payApi();
     const [state, setState] = useState({ loading: true, ok: false, setup: "" });
     const [rows, setRows] = useState([]);
-    const [tab, setTab] = useState("runs");
+    const [tab, setTab] = useState(only || "runs");
     const [openRun, setOpenRun] = useState(null);
     const [editing, setEditing] = useState(null);
     const [refs, setRefs] = useState({});
@@ -6244,12 +6244,664 @@ html[data-theme="dark"] .ps-open{background:#10151D}
       h("p", { className: "ps-muted ps-pay-hint" }, "Hourly rate = (monthly basic", settings.allowanceInRate === false ? "" : " + monthly allowance", ") ÷ working days ÷ hours", num(settings.otMultiplier) !== 1 ? ` × ${num(settings.otMultiplier)}` : "", ". One unpaid day = the same monthly amount ÷ working days. Changing these updates draft runs straight away; approved and paid runs keep the rates they were approved with."));
 
     return h(React.Fragment, null,
-      h("div", { className: "ps-ovhead" }, h("span", { className: "ps-ovicon", "aria-hidden": "true" }, "\u{1F4B8}"), h("h1", { className: "ps-h1" }, "Payroll")),
-      !api.live && h("p", { className: "ps-pay-demo" }, "Demo mode — this preview isn't connected to Supabase, so anything here stays in this browser only. On your site it saves to the locked payroll table."),
-      h("p", { className: "ps-lede" }, "Only you and HR can open this page. Pay data is kept apart from the rest of the app."),
-      h("div", { className: "ps-tabs" }, [["runs", "Payroll runs"], ["profiles", "Pay profiles"], ["13th", "13th month"], ["settings", "Settings"]].map(([k, l]) =>
+      !bare && h("div", { className: "ps-ovhead" }, h("span", { className: "ps-ovicon", "aria-hidden": "true" }, "\u{1F4B8}"), h("h1", { className: "ps-h1" }, "Payroll")),
+      !bare && !api.live && h("p", { className: "ps-pay-demo" }, "Demo mode — this preview isn't connected to Supabase, so anything here stays in this browser only. On your site it saves to the locked payroll table."),
+      !bare && h("p", { className: "ps-lede" }, "Only you and HR can open this page. Pay data is kept apart from the rest of the app."),
+      only ? h("h3", { className: "ps-h3" }, "13th month pay") : h("div", { className: bare ? "ps-tabs ps-subtabs" : "ps-tabs" }, [["runs", "Payroll runs"], ["profiles", "Pay profiles"], ...bare ? [] : [["13th", "13th month"]], ["settings", "Settings"]].map(([k, l]) =>
         h("button", { key: k, className: `ps-tab ${tab === k ? "on" : ""}`, onClick: () => { setTab(k); setOpenRun(null); } }, l))),
       h("div", { className: "ps-pay-body" }, tab === "runs" ? runsTab : tab === "profiles" ? profilesTab : tab === "13th" ? thirteenthTab : settingsTab));
+  }
+  /* ---- HRIS (Lead + HR only) -------------------------------------------------
+     One home for the people side: Payroll, Employee records, Time off & leave,
+     HR documents, and 13th month & reports. Employee records and document
+     details go into the same locked payroll table as pay (kinds "employee" and
+     "hrdoc"), so the database itself only hands them to payroll_admins.
+     Document files go into the PRIVATE 'hr-docs' storage bucket and are opened
+     with short-lived signed links - never public addresses. */
+  var EMP_TYPES = [["regular", "Regular"], ["probationary", "Probationary"], ["contractor", "Contractor"], ["intern", "Intern"], ["project", "Project-based"], ["parttime", "Part-time"]];
+  var EMP_STATUS = [["active", "Active"], ["leave", "On leave"], ["resigned", "Resigned"], ["ended", "Contract ended"], ["terminated", "Terminated"]];
+  var DOC_TYPES = ["Signed contract", "Valid ID", "NBI clearance", "Resume / CV", "Medical certificate", "BIR 2316", "SSS / PhilHealth / Pag-IBIG form", "NDA", "Certificate / training", "Clearance (exit)", "Other"];
+  var DOC_REQUIRED = ["Signed contract", "Valid ID", "NBI clearance", "Resume / CV"];
+  var GOV_FIELDS = [["tin", "TIN"], ["sssNo", "SSS no."], ["philhealthNo", "PhilHealth no."], ["pagibigNo", "Pag-IBIG no."]];
+  var empTypeLabel = (v) => (EMP_TYPES.find((x) => x[0] === v) || ["", "—"])[1];
+  var empStatusLabel = (v) => (EMP_STATUS.find((x) => x[0] === (v || "active")) || ["", "Active"])[1];
+  var empActive = (e) => !e || !e.status || e.status === "active" || e.status === "leave";
+  /* Whole days from Manila today to an ISO day (negative = in the past). */
+  var daysUntil = (iso) => Math.round((fromIso(String(iso).slice(0, 10)) - fromIso(manilaDay())) / DAY);
+  var addMonthsIso = (iso, m) => { const d = fromIso(String(iso).slice(0, 10)); d.setMonth(d.getMonth() + m); return isoDay(d); };
+  var tenureLabel = (iso) => {
+    if (!iso) return "";
+    const a = fromIso(String(iso).slice(0, 10)), b = fromIso(manilaDay());
+    let m = (b.getFullYear() - a.getFullYear()) * 12 + (b.getMonth() - a.getMonth()) - (b.getDate() < a.getDate() ? 1 : 0);
+    if (m < 0) return "starts " + shortDate(a);
+    if (m < 1) return "under a month";
+    const y = Math.floor(m / 12); m %= 12;
+    return [y ? `${y} yr${y > 1 ? "s" : ""}` : "", m ? `${m} mo` : ""].filter(Boolean).join(" ");
+  };
+  /* Next yearly date (birthday / work anniversary) from an ISO day, as days away. */
+  var nextYearly = (iso) => {
+    if (!iso) return null;
+    const t = manilaDay(), y = +t.slice(0, 4), md = String(iso).slice(5, 10);
+    let d = `${y}-${md}`;
+    if (d < t) d = `${y + 1}-${md}`;
+    return { day: d, inDays: daysUntil(d) };
+  };
+  var HRDOC_DEMO = "ps-hrdocs-demo";
+  var hrDocsDemo = {
+    live: false,
+    upload: async (path, file) => {
+      if (file.size > 1.5 * 1024 * 1024) throw new Error("In demo mode files must be under 1.5 MB.");
+      const url = await new Promise((ok, no) => { const r = new FileReader(); r.onload = () => ok(r.result); r.onerror = no; r.readAsDataURL(file); });
+      let all = {}; try { all = JSON.parse(localStorage.getItem(HRDOC_DEMO) || "{}"); } catch (e) {}
+      all[path] = url;
+      try { localStorage.setItem(HRDOC_DEMO, JSON.stringify(all)); } catch (e) { throw new Error("The browser is out of demo storage."); }
+      return { path };
+    },
+    url: async (path) => { try { return JSON.parse(localStorage.getItem(HRDOC_DEMO) || "{}")[path] || ""; } catch (e) { return ""; } },
+    remove: async (path) => { let all = {}; try { all = JSON.parse(localStorage.getItem(HRDOC_DEMO) || "{}"); } catch (e) {} delete all[path]; try { localStorage.setItem(HRDOC_DEMO, JSON.stringify(all)); } catch (e) {} }
+  };
+  var hrDocsApi = () => (typeof window !== "undefined" && window.psHrDocs) || hrDocsDemo;
+
+  /* ---- Time in / out (HRIS) --------------------------------------------------
+     Reads the biometric machine's Standard Report (.xls). Rule from Frean:
+     Sheet "Exception Stat." rows ("First time zone") give On-duty = time in and
+     Off-duty = time out; a blank one is filled from the raw punches on sheet
+     "Att.log report". Flexible hours: in by 12:00 PM, 9 hours including a
+     1-hour break. Late 12:01-12:15 = P1 a minute; from 12:16 = whole hours of
+     pay (12:16-1:00 = 1 hour, 1:01-2:00 = 2 hours ...). A scheduled day with
+     no punches and no approved time off = absent (unpaid day).
+     Imports are saved in the locked payroll table (kind "att"); the matching
+     payroll run gets unpaid days + a "Late" deduction when HR clicks Apply. */
+  var ATT_DEFAULTS = { latestIn: "12:00", perMin: 1, perMinUpTo: 15, requiredHours: 9 };
+  var hm = (t) => { const m = /^(\d{1,2}):(\d{2})/.exec(String(t || "")); return m ? +m[1] * 60 + +m[2] : null; };
+  var fmtHm = (mins) => mins == null ? "" : `${Math.floor(mins / 60)}h ${String(mins % 60).padStart(2, "0")}m`;
+  var loadXlsx = () => window.XLSX ? Promise.resolve(window.XLSX) : new Promise((ok, no) => {
+    const s = document.createElement("script");
+    s.src = "https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js";
+    s.onload = () => window.XLSX ? ok(window.XLSX) : no(new Error("The Excel reader didn't load."));
+    s.onerror = () => no(new Error("Couldn't load the Excel reader. Check your connection."));
+    document.head.appendChild(s);
+  });
+  /* Biometric Standard Report -> { from, to, people: [{ bioId, name, days: [{ date, tin, tout, src, sched }] }] } */
+  var parseBiometric = (XLSX, buf) => {
+    const wb = XLSX.read(buf, { type: "array" });
+    const find = (re) => wb.SheetNames.find((n) => re.test(n));
+    const n4 = find(/exception/i), n3 = find(/att\.?\s*log/i);
+    if (!n4) throw new Error("This file has no “Exception Stat.” sheet. Upload the Standard Report from the biometric machine.");
+    const grid = (n) => XLSX.utils.sheet_to_json(wb.Sheets[n], { header: 1, raw: false, defval: "" }).map((r) => r.map((c) => String(c).trim()));
+    const s4 = grid(n4), s3 = n3 ? grid(n3) : [];
+    const per = (s4[1] || []).join(" ").match(/(\d{4}-\d{2}-\d{2})\s*~\s*(\d{4}-\d{2}-\d{2})/);
+    if (!per) throw new Error("Couldn't find the date range (Stat.Date) in the file.");
+    const [, from, to] = per;
+    /* Sheet 3: a row of day numbers, then for each person an "ID:" row followed by their punches (HH:MM run together). */
+    const logs = {}, names = {};
+    const dayRow = s3.findIndex((r) => r.filter((c) => /^\d{1,2}(\.0)?$/.test(c)).length >= 5);
+    if (dayRow >= 0) {
+      let cur = fromIso(from), prev = 0;
+      const dates = s3[dayRow].map((c) => {
+        if (!/^\d{1,2}(\.0)?$/.test(c)) return null;
+        const d = parseInt(c, 10);
+        if (prev && d < prev) cur = new Date(cur.getFullYear(), cur.getMonth() + 1, 1);
+        prev = d;
+        return isoDay(new Date(cur.getFullYear(), cur.getMonth(), d));
+      });
+      for (let r = dayRow + 1; r < s3.length; r++) {
+        if (!/^ID/i.test(s3[r][0] || "")) continue;
+        const id = (s3[r].slice(1).find((c) => c) || "").replace(/\.0$/, "");
+        const ni = s3[r].findIndex((c) => /^name/i.test(c));
+        names[id] = ni >= 0 ? (s3[r].slice(ni + 1).find((c) => c) || "") : "";
+        (s3[r + 1] || []).forEach((c, i) => { if (dates[i] && c) logs[id + "|" + dates[i]] = c.match(/\d{1,2}:\d{2}/g) || []; });
+      }
+    }
+    /* Sheet 1 (Schedule Infor.): which days each ID was scheduled to work.
+       Sheet 4 only lists days with something unusual, so it can't be the schedule. */
+    const n1 = find(/schedul/i);
+    const sched = {};
+    if (n1) {
+      const s1 = grid(n1);
+      const hr = s1.findIndex((r) => r.slice(3).filter((c) => /^\d{1,2}(\.0)?$/.test(c)).length >= 5);
+      if (hr >= 0) {
+        let cur = fromIso(from), prev = 0;
+        const dates = s1[hr].map((c, i) => {
+          if (i < 3 || !/^\d{1,2}(\.0)?$/.test(c)) return null;
+          const d = parseInt(c, 10);
+          if (prev && d < prev) cur = new Date(cur.getFullYear(), cur.getMonth() + 1, 1);
+          prev = d;
+          return isoDay(new Date(cur.getFullYear(), cur.getMonth(), d));
+        });
+        for (let r = hr + 1; r < s1.length; r++) {
+          if (!/^\d+(\.0)?$/.test(s1[r][0] || "")) continue;
+          const id = s1[r][0].replace(/\.0$/, "");
+          names[id] = names[id] || s1[r][1];
+          s1[r].forEach((c, i) => { if (dates[i] && c) sched[id + "|" + dates[i]] = 1; });
+        }
+      }
+    }
+    const hasSched = Object.keys(sched).length > 0;
+    const s4rows = {};
+    s4.forEach((r) => {
+      if (!/^\d+(\.0)?$/.test(r[0] || "") || !/^\d{4}-\d{2}-\d{2}$/.test(r[3] || "")) return;
+      const id = r[0].replace(/\.0$/, "");
+      names[id] = names[id] || r[1];
+      s4rows[id + "|" + r[3]] = r;
+      if (!hasSched) sched[id + "|" + r[3]] = 1;
+    });
+    const people = {};
+    const get = (id) => (people[id] = people[id] || { bioId: id, name: names[id] || `ID ${id}`, days: [] });
+    new Set([...Object.keys(sched), ...Object.keys(s4rows), ...Object.keys(logs)]).forEach((k) => {
+      const [id, date] = k.split("|");
+      if (date < from || date > to) return;
+      const r = s4rows[k] || [];
+      let tin = r[4] || "", tout = r[5] || "";
+      const p = logs[k] || [], src = [];
+      if (!tin && p.length) { tin = p[0]; src.push("in"); }
+      if (!tout && p.length > 1 && p[p.length - 1] !== tin) { tout = p[p.length - 1]; src.push("out"); }
+      get(id).days.push({ date, tin, tout, src: s4rows[k] ? src.join("+") : (p.length ? "in+out" : ""), sched: !!sched[k] });
+    });
+    Object.values(people).forEach((x) => x.days.sort((a, b) => a.date.localeCompare(b.date)));
+    return { from, to, people: Object.values(people).sort((a, b) => +a.bioId - +b.bioId) };
+  };
+  /* One day's verdict. hourRate = that person's hourly pay (no OT multiplier). */
+  var attDay = (d, rule, hourRate, onLeave) => {
+    const latest = hm(rule.latestIn) || 720;
+    let tin = d.tin, tout = d.tout;
+    /* One punch only: in the late afternoon it's a time out, otherwise a time in. */
+    if (tin && tout && tin === tout) tout = "";
+    if (tin && !tout && hm(tin) >= 15 * 60) { tout = tin; tin = ""; }
+    const worked = tin && tout ? hm(tout) - hm(tin) : null;
+    const out = { ...d, tin, tout, worked, lateMin: 0, lateAmt: 0, status: "ok" };
+    if (d.excused) return { ...out, status: "excused" };
+    if (!d.sched) return { ...out, status: tin || tout ? "restday" : "off" };
+    if (!tin && !tout) return { ...out, status: onLeave ? "leave" : "absent" };
+    if (tin) {
+      const late = Math.max(0, hm(tin) - latest);
+      out.lateMin = late;
+      out.lateAmt = !late ? 0 : late <= num(rule.perMinUpTo) ? r2(late * num(rule.perMin)) : r2(Math.ceil(late / 60) * hourRate);
+      out.lateHours = late > num(rule.perMinUpTo) ? Math.ceil(late / 60) : 0;
+    }
+    if (!tin) out.status = "noin";
+    else if (!tout) out.status = "noout";
+    else if (worked < num(rule.requiredHours) * 60) out.status = "short";
+    if (out.lateMin && out.status === "ok") out.status = "late";
+    return out;
+  };
+  var ATT_LABEL = { ok: ["On time", "ok"], late: ["Late", "warn"], short: ["Short hours", "warn"], noout: ["No time out", "warn"], noin: ["No time in", "warn"], absent: ["Absent", "warn"], leave: ["Approved leave", "ok"], excused: ["Excused", ""], restday: ["Rest day", ""], off: ["", ""] };
+
+  function AttendanceTab({ db, me, rows, put, setToast, confirm, crew, emps, profiles }) {
+    const h = React.createElement;
+    const [busy, setBusy] = useState(false);
+    const [openImp, setOpenImp] = useState(null);
+    const [openPerson, setOpenPerson] = useState(null);
+    const [showRules, setShowRules] = useState(false);
+    const fileRef = useRef(null);
+    const paySettings = { workdays: 22, hours: 8, allowanceInRate: true, ...((rows.find((r) => r.id === "settings") || {}).data || {}) };
+    const rule = { ...ATT_DEFAULTS, ...((rows.find((r) => r.id === "att-settings") || {}).data || {}) };
+    const imports = rows.filter((r) => r.kind === "att").map((r) => r.data).sort((a, b) => b.from.localeCompare(a.from));
+    const runs = rows.filter((r) => r.kind === "run").map((r) => r.data).filter((r) => !r.archived);
+    const imp = imports.find((x) => x.id === openImp) || imports[0] || null;
+    const nameOf = (id) => (db.people.find((p) => p.id === id) || {}).name || "";
+    /* Which app person a biometric ID belongs to: saved on the employee record (bioId). */
+    const byBio = {};
+    Object.values(emps).forEach((e) => { if (e.bioId) byBio[String(e.bioId)] = e.personId; });
+    const guess = (bp) => {
+      const first = String(bp.name).toLowerCase().split(/\s+/)[0];
+      const hits = crew.filter((p) => String(p.name).toLowerCase().split(/\s+/)[0] === first);
+      return hits.length === 1 && !Object.values(byBio).includes(hits[0].id) ? hits[0].id : "";
+    };
+    const hourOf = (pid) => {
+      const pr = profiles[pid];
+      if (!pr) return 0;
+      const base = (pr.type === "intern" ? 0 : num(pr.monthly)) + (paySettings.allowanceInRate === false && pr.type !== "intern" ? 0 : num(pr.allowanceMonthly));
+      return base / Math.max(1, num(paySettings.workdays) || 22) / Math.max(1, num(paySettings.hours) || 8);
+    };
+    const leaveOn = (pid, date) => (db.timeoff || []).some((r) => r.personId === pid && r.status === "approved" && r.from <= date && date <= r.to);
+
+    const upload = async (file) => {
+      if (!file) return;
+      setBusy(true);
+      try {
+        const XLSX = await loadXlsx();
+        const parsed = parseBiometric(XLSX, new Uint8Array(await file.arrayBuffer()));
+        const active = parsed.people.filter((p) => p.days.some((d) => d.tin || d.tout));
+        if (!active.length) throw new Error("No time ins or outs found in this file.");
+        const id = `att:${parsed.from}_${parsed.to}`;
+        const old = imports.find((x) => x.id === id);
+        const keepEx = {};
+        if (old) old.people.forEach((p) => p.days.forEach((d) => { if (d.excused) keepEx[p.bioId + "|" + d.date] = d.excused; }));
+        const people = active.map((p) => ({ ...p, days: p.days.map((d) => keepEx[p.bioId + "|" + d.date] ? { ...d, excused: keepEx[p.bioId + "|" + d.date] } : d) }));
+        const skipped = parsed.people.length - active.length;
+        await put(id, "att", { id, from: parsed.from, to: parsed.to, file: file.name, people, skipped, by: me.name, at: new Date().toISOString(), appliedAt: old ? old.appliedAt : null }, `Read ${active.length} people for ${shortDate(fromIso(parsed.from))} – ${shortDate(fromIso(parsed.to))}${skipped ? ` (${skipped} with no punches left out)` : ""}.`);
+        setOpenImp(id);
+        /* Fill in guessed matches so most people link up on their own. */
+        people.forEach((bp) => { if (!byBio[bp.bioId]) { const g = guess(bp); if (g) link(bp.bioId, g, true); } });
+      } catch (e) { setToast(e && e.message ? e.message : "That file couldn't be read."); }
+      setBusy(false);
+      if (fileRef.current) fileRef.current.value = "";
+    };
+    const link = (bioId, pid, quiet) => {
+      Object.values(emps).forEach((e) => { if (String(e.bioId) === String(bioId) && e.personId !== pid) put(`employee:${e.personId}`, "employee", { ...e, bioId: "" }); });
+      if (pid) put(`employee:${pid}`, "employee", { ...(emps[pid] || { personId: pid, status: "active" }), personId: pid, bioId: String(bioId) }, quiet ? null : `Linked to ${nameOf(pid)}.`);
+    };
+    const setExcuse = (bioId, date, val) => {
+      const next = { ...imp, people: imp.people.map((p) => p.bioId !== bioId ? p : { ...p, days: p.days.map((d) => d.date !== date ? d : { ...d, excused: val ? (val === true ? "Excused" : val) : undefined }) }) };
+      put(imp.id, "att", next);
+    };
+    const summary = (bp) => {
+      const pid = byBio[bp.bioId] || "";
+      const rate = pid ? hourOf(pid) : 0;
+      const days = bp.days.map((d) => attDay(d, rule, rate, pid && leaveOn(pid, d.date)));
+      const sch = days.filter((d) => d.sched);
+      const s = {
+        pid, days, rate,
+        present: sch.filter((d) => d.tin || d.tout).length, sched: sch.length,
+        absent: days.filter((d) => d.status === "absent").length,
+        leave: days.filter((d) => d.status === "leave").length,
+        lates: days.filter((d) => d.lateMin && d.status !== "excused"),
+        noout: days.filter((d) => d.status === "noout" || d.status === "noin").length,
+        short: days.filter((d) => d.status === "short").length,
+        rest: days.filter((d) => d.status === "restday").length
+      };
+      s.lateMin = s.lates.reduce((t, d) => t + d.lateMin, 0);
+      s.lateAmt = r2(s.lates.reduce((t, d) => t + d.lateAmt, 0));
+      s.worked = days.filter((d) => d.worked != null).reduce((t, d) => t + d.worked, 0);
+      return s;
+    };
+    const run = imp ? runs.find((r) => r.from === imp.from && r.to === imp.to) : null;
+    const apply = () => {
+      if (!run) return setToast(`Make the payroll run for ${shortDate(fromIso(imp.from))} – ${shortDate(fromIso(imp.to))} first (HRIS → Payroll → New payroll run).`);
+      if (run.status !== "draft") return setToast("That payroll run is already approved. Only draft runs can change.");
+      let n = 0;
+      const lines = run.lines.map((l) => {
+        const bp = imp.people.find((p) => byBio[p.bioId] === l.personId);
+        if (!bp) return l;
+        const s = summary(bp);
+        n++;
+        const adj = (l.adjustments || []).filter((a) => a.id !== "att-late");
+        if (s.lateAmt > 0) adj.push({ id: "att-late", label: `Late — ${s.lates.length} time${s.lates.length === 1 ? "" : "s"}, ${s.lateMin} min`, amount: String(-s.lateAmt) });
+        return { ...l, unpaidDays: l.type === "intern" ? l.unpaidDays : s.absent, adjustments: adj };
+      });
+      const at = new Date().toISOString();
+      put(run.id, "run", { ...run, lines, history: [...run.history || [], { at, by: me.name, text: `Time in / out applied (${n} people)` }] }, `Applied to the ${shortDate(fromIso(run.from))} – ${shortDate(fromIso(run.to))} payroll run for ${n} people.`);
+      put(imp.id, "att", { ...imp, appliedAt: at, appliedBy: me.name });
+    };
+    const exportCsv = () => downloadCsv(`time-in-out-${imp.from}-to-${imp.to}.csv`, [
+      ["Name", "Biometric name", "Date", "Time in", "Time out", "Hours (out − in)", "Status", "Late (min)", "Late deduction", "Filled from Sheet 3", "Note"],
+      ...imp.people.flatMap((bp) => { const s = summary(bp); return s.days.filter((d) => d.status !== "off").map((d) => [nameOf(s.pid) || "(not linked)", bp.name, d.date, d.tin, d.tout, d.worked != null ? (d.worked / 60).toFixed(2) : "", ATT_LABEL[d.status][0], d.lateMin || "", d.lateAmt ? d.lateAmt.toFixed(2) : "", d.src, d.excused || ""]); })]);
+
+    const rulesBox = h("div", { className: "ps-pay-person ps-att-rules" },
+      h("div", { className: "ps-pay-row" },
+        h("span", { className: "ps-pay-who" }, h("b", null, "Rules"),
+          h("span", { className: "ps-muted" }, `In by ${rule.latestIn} · ₱${num(rule.perMin)} a minute late up to ${num(rule.perMinUpTo)} min, then whole hours of pay · ${num(rule.requiredHours)} hours a day incl. break · no punches = absent (unless approved leave)`)),
+        h("button", { className: "ps-btn ghost small", onClick: () => setShowRules(!showRules) }, showRules ? "Close" : "Change")),
+      showRules && h("div", { className: "ps-pay-grid" },
+        h("label", { className: "ps-field" }, h("span", null, "Latest time in (on time)"), h("input", { type: "time", value: rule.latestIn, onChange: (e) => put("att-settings", "attsettings", { ...rule, latestIn: e.target.value }) })),
+        h("label", { className: "ps-field" }, h("span", null, "₱ per minute late"), h("input", { inputMode: "decimal", value: rule.perMin, onChange: (e) => put("att-settings", "attsettings", { ...rule, perMin: e.target.value }) })),
+        h("label", { className: "ps-field" }, h("span", null, "Per-minute up to (min), then by the hour"), h("input", { inputMode: "numeric", value: rule.perMinUpTo, onChange: (e) => put("att-settings", "attsettings", { ...rule, perMinUpTo: e.target.value }) })),
+        h("label", { className: "ps-field" }, h("span", null, "Hours a day (incl. break)"), h("input", { inputMode: "decimal", value: rule.requiredHours, onChange: (e) => put("att-settings", "attsettings", { ...rule, requiredHours: e.target.value }) }))));
+
+    const uploader = h("div", { className: "ps-btnrow ps-att-up" },
+      h("input", { ref: fileRef, type: "file", accept: ".xls,.xlsx", style: { display: "none" }, onChange: (e) => upload(e.target.files && e.target.files[0]) }),
+      h("button", { className: "ps-btn", disabled: busy, onClick: () => fileRef.current && fileRef.current.click() }, busy ? "Reading…" : "Upload biometric report (.xls)"),
+      imports.length > 1 && h("select", { value: imp ? imp.id : "", onChange: (e) => { setOpenImp(e.target.value); setOpenPerson(null); } },
+        imports.map((x) => h("option", { key: x.id, value: x.id }, `${shortDate(fromIso(x.from))} – ${shortDate(fromIso(x.to))}, ${x.from.slice(0, 4)}`))));
+
+    if (!imp) return h("div", null,
+      h("p", { className: "ps-muted" }, "Upload the Standard Report from the biometric machine. Time in and out come from the “Exception Stat.” sheet; blanks are filled from “Att.log report”. Lates and absences then go into the matching payroll run."),
+      uploader, rulesBox);
+
+    const list = imp.people.map((bp) => ({ bp, s: summary(bp) }));
+    const unlinked = list.filter((x) => !x.s.pid).length;
+    const totLate = r2(list.reduce((t, x) => t + (x.s.pid ? x.s.lateAmt : 0), 0));
+    return h("div", null,
+      uploader,
+      h("p", { className: "ps-muted" }, `${shortDate(fromIso(imp.from))} – ${longDate(imp.to)} · ${imp.file} · uploaded by ${imp.by} ${shortDate(imp.at)}`,
+        imp.appliedAt ? ` · applied to payroll ${shortDate(imp.appliedAt)}` : "",
+        imp.skipped ? ` · ${imp.skipped} IDs with no punches left out` : ""),
+      rulesBox,
+      h("div", { className: "ps-att-apply" },
+        h("span", null,
+          h("b", null, "Payroll run: "),
+          run ? `${periodLabel(run)} (${run.status === "draft" ? "draft" : "approved — can't change"})` : "none yet for these dates",
+          h("span", { className: "ps-muted" }, ` · late deductions ${peso(totLate)} · ${list.reduce((t, x) => t + (x.s.pid ? x.s.absent : 0), 0)} absent days`,
+            unlinked ? ` · ${unlinked} not linked to anyone (not applied)` : "")),
+        h("span", { className: "ps-btnrow" },
+          h("button", { className: "ps-btn ghost small", onClick: exportCsv }, "Download report"),
+          h("button", { className: "ps-btn small", disabled: !run || run.status !== "draft", onClick: () => confirm({ title: `Put time in / out into the ${run ? periodLabel(run) : ""} payroll run?`, lines: ["Each linked person gets their absent days as unpaid days and one “Late” deduction. Applying again replaces the earlier numbers.", "Interns: lates only (unpaid days stay as they are)."], confirmLabel: "Apply", onYes: apply }) }, imp.appliedAt ? "Apply again" : "Apply to payroll"))),
+      h("div", { className: "ps-pay-tablewrap" }, h("table", { className: "ps-pay-table ps-att-table" },
+        h("thead", null, h("tr", null, ["Biometric name", "Person in the app", "Present", "Absent", "Lates", "Late deduction", "Check", ""].map((t) => h("th", { key: t }, t)))),
+        h("tbody", null, list.map(({ bp, s }) => h(React.Fragment, { key: bp.bioId },
+          h("tr", { className: s.pid ? "" : "ps-att-unlinked" },
+            h("td", null, h("b", null, bp.name), h("span", { className: "ps-muted" }, ` #${bp.bioId}`)),
+            h("td", null, h("select", { value: s.pid, "aria-label": `Who is ${bp.name}`, onChange: (e) => link(bp.bioId, e.target.value) },
+              h("option", { value: "" }, "Not linked"), crew.map((p) => h("option", { key: p.id, value: p.id }, p.name)))),
+            h("td", null, `${s.present}/${s.sched}`, s.rest ? h("span", { className: "ps-muted" }, ` +${s.rest} rest day${s.rest > 1 ? "s" : ""}`) : null),
+            h("td", { className: s.absent ? "ps-hris-over" : "" }, s.absent || "", s.leave ? h("span", { className: "ps-muted" }, ` ${s.leave} leave`) : null),
+            h("td", null, s.lates.length ? `${s.lates.length} · ${s.lateMin} min` : ""),
+            h("td", null, s.lateAmt ? "−" + peso(s.lateAmt) : "", s.pid && !s.rate && s.lates.some((d) => d.lateHours) ? h("span", { className: "ps-muted", title: "No pay profile, so the hourly rate is unknown" }, " (no pay profile)") : null),
+            h("td", null, [s.noout ? `${s.noout} missing punch` : "", s.short ? `${s.short} under ${num(rule.requiredHours)}h` : ""].filter(Boolean).join(" · ")),
+            h("td", null, h("button", { className: "ps-pay-link", onClick: () => setOpenPerson(openPerson === bp.bioId ? null : bp.bioId) }, openPerson === bp.bioId ? "Hide days" : "Days"))),
+          openPerson === bp.bioId && h("tr", { className: "ps-att-days" }, h("td", { colSpan: 8 },
+            h("table", { className: "ps-att-daytable" },
+              h("thead", null, h("tr", null, ["Date", "In", "Out", "Hours", "Status", "Late", ""].map((t) => h("th", { key: t }, t)))),
+              h("tbody", null, s.days.filter((d) => d.status !== "off").map((d) => {
+                const [lab, cls] = ATT_LABEL[d.status];
+                return h("tr", { key: d.date },
+                  h("td", null, new Date(d.date + "T00:00").toLocaleDateString("en-PH", { weekday: "short", month: "short", day: "numeric" })),
+                  h("td", null, d.tin || "—", d.tin && d.src && d.src.includes("in") ? h("small", { className: "ps-muted", title: "Filled from the Att.log sheet" }, " *") : null),
+                  h("td", null, d.tout || "—", d.tout && d.src && d.src.includes("out") ? h("small", { className: "ps-muted", title: "Filled from the Att.log sheet" }, " *") : null),
+                  h("td", null, d.worked != null ? fmtHm(d.worked) : ""),
+                  h("td", null, h("span", { className: `ps-chip ${cls}` }, lab), d.excused && d.excused !== "Excused" ? h("span", { className: "ps-muted" }, " " + d.excused) : null),
+                  h("td", null, d.lateMin && d.status !== "excused" ? `${d.lateMin} min · ${d.lateAmt ? "−" + peso(d.lateAmt) : "no pay rate"}${d.lateHours ? ` (${d.lateHours} h)` : ""}` : ""),
+                  h("td", null, d.sched && (d.excused
+                    ? h("button", { className: "ps-pay-link", onClick: () => setExcuse(bp.bioId, d.date, null) }, "Undo excuse")
+                    : (d.status === "absent" || d.lateMin || d.status === "noout" || d.status === "noin" || d.status === "short") && h("button", { className: "ps-pay-link", title: "No deduction for this day", onClick: () => setExcuse(bp.bioId, d.date, true) }, "Excuse"))));
+              }))),
+            h("p", { className: "ps-muted ps-pay-hint" }, "* filled in from the Att.log report sheet. Excused days aren't counted as late or absent.")))))))));
+  }
+
+  function HrisPage({ db, me, mutate, setToast, confirm }) {
+    const h = React.createElement;
+    const api = payApi();
+    const [tab, setTab] = useState(() => { try { return sessionStorage.getItem("ps-hris-tab") || "payroll"; } catch (e) { return "payroll"; } });
+    const [state, setState] = useState({ loading: true, ok: false });
+    const [rows, setRows] = useState([]);
+    const [editing, setEditing] = useState(null);
+    const [form, setForm] = useState({});
+    const [showFormer, setShowFormer] = useState(false);
+    const [docForm, setDocForm] = useState({ personId: "", type: DOC_TYPES[0], expires: "", note: "" });
+    const [docFile, setDocFile] = useState(null);
+    const [uploading, setUploading] = useState(false);
+    const [docWho, setDocWho] = useState("");
+    const fileRef = useRef(null);
+    const go = (k) => { setTab(k); setEditing(null); try { sessionStorage.setItem("ps-hris-tab", k); } catch (e) {} };
+
+    const load = async () => {
+      try {
+        const c = await api.can();
+        if (!c.ok) { setState({ loading: false, ok: false, setup: c.setup || "" }); return; }
+        setRows(await api.list());
+        setState({ loading: false, ok: true });
+      } catch (e) { setState({ loading: false, ok: false, setup: "error" }); }
+    };
+    useEffect(() => { load(); }, []);
+    /* Payroll keeps its own copy while it's open; pick up its changes (new runs, profiles) when leaving it. */
+    const firstTab = useRef(true);
+    useEffect(() => { if (firstTab.current) { firstTab.current = false; return; } if (tab !== "payroll") load(); }, [tab]);
+
+    const crew = db.people.filter((p) => p.role !== "client");
+    const nameOf = (id) => (db.people.find((p) => p.id === id) || {}).name || "Someone";
+    const emps = {}, profiles = {};
+    rows.forEach((r) => {
+      if (r.kind === "employee") emps[r.data.personId] = r.data;
+      if (r.kind === "profile") profiles[r.data.personId] = { ...r.data, __id: r.id };
+    });
+    const docs = rows.filter((r) => r.kind === "hrdoc").map((r) => r.data).sort((a, b) => String(b.at || "").localeCompare(String(a.at || "")));
+    const docsOf = (pid) => docs.filter((d) => d.personId === pid);
+    const missingDocs = (pid) => DOC_REQUIRED.filter((t) => !docsOf(pid).some((d) => d.type === t));
+    const govOf = (pid, k) => ((emps[pid] || {})[k]) || ((profiles[pid] || {})[k]) || "";
+    const activeCrew = crew.filter((p) => empActive(emps[p.id]));
+    const formerCrew = crew.filter((p) => !empActive(emps[p.id]));
+
+    const put = async (id, kind, data, msg) => {
+      setRows((cur) => [...cur.filter((r) => r.id !== id), { id, kind, data }]);
+      try { await api.save(id, kind, data); if (msg) setToast(msg); }
+      catch (e) { setToast("That didn't save: " + (e && e.message ? e.message : "check your connection")); }
+    };
+
+    /* ---------- heads-up: things that need doing soon ---------- */
+    const alerts = [];
+    if (state.ok) {
+      docs.forEach((d) => {
+        if (!d.expires || !empActive(emps[d.personId])) return;
+        const n = daysUntil(d.expires);
+        if (n < 0) alerts.push({ k: "x" + d.id, warn: true, n, text: `${nameOf(d.personId)}'s ${d.type} expired ${shortDate(fromIso(d.expires))}` });
+        else if (n <= 30) alerts.push({ k: "x" + d.id, warn: n <= 7, n, text: `${nameOf(d.personId)}'s ${d.type} expires ${n === 0 ? "today" : `in ${n} day${n > 1 ? "s" : ""}`}` });
+      });
+      activeCrew.forEach((p) => {
+        const e = emps[p.id] || {};
+        if (e.type === "probationary" && e.start) {
+          const end = e.regularOn || addMonthsIso(e.start, 6);
+          const n = daysUntil(end);
+          if (n <= 30) alerts.push({ k: "pr" + p.id, warn: n <= 7, n, text: n < 0 ? `${p.name}'s probation ended ${shortDate(fromIso(end))} — still marked Probationary` : `${p.name}'s probation ends ${n === 0 ? "today" : `in ${n} day${n > 1 ? "s" : ""}`} (${shortDate(fromIso(end))})` });
+        }
+        const b = nextYearly(e.birthday);
+        if (b && b.inDays <= 14) alerts.push({ k: "b" + p.id, n: b.inDays, text: `🎂 ${p.name}'s birthday ${b.inDays === 0 ? "is today" : `in ${b.inDays} day${b.inDays > 1 ? "s" : ""}`}` });
+        const a = e.start && String(e.start).slice(0, 4) < manilaDay().slice(0, 4) ? nextYearly(e.start) : null;
+        if (a && a.inDays <= 14) alerts.push({ k: "a" + p.id, n: a.inDays, text: `🎉 ${p.name}'s ${+a.day.slice(0, 4) - +String(e.start).slice(0, 4)}-year work anniversary ${a.inDays === 0 ? "is today" : `in ${a.inDays} day${a.inDays > 1 ? "s" : ""}`}` });
+      });
+      alerts.sort((x, y) => x.n - y.n);
+    }
+    const pendingN = pendingTimeoff(db).length;
+
+    /* ---------- Employees ---------- */
+    const openEdit = (p) => {
+      const e = emps[p.id] || {};
+      const f = { type: (profiles[p.id] || {}).type === "intern" ? "intern" : (profiles[p.id] || {}).type === "contractor" ? "contractor" : "regular", status: "active", ...e };
+      GOV_FIELDS.forEach(([k]) => { if (!f[k]) f[k] = govOf(p.id, k); });
+      setForm(f); setEditing(p.id);
+    };
+    const saveEmp = (p) => {
+      const data = { ...form, personId: p.id, updatedAt: new Date().toISOString(), updatedBy: me.name };
+      Object.keys(data).forEach((k) => { if (typeof data[k] === "string") data[k] = data[k].trim(); });
+      put(`employee:${p.id}`, "employee", data, `Saved ${p.name}'s record.`);
+      /* Keep the pay profile's government numbers in step, so payslips show the same ones. */
+      const pr = profiles[p.id];
+      if (pr && GOV_FIELDS.some(([k]) => (data[k] || "") !== (pr[k] || ""))) {
+        const { __id, ...rest } = pr;
+        const next = { ...rest };
+        GOV_FIELDS.forEach(([k]) => { next[k] = data[k] || ""; });
+        put(__id, "profile", next);
+      }
+      setEditing(null);
+    };
+    const fld = (label, key, extra = {}) => h("label", { className: "ps-field" }, h("span", null, label),
+      extra.options
+        ? h("select", { value: form[key] || extra.options[0][0], onChange: (e) => setForm((x) => ({ ...x, [key]: e.target.value })) }, extra.options.map(([v, l]) => h("option", { key: v, value: v }, l)))
+        : extra.area
+          ? h("textarea", { rows: 2, value: form[key] || "", placeholder: extra.ph || "", onChange: (e) => setForm((x) => ({ ...x, [key]: e.target.value })) })
+          : h("input", { type: extra.type || "text", value: form[key] || "", placeholder: extra.ph || "", inputMode: extra.mode, onChange: (e) => setForm((x) => ({ ...x, [key]: e.target.value })) }));
+    const empRow = (p) => {
+      const e = emps[p.id] || {};
+      const miss = missingDocs(p.id);
+      const open = editing === p.id;
+      return h("div", { key: p.id, className: "ps-pay-person" },
+        h("div", { className: "ps-pay-row" },
+          h(Avatar, { person: p, size: 32 }),
+          h("span", { className: "ps-pay-who" },
+            h("b", null, p.name),
+            h("span", { className: "ps-muted" }, [e.position || (ROLES[p.role] || {}).label || p.role, e.start ? `since ${longDate(e.start)} · ${tenureLabel(e.start)}` : "no start date yet"].join(" · "))),
+          h("span", { className: "ps-hris-chips" },
+            h("span", { className: "ps-chip" }, e.type ? empTypeLabel(e.type) : "Not set"),
+            e.status && e.status !== "active" ? h("span", { className: `ps-chip ${empActive(e) ? "" : "warn"}` }, empStatusLabel(e.status)) : null,
+            miss.length ? h("span", { className: "ps-chip warn", title: "Missing: " + miss.join(", ") }, `${miss.length} doc${miss.length > 1 ? "s" : ""} missing`) : h("span", { className: "ps-chip ok" }, "201 file complete")),
+          h("button", { className: "ps-btn ghost small", onClick: () => open ? setEditing(null) : openEdit(p) }, open ? "Close" : emps[p.id] ? "Edit" : "Add details")),
+        open && h("div", { className: "ps-pay-form" },
+          h("b", { className: "ps-pay-sub" }, "Job"),
+          h("div", { className: "ps-pay-grid" },
+            fld("Position / job title", "position", { ph: "e.g. Video Editor" }),
+            fld("Employment type", "type", { options: EMP_TYPES }),
+            fld("Status", "status", { options: EMP_STATUS }),
+            fld("Start date", "start", { type: "date" }),
+            fld("Biometric ID", "bioId", { mode: "numeric", ph: "ID on the time clock" }),
+            form.type === "probationary" && fld("Regularization date", "regularOn", { type: "date" }),
+            !empActive(form) && fld("Last day", "endOn", { type: "date" })),
+          form.type === "probationary" && !form.regularOn && form.start ? h("p", { className: "ps-muted ps-pay-hint" }, `Probation usually runs 6 months — that's ${longDate(addMonthsIso(form.start, 6))}. You'll get a heads-up 30 days before.`) : null,
+          h("b", { className: "ps-pay-sub" }, "Personal"),
+          h("div", { className: "ps-pay-grid" },
+            fld("Birthday", "birthday", { type: "date" }),
+            fld("Mobile number", "mobile", { mode: "tel", ph: "0917 123 4567" }),
+            fld("Personal email", "personalEmail", { type: "email" }),
+            fld("Home address", "address")),
+          h("b", { className: "ps-pay-sub" }, "Emergency contact"),
+          h("div", { className: "ps-pay-grid" },
+            fld("Name", "emName"), fld("Relationship", "emRelation", { ph: "e.g. Mother" }), fld("Number", "emNumber", { mode: "tel" })),
+          h("b", { className: "ps-pay-sub" }, "Government numbers"),
+          h("div", { className: "ps-pay-grid" }, GOV_FIELDS.map(([k, l]) => h(React.Fragment, { key: k }, fld(l, k)))),
+          profiles[p.id] ? h("p", { className: "ps-muted ps-pay-hint" }, "These are shared with the pay profile, so payslips show the same numbers.") : null,
+          fld("Notes (HR only)", "notes", { area: true }),
+          h("div", { className: "ps-btnrow" },
+            h("button", { className: "ps-btn small", onClick: () => saveEmp(p) }, "Save"),
+            h("button", { className: "ps-btn ghost small", onClick: () => setEditing(null) }, "Cancel"),
+            h("button", { className: "ps-btn ghost small", onClick: () => { setDocForm((x) => ({ ...x, personId: p.id })); go("docs"); } }, "Documents →")),
+          e.updatedAt ? h("p", { className: "ps-muted ps-pay-hint" }, `Last changed ${shortDate(e.updatedAt)}${e.updatedBy ? ` by ${e.updatedBy}` : ""}.`) : null));
+    };
+    const employeesTab = h("div", { className: "ps-pay-list" },
+      h("p", { className: "ps-muted" }, "Each person's 201 file: job details, personal and emergency contacts, and government numbers. Locked to you and HR, like payroll."),
+      activeCrew.map(empRow),
+      formerCrew.length > 0 && h("div", { className: "ps-pay-archived" },
+        h("button", { className: "ps-pay-link", onClick: () => setShowFormer(!showFormer) }, showFormer ? "Hide" : "Show", " former staff (", formerCrew.length, ")"),
+        showFormer && formerCrew.map(empRow)));
+
+    /* ---------- Time off & leave ---------- */
+    const today = manilaDay();
+    const offNow = (db.timeoff || []).filter((r) => r.status === "approved" && r.to >= today && r.from <= addMonthsIso(today, 1)).sort((a, b) => a.from.localeCompare(b.from));
+    const decided = (db.timeoff || []).filter((r) => r.status !== "pending").sort((a, b) => String(b.decidedAt || b.at || "").localeCompare(String(a.decidedAt || a.at || ""))).slice(0, 15);
+    const span = (r) => `${shortDate(fromIso(r.from))}${r.from === r.to ? "" : ` – ${shortDate(fromIso(r.to))}`} · ${dayCount(r.from, r.to)} day${dayCount(r.from, r.to) > 1 ? "s" : ""}`;
+    const year = +today.slice(0, 4);
+    const setAllowance = (p, raw) => mutate((n) => {
+      const t = n.people.find((x) => x.id === p.id);
+      if (!t) return;
+      if (raw === "") delete t.leaveAllowance; else t.leaveAllowance = Math.max(0, Math.min(365, parseInt(raw) || 0));
+    });
+    const timeoffTab = h("div", null,
+      h(TimeOffPanel, { db, me, mutate, setToast, queueOnly: true }),
+      h("h3", { className: "ps-h3" }, `Leave balances · ${year}`),
+      h("p", { className: "ps-muted" }, `Everyone starts with ${LEAVE_DEFAULT} days a year; change a number to give someone a different allowance. Days count approved requests that start this year.`),
+      h("div", { className: "ps-pay-tablewrap" }, h("table", { className: "ps-pay-table ps-hris-narrow" },
+        h("thead", null, h("tr", null, h("th", null, "Name"), h("th", null, "Yearly allowance"), h("th", null, "Taken"), h("th", null, "Waiting"), h("th", null, "Left"))),
+        h("tbody", null, activeCrew.map((p) => {
+          const st = leaveStats(db, p.id);
+          return h("tr", { key: p.id },
+            h("td", null, p.name),
+            h("td", null, h("input", { className: "ps-hris-num", inputMode: "numeric", "aria-label": `${p.name}'s yearly allowance`, defaultValue: st.custom ? st.allowance : "", placeholder: String(LEAVE_DEFAULT), onBlur: (e) => setAllowance(p, e.target.value.trim()), onKeyDown: (e) => e.key === "Enter" && e.target.blur() })),
+            h("td", null, st.used), h("td", null, st.pending || ""),
+            h("td", { className: st.over ? "ps-hris-over" : "ps-pay-net" }, st.over ? `${st.used - st.allowance} over` : st.left));
+        })))),
+      h("h3", { className: "ps-h3" }, "Off now and in the next month"),
+      offNow.length ? offNow.map((r) => h("div", { key: r.id, className: "ps-away-row" },
+        h("span", null, h("b", null, nameOf(r.personId)), " · ", span(r), r.reason ? ` · ${r.reason}` : ""),
+        h("span", { className: "ps-chip ok" }, r.from <= today ? "Off now" : "Approved"))) : h("p", { className: "ps-empty" }, "Nobody is booked off."),
+      h("h3", { className: "ps-h3" }, "Recent decisions"),
+      decided.length ? decided.map((r) => h("div", { key: r.id, className: "ps-away-row" },
+        h("span", null, h("b", null, nameOf(r.personId)), " · ", span(r), r.decidedBy ? h("span", { className: "ps-muted" }, ` — ${r.status} by ${nameOf(r.decidedBy)}${r.decidedNote ? `: ${r.decidedNote}` : ""}`) : null),
+        h("span", { className: `ps-chip ${r.status === "approved" ? "ok" : "warn"}` }, r.status === "approved" ? "Approved" : "Declined"))) : h("p", { className: "ps-empty" }, "No decisions yet."));
+
+    /* ---------- HR documents ---------- */
+    const dapi = hrDocsApi();
+    const uploadDoc = async () => {
+      if (!docForm.personId) return setToast("Pick whose document this is.");
+      if (!docFile) return setToast("Choose a file first.");
+      if (docFile.size > 20 * 1024 * 1024) return setToast("That file is over 20 MB.");
+      setUploading(true);
+      try {
+        const id = uid("doc");
+        const safe = docFile.name.replace(/[^\w.\-]+/g, "_").slice(-80);
+        const path = `${docForm.personId}/${id}-${safe}`;
+        await dapi.upload(path, docFile);
+        await put(`hrdoc:${id}`, "hrdoc", { id, personId: docForm.personId, type: docForm.type, expires: docForm.expires || "", note: docForm.note.trim(), file: docFile.name, size: docFile.size, mime: docFile.type, path, by: me.name, at: new Date().toISOString() }, `Uploaded ${docForm.type} for ${nameOf(docForm.personId)}.`);
+        setDocFile(null); setDocForm((x) => ({ ...x, expires: "", note: "" }));
+        if (fileRef.current) fileRef.current.value = "";
+      } catch (e) { setToast(e && e.message ? e.message : "That file didn't upload."); }
+      setUploading(false);
+    };
+    const openDoc = async (d) => {
+      const w = window.open("", "_blank");
+      try {
+        const url = await dapi.url(d.path);
+        if (!url) throw new Error("File not found.");
+        if (w) { if (url.startsWith("data:")) w.document.write(`<title>${String(d.file).replace(/[<>&"]/g, "")}</title><iframe src="${url}" style="border:0;position:fixed;inset:0;width:100%;height:100%"></iframe>`); else w.location = url; }
+        else window.location.assign(url);
+      } catch (e) { if (w) w.close(); setToast(e && e.message ? e.message : "Couldn't open that file."); }
+    };
+    const delDoc = (d) => confirm({ title: `Delete ${nameOf(d.personId)}'s ${d.type}?`, lines: [`${d.file} will be removed for good.`], confirmLabel: "Delete", onYes: async () => {
+      setRows((cur) => cur.filter((r) => r.id !== `hrdoc:${d.id}`));
+      try { await dapi.remove(d.path); await api.remove(`hrdoc:${d.id}`); setToast("Deleted."); }
+      catch (e) { setToast("That didn't delete: " + (e && e.message ? e.message : "")); }
+    } });
+    const expChip = (d) => {
+      if (!d.expires) return null;
+      const n = daysUntil(d.expires);
+      return h("span", { className: `ps-chip ${n < 0 ? "warn" : n <= 30 ? "warn" : ""}` }, n < 0 ? `Expired ${shortDate(fromIso(d.expires))}` : n <= 30 ? `Expires in ${n} day${n === 1 ? "" : "s"}` : `Valid to ${shortDate(fromIso(d.expires))}`);
+    };
+    const shownPeople = (docWho ? crew.filter((p) => p.id === docWho) : activeCrew);
+    const docsTab = h("div", null,
+      !dapi.live && h("p", { className: "ps-pay-demo" }, "Demo mode — files stay in this browser only (under 1.5 MB). On your site they go to the private hr-docs storage."),
+      h("div", { className: "ps-pay-person ps-hris-upload" },
+        h("b", { className: "ps-pay-sub" }, "Upload a document"),
+        h("div", { className: "ps-pay-grid" },
+          h("label", { className: "ps-field" }, h("span", null, "Person"),
+            h("select", { value: docForm.personId, onChange: (e) => setDocForm((x) => ({ ...x, personId: e.target.value })) }, h("option", { value: "" }, "Choose…"), crew.map((p) => h("option", { key: p.id, value: p.id }, p.name)))),
+          h("label", { className: "ps-field" }, h("span", null, "Document"),
+            h("select", { value: docForm.type, onChange: (e) => setDocForm((x) => ({ ...x, type: e.target.value })) }, DOC_TYPES.map((t) => h("option", { key: t, value: t }, t)))),
+          h("label", { className: "ps-field" }, h("span", null, "Expires (optional)"), h(PickerInput, { type: "date", value: docForm.expires, onChange: (e) => setDocForm((x) => ({ ...x, expires: e.target.value })), ariaLabel: "Expiry date" })),
+          h("label", { className: "ps-field" }, h("span", null, "Note (optional)"), h("input", { value: docForm.note, onChange: (e) => setDocForm((x) => ({ ...x, note: e.target.value })) }))),
+        h("div", { className: "ps-btnrow" },
+          h("input", { ref: fileRef, type: "file", accept: ".pdf,.jpg,.jpeg,.png,.webp,.heic,.doc,.docx", onChange: (e) => setDocFile(e.target.files && e.target.files[0] || null) }),
+          h("button", { className: "ps-btn small", disabled: uploading, onClick: uploadDoc }, uploading ? "Uploading…" : "Upload"))),
+      h("div", { className: "ps-hris-filter" },
+        h("label", { className: "ps-field" }, h("span", null, "Show"),
+          h("select", { value: docWho, onChange: (e) => setDocWho(e.target.value) }, h("option", { value: "" }, "Everyone (active)"), crew.map((p) => h("option", { key: p.id, value: p.id }, p.name))))),
+      shownPeople.map((p) => {
+        const list = docsOf(p.id);
+        const miss = missingDocs(p.id);
+        return h("div", { key: p.id, className: "ps-pay-person ps-hris-docperson" },
+          h("div", { className: "ps-pay-row" },
+            h(Avatar, { person: p, size: 28 }),
+            h("span", { className: "ps-pay-who" }, h("b", null, p.name), h("span", { className: "ps-muted" }, `${list.length} file${list.length === 1 ? "" : "s"}`)),
+            miss.length ? h("span", { className: "ps-hris-chips" }, miss.map((t) => h("span", { key: t, className: "ps-chip warn" }, "No " + t))) : h("span", { className: "ps-chip ok" }, "201 file complete")),
+          list.map((d) => h("div", { key: d.id, className: "ps-away-row ps-hris-doc" },
+            h("span", null, h("b", null, d.type), " · ", d.file, h("span", { className: "ps-muted" }, ` · ${shortDate(d.at)}${d.by ? ` by ${d.by}` : ""}${d.note ? ` · ${d.note}` : ""}`)),
+            expChip(d),
+            h("span", { className: "ps-btnrow" },
+              h("button", { className: "ps-btn ghost small", onClick: () => openDoc(d) }, "Open"),
+              h("button", { className: "ps-x-small", "aria-label": `Delete ${d.type}`, onClick: () => delDoc(d) }, "\xD7")))));
+      }));
+
+    /* ---------- 13th month & reports ---------- */
+    const exportMaster = () => downloadCsv(`employee-masterlist-${today}.csv`, [
+      ["Name", "Role in app", "Position", "Employment type", "Status", "Start date", "Regularization", "Last day", "Birthday", "Mobile", "Personal email", "Address", "Emergency contact", "Relationship", "Emergency number", "TIN", "SSS no.", "PhilHealth no.", "Pag-IBIG no.", "Missing documents"],
+      ...crew.map((p) => { const e = emps[p.id] || {}; return [p.name, (ROLES[p.role] || {}).label || p.role, e.position || "", e.type ? empTypeLabel(e.type) : "", empStatusLabel(e.status), e.start || "", e.regularOn || "", e.endOn || "", e.birthday || "", e.mobile || "", e.personalEmail || "", e.address || "", e.emName || "", e.emRelation || "", e.emNumber || "", ...GOV_FIELDS.map(([k]) => govOf(p.id, k)), missingDocs(p.id).join("; ")]; })]);
+    const exportLeave = () => downloadCsv(`leave-report-${year}.csv`, [
+      ["Name", "Yearly allowance", "Taken", "Waiting", "Left"],
+      ...activeCrew.map((p) => { const s = leaveStats(db, p.id); return [p.name, s.allowance, s.used, s.pending, s.over ? -(s.used - s.allowance) : s.left]; }),
+      [], ["Name", "From", "To", "Days", "Reason", "Status", "Decided by", "Note"],
+      ...(db.timeoff || []).filter((r) => String(r.from).slice(0, 4) === String(year)).sort((a, b) => a.from.localeCompare(b.from)).map((r) => [nameOf(r.personId), r.from, r.to, dayCount(r.from, r.to), r.reason || "", r.status, r.decidedBy ? nameOf(r.decidedBy) : "", r.decidedNote || ""])]);
+    const exportDocs = () => downloadCsv(`hr-documents-${today}.csv`, [
+      ["Name", "Document", "File", "Expires", "Uploaded", "By", "Note"],
+      ...docs.map((d) => [nameOf(d.personId), d.type, d.file, d.expires || "", String(d.at || "").slice(0, 10), d.by || "", d.note || ""])]);
+    const reportsTab = h("div", null,
+      h(PayrollPage, { db, me, setToast, confirm, bare: true, only: "13th" }),
+      h("h3", { className: "ps-h3" }, "Reports"),
+      h("p", { className: "ps-muted" }, "Spreadsheet files (CSV) that open in Excel or Google Sheets. Payout lists and the accountant summary are inside each payroll run."),
+      h("div", { className: "ps-btnrow ps-hris-reports" },
+        h("button", { className: "ps-btn ghost", onClick: exportMaster }, "Employee masterlist"),
+        h("button", { className: "ps-btn ghost", onClick: exportLeave }, `Leave report ${year}`),
+        h("button", { className: "ps-btn ghost", onClick: exportDocs }, "Document list")));
+
+    const TABS = [["payroll", "Payroll"], ["employees", "Employees"], ["timeoff", "Time off & leave", pendingN || ""], ["attendance", "Time in / out"], ["docs", "HR documents"], ["reports", "13th month & reports"]];
+    let body;
+    if (tab === "payroll") body = h(PayrollPage, { db, me, setToast, confirm, bare: true });
+    else if (state.loading) body = h("p", { className: "ps-loading" }, "Opening HR records…");
+    else if (!state.ok && tab !== "timeoff") body = h("div", { className: "ps-pay-locked" },
+      h("b", null, state.setup === "missing" ? "HR records aren't set up in Supabase yet." : "Your login can't open HR records."),
+      h("p", null, state.setup === "error" ? "Supabase didn't answer. Check your connection and open this page again." : "They use the same lock as payroll: only logins in Supabase → payroll_admins can see them."));
+    else if (tab === "employees") body = employeesTab;
+    else if (tab === "timeoff") body = timeoffTab;
+    else if (tab === "docs") body = docsTab;
+    else if (tab === "attendance") body = h(AttendanceTab, { db, me, rows, put, setToast, confirm, crew, emps, profiles });
+    else body = reportsTab;
+
+    return h(React.Fragment, null,
+      h("div", { className: "ps-ovhead" }, h("span", { className: "ps-ovicon", "aria-hidden": "true" }, "\u{1F5C2}️"), h("h1", { className: "ps-h1" }, "HRIS")),
+      h("p", { className: "ps-lede" }, "Payroll, people records, leave and HR documents in one place. Only you and HR can open this page."),
+      !api.live && h("p", { className: "ps-pay-demo" }, "Demo mode — this preview isn't connected to Supabase, so anything here stays in this browser only."),
+      alerts.length > 0 && h("div", { className: "ps-hris-alerts" },
+        h("b", null, "Heads-up"),
+        alerts.slice(0, 8).map((a) => h("div", { key: a.k, className: a.warn ? "warn" : "" }, a.text)),
+        alerts.length > 8 ? h("div", { className: "ps-muted" }, `+ ${alerts.length - 8} more`) : null),
+      h("div", { className: "ps-tabs" }, TABS.map(([k, l, n]) =>
+        h("button", { key: k, className: `ps-tab ${tab === k ? "on" : ""}`, onClick: () => go(k) }, l, n ? h("span", { className: "ps-count-pill" }, n) : null))),
+      h("div", { className: "ps-pay-body" }, body));
   }
   /* ---- Invoices (Lead only) ---------------------------------------------------
      What the studio bills its clients: each invoice sent, and the Lead's own
@@ -8329,7 +8981,7 @@ ${lines.join("\n")}`);
       ...canTodo(me) ? [["todos", "My to-dos", todoBadge(db, me) || ""]] : [],
       ...me.role !== "client" ? [["studio", "Studio", ""]] : [],
       ...me.role !== "client" ? [["archive", "Archive", ""]] : [],
-      ...me.role === "lead" || me.role === "hr" ? [["payroll", "Payroll", ""]] : [],
+      ...me.role === "lead" || me.role === "hr" ? [["hris", "HRIS", ""]] : [],
       ...me.role === "lead" ? [["invoices", "Invoices", ""]] : [],
       ...me.role !== "client" && !isLead ? [["timeoff", "Time off", leaveStats(db, me.id).left]] : [],
       ...isLead ? [["settings", "Settings", ""]] : []
@@ -8355,8 +9007,8 @@ ${lines.join("\n")}`);
       body = /* @__PURE__ */ React.createElement(TimeOffPage, { db, me, mutate, setToast });
     } else if (page.tab === "invoices" && me.role === "lead") {
       body = /* @__PURE__ */ React.createElement(InvoicesPage, { me, setToast, confirm: setConfirming });
-    } else if (page.tab === "payroll" && (me.role === "lead" || me.role === "hr")) {
-      body = /* @__PURE__ */ React.createElement(PayrollPage, { db, me, setToast, confirm: setConfirming });
+    } else if ((page.tab === "hris" || page.tab === "payroll") && (me.role === "lead" || me.role === "hr")) {
+      body = /* @__PURE__ */ React.createElement(HrisPage, { db, me, mutate, setToast, confirm: setConfirming });
     } else if (page.tab === "todos" && canTodo(me)) {
       body = /* @__PURE__ */ React.createElement(TodosPage, { db, me, mutate, setToast, confirm: setConfirming });
     } else if (page.tab === "archive" && me.role !== "client") {
@@ -10403,6 +11055,26 @@ ${lines.join("\n")}`);
 .ps-hr-chips .ps-chip{font-size:11px;padding:1px 7px}
 .ps-person-head{display:flex;align-items:center;gap:14px;margin-bottom:16px}
 .ps-person-head .ps-h2{margin:0 0 2px}
+.ps-tabs.ps-subtabs{border-bottom:0;margin-bottom:10px}.ps-subtabs .ps-tab{border:1px solid var(--line);border-radius:999px;padding:5px 12px;margin:0;font-size:13px}.ps-subtabs .ps-tab.on{background:var(--ink);color:var(--card);border-color:var(--ink)}
+.ps-att-up{flex-wrap:wrap;gap:8px;margin-bottom:10px}.ps-att-up select{font:inherit;padding:6px 8px;border:1px solid var(--line);border-radius:8px;background:var(--card);color:var(--ink)}
+.ps-att-rules{margin:8px 0 12px;display:flex;flex-direction:column;gap:8px}
+.ps-att-apply{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;border:1px solid var(--line);background:var(--card);border-radius:12px;padding:10px 14px;margin-bottom:12px;font-size:13.5px}
+.ps-att-table select{font:inherit;font-size:13px;padding:4px 6px;border:1px solid var(--line);border-radius:6px;background:var(--card);color:var(--ink);max-width:170px}
+.ps-att-unlinked td{opacity:.75}
+.ps-att-days>td{padding:6px 10px 12px}
+.ps-att-daytable{width:100%;border-collapse:collapse;font-size:13px}.ps-att-daytable th{text-align:left;color:var(--muted);font-weight:600;padding:4px 6px}.ps-att-daytable td{padding:4px 6px;border-top:1px solid var(--line)}
+.ps-hris-chips{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}
+.ps-hris-alerts{border:1px solid var(--line);background:var(--card);border-radius:12px;padding:10px 14px;margin:0 0 14px;display:flex;flex-direction:column;gap:4px;font-size:13.5px}
+.ps-hris-alerts .warn{color:var(--warn);font-weight:600}
+.ps-hris-narrow{min-width:520px}
+.ps-hris-num{width:70px;font:inherit;padding:4px 8px;border:1px solid var(--line);border-radius:6px;background:var(--card);color:var(--ink)}
+.ps-hris-over{color:var(--warn);font-weight:700}
+.ps-hris-upload{margin-bottom:12px;display:flex;flex-direction:column;gap:8px}
+.ps-hris-filter{max-width:260px;margin:4px 0 10px}
+.ps-hris-docperson{margin-bottom:8px;display:flex;flex-direction:column;gap:6px}
+.ps-hris-doc{gap:8px}
+.ps-hris-reports{flex-wrap:wrap;gap:8px}
+@media (max-width:640px){.ps-pay-row{flex-wrap:wrap}.ps-hris-chips{justify-content:flex-start}}
 .ps-tabs{display:flex;gap:4px;border-bottom:1px solid var(--line);margin-bottom:14px;flex-wrap:wrap}
 .ps-tab{border:0;background:none;color:var(--muted);font:inherit;font-weight:600;padding:7px 11px;border-radius:8px 8px 0 0;cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-1px}
 .ps-tab:hover{color:var(--ink)}
@@ -11063,6 +11735,29 @@ if (sb) {
     },
     remove: async (id) => {
       const { error } = await sb.from("payroll").delete().eq("id", id);
+      if (error) throw error;
+    }
+  };
+}
+
+/* HR documents: files go into the PRIVATE 'hr-docs' bucket. Storage policies
+   only let payroll_admins (Lead + HR) read or write it; files open through
+   short-lived signed links, never public addresses. */
+if (sb) {
+  window.psHrDocs = {
+    live: true,
+    upload: async (path, file) => {
+      const { error } = await sb.storage.from("hr-docs").upload(path, file, { contentType: file.type || "application/octet-stream", upsert: false });
+      if (error) throw new Error(/bucket|not found/i.test(error.message || "") ? "The private 'hr-docs' storage isn't set up yet - run hris_setup.sql in Supabase." : "That file would not upload: " + (error.message || "unknown error"));
+      return { path };
+    },
+    url: async (path) => {
+      const { data, error } = await sb.storage.from("hr-docs").createSignedUrl(path, 120);
+      if (error) throw new Error("Couldn't open that file: " + (error.message || ""));
+      return data.signedUrl;
+    },
+    remove: async (path) => {
+      const { error } = await sb.storage.from("hr-docs").remove([path]);
       if (error) throw error;
     }
   };

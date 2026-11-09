@@ -6302,6 +6302,303 @@ html[data-theme="dark"] .ps-open{background:#10151D}
   };
   var hrDocsApi = () => (typeof window !== "undefined" && window.psHrDocs) || hrDocsDemo;
 
+  /* ---- Time in / out (HRIS) --------------------------------------------------
+     Reads the biometric machine's Standard Report (.xls). Rule from Frean:
+     Sheet "Exception Stat." rows ("First time zone") give On-duty = time in and
+     Off-duty = time out; a blank one is filled from the raw punches on sheet
+     "Att.log report". Flexible hours: in by 12:00 PM, 9 hours including a
+     1-hour break. Late 12:01-12:15 = P1 a minute; from 12:16 = whole hours of
+     pay (12:16-1:00 = 1 hour, 1:01-2:00 = 2 hours ...). A scheduled day with
+     no punches and no approved time off = absent (unpaid day).
+     Imports are saved in the locked payroll table (kind "att"); the matching
+     payroll run gets unpaid days + a "Late" deduction when HR clicks Apply. */
+  var ATT_DEFAULTS = { latestIn: "12:00", perMin: 1, perMinUpTo: 15, requiredHours: 9 };
+  var hm = (t) => { const m = /^(\d{1,2}):(\d{2})/.exec(String(t || "")); return m ? +m[1] * 60 + +m[2] : null; };
+  var fmtHm = (mins) => mins == null ? "" : `${Math.floor(mins / 60)}h ${String(mins % 60).padStart(2, "0")}m`;
+  var loadXlsx = () => window.XLSX ? Promise.resolve(window.XLSX) : new Promise((ok, no) => {
+    const s = document.createElement("script");
+    s.src = "https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js";
+    s.onload = () => window.XLSX ? ok(window.XLSX) : no(new Error("The Excel reader didn't load."));
+    s.onerror = () => no(new Error("Couldn't load the Excel reader. Check your connection."));
+    document.head.appendChild(s);
+  });
+  /* Biometric Standard Report -> { from, to, people: [{ bioId, name, days: [{ date, tin, tout, src, sched }] }] } */
+  var parseBiometric = (XLSX, buf) => {
+    const wb = XLSX.read(buf, { type: "array" });
+    const find = (re) => wb.SheetNames.find((n) => re.test(n));
+    const n4 = find(/exception/i), n3 = find(/att\.?\s*log/i);
+    if (!n4) throw new Error("This file has no “Exception Stat.” sheet. Upload the Standard Report from the biometric machine.");
+    const grid = (n) => XLSX.utils.sheet_to_json(wb.Sheets[n], { header: 1, raw: false, defval: "" }).map((r) => r.map((c) => String(c).trim()));
+    const s4 = grid(n4), s3 = n3 ? grid(n3) : [];
+    const per = (s4[1] || []).join(" ").match(/(\d{4}-\d{2}-\d{2})\s*~\s*(\d{4}-\d{2}-\d{2})/);
+    if (!per) throw new Error("Couldn't find the date range (Stat.Date) in the file.");
+    const [, from, to] = per;
+    /* Sheet 3: a row of day numbers, then for each person an "ID:" row followed by their punches (HH:MM run together). */
+    const logs = {}, names = {};
+    const dayRow = s3.findIndex((r) => r.filter((c) => /^\d{1,2}(\.0)?$/.test(c)).length >= 5);
+    if (dayRow >= 0) {
+      let cur = fromIso(from), prev = 0;
+      const dates = s3[dayRow].map((c) => {
+        if (!/^\d{1,2}(\.0)?$/.test(c)) return null;
+        const d = parseInt(c, 10);
+        if (prev && d < prev) cur = new Date(cur.getFullYear(), cur.getMonth() + 1, 1);
+        prev = d;
+        return isoDay(new Date(cur.getFullYear(), cur.getMonth(), d));
+      });
+      for (let r = dayRow + 1; r < s3.length; r++) {
+        if (!/^ID/i.test(s3[r][0] || "")) continue;
+        const id = (s3[r].slice(1).find((c) => c) || "").replace(/\.0$/, "");
+        const ni = s3[r].findIndex((c) => /^name/i.test(c));
+        names[id] = ni >= 0 ? (s3[r].slice(ni + 1).find((c) => c) || "") : "";
+        (s3[r + 1] || []).forEach((c, i) => { if (dates[i] && c) logs[id + "|" + dates[i]] = c.match(/\d{1,2}:\d{2}/g) || []; });
+      }
+    }
+    /* Sheet 1 (Schedule Infor.): which days each ID was scheduled to work.
+       Sheet 4 only lists days with something unusual, so it can't be the schedule. */
+    const n1 = find(/schedul/i);
+    const sched = {};
+    if (n1) {
+      const s1 = grid(n1);
+      const hr = s1.findIndex((r) => r.slice(3).filter((c) => /^\d{1,2}(\.0)?$/.test(c)).length >= 5);
+      if (hr >= 0) {
+        let cur = fromIso(from), prev = 0;
+        const dates = s1[hr].map((c, i) => {
+          if (i < 3 || !/^\d{1,2}(\.0)?$/.test(c)) return null;
+          const d = parseInt(c, 10);
+          if (prev && d < prev) cur = new Date(cur.getFullYear(), cur.getMonth() + 1, 1);
+          prev = d;
+          return isoDay(new Date(cur.getFullYear(), cur.getMonth(), d));
+        });
+        for (let r = hr + 1; r < s1.length; r++) {
+          if (!/^\d+(\.0)?$/.test(s1[r][0] || "")) continue;
+          const id = s1[r][0].replace(/\.0$/, "");
+          names[id] = names[id] || s1[r][1];
+          s1[r].forEach((c, i) => { if (dates[i] && c) sched[id + "|" + dates[i]] = 1; });
+        }
+      }
+    }
+    const hasSched = Object.keys(sched).length > 0;
+    const s4rows = {};
+    s4.forEach((r) => {
+      if (!/^\d+(\.0)?$/.test(r[0] || "") || !/^\d{4}-\d{2}-\d{2}$/.test(r[3] || "")) return;
+      const id = r[0].replace(/\.0$/, "");
+      names[id] = names[id] || r[1];
+      s4rows[id + "|" + r[3]] = r;
+      if (!hasSched) sched[id + "|" + r[3]] = 1;
+    });
+    const people = {};
+    const get = (id) => (people[id] = people[id] || { bioId: id, name: names[id] || `ID ${id}`, days: [] });
+    new Set([...Object.keys(sched), ...Object.keys(s4rows), ...Object.keys(logs)]).forEach((k) => {
+      const [id, date] = k.split("|");
+      if (date < from || date > to) return;
+      const r = s4rows[k] || [];
+      let tin = r[4] || "", tout = r[5] || "";
+      const p = logs[k] || [], src = [];
+      if (!tin && p.length) { tin = p[0]; src.push("in"); }
+      if (!tout && p.length > 1 && p[p.length - 1] !== tin) { tout = p[p.length - 1]; src.push("out"); }
+      get(id).days.push({ date, tin, tout, src: s4rows[k] ? src.join("+") : (p.length ? "in+out" : ""), sched: !!sched[k] });
+    });
+    Object.values(people).forEach((x) => x.days.sort((a, b) => a.date.localeCompare(b.date)));
+    return { from, to, people: Object.values(people).sort((a, b) => +a.bioId - +b.bioId) };
+  };
+  /* One day's verdict. hourRate = that person's hourly pay (no OT multiplier). */
+  var attDay = (d, rule, hourRate, onLeave) => {
+    const latest = hm(rule.latestIn) || 720;
+    let tin = d.tin, tout = d.tout;
+    /* One punch only: in the late afternoon it's a time out, otherwise a time in. */
+    if (tin && tout && tin === tout) tout = "";
+    if (tin && !tout && hm(tin) >= 15 * 60) { tout = tin; tin = ""; }
+    const worked = tin && tout ? hm(tout) - hm(tin) : null;
+    const out = { ...d, tin, tout, worked, lateMin: 0, lateAmt: 0, status: "ok" };
+    if (d.excused) return { ...out, status: "excused" };
+    if (!d.sched) return { ...out, status: tin || tout ? "restday" : "off" };
+    if (!tin && !tout) return { ...out, status: onLeave ? "leave" : "absent" };
+    if (tin) {
+      const late = Math.max(0, hm(tin) - latest);
+      out.lateMin = late;
+      out.lateAmt = !late ? 0 : late <= num(rule.perMinUpTo) ? r2(late * num(rule.perMin)) : r2(Math.ceil(late / 60) * hourRate);
+      out.lateHours = late > num(rule.perMinUpTo) ? Math.ceil(late / 60) : 0;
+    }
+    if (!tin) out.status = "noin";
+    else if (!tout) out.status = "noout";
+    else if (worked < num(rule.requiredHours) * 60) out.status = "short";
+    if (out.lateMin && out.status === "ok") out.status = "late";
+    return out;
+  };
+  var ATT_LABEL = { ok: ["On time", "ok"], late: ["Late", "warn"], short: ["Short hours", "warn"], noout: ["No time out", "warn"], noin: ["No time in", "warn"], absent: ["Absent", "warn"], leave: ["Approved leave", "ok"], excused: ["Excused", ""], restday: ["Rest day", ""], off: ["", ""] };
+
+  function AttendanceTab({ db, me, rows, put, setToast, confirm, crew, emps, profiles }) {
+    const h = React.createElement;
+    const [busy, setBusy] = useState(false);
+    const [openImp, setOpenImp] = useState(null);
+    const [openPerson, setOpenPerson] = useState(null);
+    const [showRules, setShowRules] = useState(false);
+    const fileRef = useRef(null);
+    const paySettings = { workdays: 22, hours: 8, allowanceInRate: true, ...((rows.find((r) => r.id === "settings") || {}).data || {}) };
+    const rule = { ...ATT_DEFAULTS, ...((rows.find((r) => r.id === "att-settings") || {}).data || {}) };
+    const imports = rows.filter((r) => r.kind === "att").map((r) => r.data).sort((a, b) => b.from.localeCompare(a.from));
+    const runs = rows.filter((r) => r.kind === "run").map((r) => r.data).filter((r) => !r.archived);
+    const imp = imports.find((x) => x.id === openImp) || imports[0] || null;
+    const nameOf = (id) => (db.people.find((p) => p.id === id) || {}).name || "";
+    /* Which app person a biometric ID belongs to: saved on the employee record (bioId). */
+    const byBio = {};
+    Object.values(emps).forEach((e) => { if (e.bioId) byBio[String(e.bioId)] = e.personId; });
+    const guess = (bp) => {
+      const first = String(bp.name).toLowerCase().split(/\s+/)[0];
+      const hits = crew.filter((p) => String(p.name).toLowerCase().split(/\s+/)[0] === first);
+      return hits.length === 1 && !Object.values(byBio).includes(hits[0].id) ? hits[0].id : "";
+    };
+    const hourOf = (pid) => {
+      const pr = profiles[pid];
+      if (!pr) return 0;
+      const base = (pr.type === "intern" ? 0 : num(pr.monthly)) + (paySettings.allowanceInRate === false && pr.type !== "intern" ? 0 : num(pr.allowanceMonthly));
+      return base / Math.max(1, num(paySettings.workdays) || 22) / Math.max(1, num(paySettings.hours) || 8);
+    };
+    const leaveOn = (pid, date) => (db.timeoff || []).some((r) => r.personId === pid && r.status === "approved" && r.from <= date && date <= r.to);
+
+    const upload = async (file) => {
+      if (!file) return;
+      setBusy(true);
+      try {
+        const XLSX = await loadXlsx();
+        const parsed = parseBiometric(XLSX, new Uint8Array(await file.arrayBuffer()));
+        const active = parsed.people.filter((p) => p.days.some((d) => d.tin || d.tout));
+        if (!active.length) throw new Error("No time ins or outs found in this file.");
+        const id = `att:${parsed.from}_${parsed.to}`;
+        const old = imports.find((x) => x.id === id);
+        const keepEx = {};
+        if (old) old.people.forEach((p) => p.days.forEach((d) => { if (d.excused) keepEx[p.bioId + "|" + d.date] = d.excused; }));
+        const people = active.map((p) => ({ ...p, days: p.days.map((d) => keepEx[p.bioId + "|" + d.date] ? { ...d, excused: keepEx[p.bioId + "|" + d.date] } : d) }));
+        const skipped = parsed.people.length - active.length;
+        await put(id, "att", { id, from: parsed.from, to: parsed.to, file: file.name, people, skipped, by: me.name, at: new Date().toISOString(), appliedAt: old ? old.appliedAt : null }, `Read ${active.length} people for ${shortDate(fromIso(parsed.from))} – ${shortDate(fromIso(parsed.to))}${skipped ? ` (${skipped} with no punches left out)` : ""}.`);
+        setOpenImp(id);
+        /* Fill in guessed matches so most people link up on their own. */
+        people.forEach((bp) => { if (!byBio[bp.bioId]) { const g = guess(bp); if (g) link(bp.bioId, g, true); } });
+      } catch (e) { setToast(e && e.message ? e.message : "That file couldn't be read."); }
+      setBusy(false);
+      if (fileRef.current) fileRef.current.value = "";
+    };
+    const link = (bioId, pid, quiet) => {
+      Object.values(emps).forEach((e) => { if (String(e.bioId) === String(bioId) && e.personId !== pid) put(`employee:${e.personId}`, "employee", { ...e, bioId: "" }); });
+      if (pid) put(`employee:${pid}`, "employee", { ...(emps[pid] || { personId: pid, status: "active" }), personId: pid, bioId: String(bioId) }, quiet ? null : `Linked to ${nameOf(pid)}.`);
+    };
+    const setExcuse = (bioId, date, val) => {
+      const next = { ...imp, people: imp.people.map((p) => p.bioId !== bioId ? p : { ...p, days: p.days.map((d) => d.date !== date ? d : { ...d, excused: val ? (val === true ? "Excused" : val) : undefined }) }) };
+      put(imp.id, "att", next);
+    };
+    const summary = (bp) => {
+      const pid = byBio[bp.bioId] || "";
+      const rate = pid ? hourOf(pid) : 0;
+      const days = bp.days.map((d) => attDay(d, rule, rate, pid && leaveOn(pid, d.date)));
+      const sch = days.filter((d) => d.sched);
+      const s = {
+        pid, days, rate,
+        present: sch.filter((d) => d.tin || d.tout).length, sched: sch.length,
+        absent: days.filter((d) => d.status === "absent").length,
+        leave: days.filter((d) => d.status === "leave").length,
+        lates: days.filter((d) => d.lateMin && d.status !== "excused"),
+        noout: days.filter((d) => d.status === "noout" || d.status === "noin").length,
+        short: days.filter((d) => d.status === "short").length,
+        rest: days.filter((d) => d.status === "restday").length
+      };
+      s.lateMin = s.lates.reduce((t, d) => t + d.lateMin, 0);
+      s.lateAmt = r2(s.lates.reduce((t, d) => t + d.lateAmt, 0));
+      s.worked = days.filter((d) => d.worked != null).reduce((t, d) => t + d.worked, 0);
+      return s;
+    };
+    const run = imp ? runs.find((r) => r.from === imp.from && r.to === imp.to) : null;
+    const apply = () => {
+      if (!run) return setToast(`Make the payroll run for ${shortDate(fromIso(imp.from))} – ${shortDate(fromIso(imp.to))} first (HRIS → Payroll → New payroll run).`);
+      if (run.status !== "draft") return setToast("That payroll run is already approved. Only draft runs can change.");
+      let n = 0;
+      const lines = run.lines.map((l) => {
+        const bp = imp.people.find((p) => byBio[p.bioId] === l.personId);
+        if (!bp) return l;
+        const s = summary(bp);
+        n++;
+        const adj = (l.adjustments || []).filter((a) => a.id !== "att-late");
+        if (s.lateAmt > 0) adj.push({ id: "att-late", label: `Late — ${s.lates.length} time${s.lates.length === 1 ? "" : "s"}, ${s.lateMin} min`, amount: String(-s.lateAmt) });
+        return { ...l, unpaidDays: l.type === "intern" ? l.unpaidDays : s.absent, adjustments: adj };
+      });
+      const at = new Date().toISOString();
+      put(run.id, "run", { ...run, lines, history: [...run.history || [], { at, by: me.name, text: `Time in / out applied (${n} people)` }] }, `Applied to the ${shortDate(fromIso(run.from))} – ${shortDate(fromIso(run.to))} payroll run for ${n} people.`);
+      put(imp.id, "att", { ...imp, appliedAt: at, appliedBy: me.name });
+    };
+    const exportCsv = () => downloadCsv(`time-in-out-${imp.from}-to-${imp.to}.csv`, [
+      ["Name", "Biometric name", "Date", "Time in", "Time out", "Hours (out − in)", "Status", "Late (min)", "Late deduction", "Filled from Sheet 3", "Note"],
+      ...imp.people.flatMap((bp) => { const s = summary(bp); return s.days.filter((d) => d.status !== "off").map((d) => [nameOf(s.pid) || "(not linked)", bp.name, d.date, d.tin, d.tout, d.worked != null ? (d.worked / 60).toFixed(2) : "", ATT_LABEL[d.status][0], d.lateMin || "", d.lateAmt ? d.lateAmt.toFixed(2) : "", d.src, d.excused || ""]); })]);
+
+    const rulesBox = h("div", { className: "ps-pay-person ps-att-rules" },
+      h("div", { className: "ps-pay-row" },
+        h("span", { className: "ps-pay-who" }, h("b", null, "Rules"),
+          h("span", { className: "ps-muted" }, `In by ${rule.latestIn} · ₱${num(rule.perMin)} a minute late up to ${num(rule.perMinUpTo)} min, then whole hours of pay · ${num(rule.requiredHours)} hours a day incl. break · no punches = absent (unless approved leave)`)),
+        h("button", { className: "ps-btn ghost small", onClick: () => setShowRules(!showRules) }, showRules ? "Close" : "Change")),
+      showRules && h("div", { className: "ps-pay-grid" },
+        h("label", { className: "ps-field" }, h("span", null, "Latest time in (on time)"), h("input", { type: "time", value: rule.latestIn, onChange: (e) => put("att-settings", "attsettings", { ...rule, latestIn: e.target.value }) })),
+        h("label", { className: "ps-field" }, h("span", null, "₱ per minute late"), h("input", { inputMode: "decimal", value: rule.perMin, onChange: (e) => put("att-settings", "attsettings", { ...rule, perMin: e.target.value }) })),
+        h("label", { className: "ps-field" }, h("span", null, "Per-minute up to (min), then by the hour"), h("input", { inputMode: "numeric", value: rule.perMinUpTo, onChange: (e) => put("att-settings", "attsettings", { ...rule, perMinUpTo: e.target.value }) })),
+        h("label", { className: "ps-field" }, h("span", null, "Hours a day (incl. break)"), h("input", { inputMode: "decimal", value: rule.requiredHours, onChange: (e) => put("att-settings", "attsettings", { ...rule, requiredHours: e.target.value }) }))));
+
+    const uploader = h("div", { className: "ps-btnrow ps-att-up" },
+      h("input", { ref: fileRef, type: "file", accept: ".xls,.xlsx", style: { display: "none" }, onChange: (e) => upload(e.target.files && e.target.files[0]) }),
+      h("button", { className: "ps-btn", disabled: busy, onClick: () => fileRef.current && fileRef.current.click() }, busy ? "Reading…" : "Upload biometric report (.xls)"),
+      imports.length > 1 && h("select", { value: imp ? imp.id : "", onChange: (e) => { setOpenImp(e.target.value); setOpenPerson(null); } },
+        imports.map((x) => h("option", { key: x.id, value: x.id }, `${shortDate(fromIso(x.from))} – ${shortDate(fromIso(x.to))}, ${x.from.slice(0, 4)}`))));
+
+    if (!imp) return h("div", null,
+      h("p", { className: "ps-muted" }, "Upload the Standard Report from the biometric machine. Time in and out come from the “Exception Stat.” sheet; blanks are filled from “Att.log report”. Lates and absences then go into the matching payroll run."),
+      uploader, rulesBox);
+
+    const list = imp.people.map((bp) => ({ bp, s: summary(bp) }));
+    const unlinked = list.filter((x) => !x.s.pid).length;
+    const totLate = r2(list.reduce((t, x) => t + (x.s.pid ? x.s.lateAmt : 0), 0));
+    return h("div", null,
+      uploader,
+      h("p", { className: "ps-muted" }, `${shortDate(fromIso(imp.from))} – ${longDate(imp.to)} · ${imp.file} · uploaded by ${imp.by} ${shortDate(imp.at)}`,
+        imp.appliedAt ? ` · applied to payroll ${shortDate(imp.appliedAt)}` : "",
+        imp.skipped ? ` · ${imp.skipped} IDs with no punches left out` : ""),
+      rulesBox,
+      h("div", { className: "ps-att-apply" },
+        h("span", null,
+          h("b", null, "Payroll run: "),
+          run ? `${periodLabel(run)} (${run.status === "draft" ? "draft" : "approved — can't change"})` : "none yet for these dates",
+          h("span", { className: "ps-muted" }, ` · late deductions ${peso(totLate)} · ${list.reduce((t, x) => t + (x.s.pid ? x.s.absent : 0), 0)} absent days`,
+            unlinked ? ` · ${unlinked} not linked to anyone (not applied)` : "")),
+        h("span", { className: "ps-btnrow" },
+          h("button", { className: "ps-btn ghost small", onClick: exportCsv }, "Download report"),
+          h("button", { className: "ps-btn small", disabled: !run || run.status !== "draft", onClick: () => confirm({ title: `Put time in / out into the ${run ? periodLabel(run) : ""} payroll run?`, lines: ["Each linked person gets their absent days as unpaid days and one “Late” deduction. Applying again replaces the earlier numbers.", "Interns: lates only (unpaid days stay as they are)."], confirmLabel: "Apply", onYes: apply }) }, imp.appliedAt ? "Apply again" : "Apply to payroll"))),
+      h("div", { className: "ps-pay-tablewrap" }, h("table", { className: "ps-pay-table ps-att-table" },
+        h("thead", null, h("tr", null, ["Biometric name", "Person in the app", "Present", "Absent", "Lates", "Late deduction", "Check", ""].map((t) => h("th", { key: t }, t)))),
+        h("tbody", null, list.map(({ bp, s }) => h(React.Fragment, { key: bp.bioId },
+          h("tr", { className: s.pid ? "" : "ps-att-unlinked" },
+            h("td", null, h("b", null, bp.name), h("span", { className: "ps-muted" }, ` #${bp.bioId}`)),
+            h("td", null, h("select", { value: s.pid, "aria-label": `Who is ${bp.name}`, onChange: (e) => link(bp.bioId, e.target.value) },
+              h("option", { value: "" }, "Not linked"), crew.map((p) => h("option", { key: p.id, value: p.id }, p.name)))),
+            h("td", null, `${s.present}/${s.sched}`, s.rest ? h("span", { className: "ps-muted" }, ` +${s.rest} rest day${s.rest > 1 ? "s" : ""}`) : null),
+            h("td", { className: s.absent ? "ps-hris-over" : "" }, s.absent || "", s.leave ? h("span", { className: "ps-muted" }, ` ${s.leave} leave`) : null),
+            h("td", null, s.lates.length ? `${s.lates.length} · ${s.lateMin} min` : ""),
+            h("td", null, s.lateAmt ? "−" + peso(s.lateAmt) : "", s.pid && !s.rate && s.lates.some((d) => d.lateHours) ? h("span", { className: "ps-muted", title: "No pay profile, so the hourly rate is unknown" }, " (no pay profile)") : null),
+            h("td", null, [s.noout ? `${s.noout} missing punch` : "", s.short ? `${s.short} under ${num(rule.requiredHours)}h` : ""].filter(Boolean).join(" · ")),
+            h("td", null, h("button", { className: "ps-pay-link", onClick: () => setOpenPerson(openPerson === bp.bioId ? null : bp.bioId) }, openPerson === bp.bioId ? "Hide days" : "Days"))),
+          openPerson === bp.bioId && h("tr", { className: "ps-att-days" }, h("td", { colSpan: 8 },
+            h("table", { className: "ps-att-daytable" },
+              h("thead", null, h("tr", null, ["Date", "In", "Out", "Hours", "Status", "Late", ""].map((t) => h("th", { key: t }, t)))),
+              h("tbody", null, s.days.filter((d) => d.status !== "off").map((d) => {
+                const [lab, cls] = ATT_LABEL[d.status];
+                return h("tr", { key: d.date },
+                  h("td", null, new Date(d.date + "T00:00").toLocaleDateString("en-PH", { weekday: "short", month: "short", day: "numeric" })),
+                  h("td", null, d.tin || "—", d.tin && d.src && d.src.includes("in") ? h("small", { className: "ps-muted", title: "Filled from the Att.log sheet" }, " *") : null),
+                  h("td", null, d.tout || "—", d.tout && d.src && d.src.includes("out") ? h("small", { className: "ps-muted", title: "Filled from the Att.log sheet" }, " *") : null),
+                  h("td", null, d.worked != null ? fmtHm(d.worked) : ""),
+                  h("td", null, h("span", { className: `ps-chip ${cls}` }, lab), d.excused && d.excused !== "Excused" ? h("span", { className: "ps-muted" }, " " + d.excused) : null),
+                  h("td", null, d.lateMin && d.status !== "excused" ? `${d.lateMin} min · ${d.lateAmt ? "−" + peso(d.lateAmt) : "no pay rate"}${d.lateHours ? ` (${d.lateHours} h)` : ""}` : ""),
+                  h("td", null, d.sched && (d.excused
+                    ? h("button", { className: "ps-pay-link", onClick: () => setExcuse(bp.bioId, d.date, null) }, "Undo excuse")
+                    : (d.status === "absent" || d.lateMin || d.status === "noout" || d.status === "noin" || d.status === "short") && h("button", { className: "ps-pay-link", title: "No deduction for this day", onClick: () => setExcuse(bp.bioId, d.date, true) }, "Excuse"))));
+              }))),
+            h("p", { className: "ps-muted ps-pay-hint" }, "* filled in from the Att.log report sheet. Excused days aren't counted as late or absent.")))))))));
+  }
+
   function HrisPage({ db, me, mutate, setToast, confirm }) {
     const h = React.createElement;
     const api = payApi();
@@ -6327,6 +6624,9 @@ html[data-theme="dark"] .ps-open{background:#10151D}
       } catch (e) { setState({ loading: false, ok: false, setup: "error" }); }
     };
     useEffect(() => { load(); }, []);
+    /* Payroll keeps its own copy while it's open; pick up its changes (new runs, profiles) when leaving it. */
+    const firstTab = useRef(true);
+    useEffect(() => { if (firstTab.current) { firstTab.current = false; return; } if (tab !== "payroll") load(); }, [tab]);
 
     const crew = db.people.filter((p) => p.role !== "client");
     const nameOf = (id) => (db.people.find((p) => p.id === id) || {}).name || "Someone";
@@ -6422,6 +6722,7 @@ html[data-theme="dark"] .ps-open{background:#10151D}
             fld("Employment type", "type", { options: EMP_TYPES }),
             fld("Status", "status", { options: EMP_STATUS }),
             fld("Start date", "start", { type: "date" }),
+            fld("Biometric ID", "bioId", { mode: "numeric", ph: "ID on the time clock" }),
             form.type === "probationary" && fld("Regularization date", "regularOn", { type: "date" }),
             !empActive(form) && fld("Last day", "endOn", { type: "date" })),
           form.type === "probationary" && !form.regularOn && form.start ? h("p", { className: "ps-muted ps-pay-hint" }, `Probation usually runs 6 months — that's ${longDate(addMonthsIso(form.start, 6))}. You'll get a heads-up 30 days before.`) : null,
@@ -6577,7 +6878,7 @@ html[data-theme="dark"] .ps-open{background:#10151D}
         h("button", { className: "ps-btn ghost", onClick: exportLeave }, `Leave report ${year}`),
         h("button", { className: "ps-btn ghost", onClick: exportDocs }, "Document list")));
 
-    const TABS = [["payroll", "Payroll"], ["employees", "Employees"], ["timeoff", "Time off & leave", pendingN || ""], ["docs", "HR documents"], ["reports", "13th month & reports"]];
+    const TABS = [["payroll", "Payroll"], ["employees", "Employees"], ["timeoff", "Time off & leave", pendingN || ""], ["attendance", "Time in / out"], ["docs", "HR documents"], ["reports", "13th month & reports"]];
     let body;
     if (tab === "payroll") body = h(PayrollPage, { db, me, setToast, confirm, bare: true });
     else if (state.loading) body = h("p", { className: "ps-loading" }, "Opening HR records…");
@@ -6587,6 +6888,7 @@ html[data-theme="dark"] .ps-open{background:#10151D}
     else if (tab === "employees") body = employeesTab;
     else if (tab === "timeoff") body = timeoffTab;
     else if (tab === "docs") body = docsTab;
+    else if (tab === "attendance") body = h(AttendanceTab, { db, me, rows, put, setToast, confirm, crew, emps, profiles });
     else body = reportsTab;
 
     return h(React.Fragment, null,
@@ -10754,6 +11056,13 @@ ${lines.join("\n")}`);
 .ps-person-head{display:flex;align-items:center;gap:14px;margin-bottom:16px}
 .ps-person-head .ps-h2{margin:0 0 2px}
 .ps-tabs.ps-subtabs{border-bottom:0;margin-bottom:10px}.ps-subtabs .ps-tab{border:1px solid var(--line);border-radius:999px;padding:5px 12px;margin:0;font-size:13px}.ps-subtabs .ps-tab.on{background:var(--ink);color:var(--card);border-color:var(--ink)}
+.ps-att-up{flex-wrap:wrap;gap:8px;margin-bottom:10px}.ps-att-up select{font:inherit;padding:6px 8px;border:1px solid var(--line);border-radius:8px;background:var(--card);color:var(--ink)}
+.ps-att-rules{margin:8px 0 12px;display:flex;flex-direction:column;gap:8px}
+.ps-att-apply{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;border:1px solid var(--line);background:var(--card);border-radius:12px;padding:10px 14px;margin-bottom:12px;font-size:13.5px}
+.ps-att-table select{font:inherit;font-size:13px;padding:4px 6px;border:1px solid var(--line);border-radius:6px;background:var(--card);color:var(--ink);max-width:170px}
+.ps-att-unlinked td{opacity:.75}
+.ps-att-days>td{padding:6px 10px 12px}
+.ps-att-daytable{width:100%;border-collapse:collapse;font-size:13px}.ps-att-daytable th{text-align:left;color:var(--muted);font-weight:600;padding:4px 6px}.ps-att-daytable td{padding:4px 6px;border-top:1px solid var(--line)}
 .ps-hris-chips{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}
 .ps-hris-alerts{border:1px solid var(--line);background:var(--card);border-radius:12px;padding:10px 14px;margin:0 0 14px;display:flex;flex-direction:column;gap:4px;font-size:13.5px}
 .ps-hris-alerts .warn{color:var(--warn);font-weight:600}

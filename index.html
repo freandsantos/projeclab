@@ -4,6 +4,18 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Projeclab Studios</title>
+<link rel="manifest" href="/manifest.webmanifest">
+<meta name="theme-color" content="#0F766E">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Projeclab">
+<link rel="apple-touch-icon" href="/pwa/apple-touch-icon.png">
+<script>
+/* Installable app: lets "Add to Home screen" / "Install app" turn Projeclab into its own app icon. */
+if ("serviceWorker" in navigator && location.protocol === "https:") {
+  window.addEventListener("load", function () { navigator.serviceWorker.register("/sw.js").catch(function () {}); });
+}
+</script>
 <link rel="icon" href="data:image/png;base64,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">
 <style>html,body{margin:0;background:#EDF0F3}html[data-theme="dark"],html[data-theme="dark"] body{background:#10151D}</style>
 <style>
@@ -5460,7 +5472,173 @@ html[data-theme="dark"] .ps-open{background:#10151D}
   var PRI_RANK = { high: 0, normal: 1, low: 2 };
   var tdSort = (a, b) => (PRI_RANK[a.pri] ?? 1) - (PRI_RANK[b.pri] ?? 1) || String(a.due || "9999").localeCompare(String(b.due || "9999")) || String(a.created || "").localeCompare(String(b.created || ""));
 
-  function TodoRow({ t, db, today, open, setOpen, update, toggle, remove }) {
+  /* ---- Handwritten to-dos (S Pen) ------------------------------------------
+     A to-do can be written with a pen instead of typed. The strokes are saved
+     in the private pen_ink table (window.psInk; only the writer can read them),
+     and the to-do row in db.todos just carries `ink: "<id>"`, so the shared
+     save stays small. Repeating copies share the same ink id; the ink is
+     deleted only when no to-do points at it any more.
+     Stroke format: { p: [x, y, r, x, y, r, ...] } in CSS pixels, r = half the
+     line width (from pen pressure). Ink is cropped on save: { w, h, strokes }.
+     Drawn as filled outlines in currentColor so dark mode just works.
+     Palm rejection: once a pen has been used on this device, fingers don't
+     draw (switchable). The S Pen button or the Eraser button rubs strokes out. */
+  var INK_R = 1.6;
+  var inkDemo = {
+    list: async () => { try { const m = JSON.parse(localStorage.getItem("ps-ink-demo") || "{}"); return Object.keys(m).map((id) => ({ id, ...m[id] })); } catch (e) { return []; } },
+    save: async (id, ink) => { const m = JSON.parse(localStorage.getItem("ps-ink-demo") || "{}"); m[id] = ink; localStorage.setItem("ps-ink-demo", JSON.stringify(m)); },
+    remove: async (ids) => { const m = JSON.parse(localStorage.getItem("ps-ink-demo") || "{}"); [].concat(ids).forEach((id) => delete m[id]); localStorage.setItem("ps-ink-demo", JSON.stringify(m)); }
+  };
+  var inkApi = () => typeof window !== "undefined" && window.psInk || inkDemo;
+  var inkLS = (k, v) => { try { if (v === void 0) return localStorage.getItem(k); localStorage.setItem(k, v); } catch (e) { return null; } };
+  var r1 = (n) => Math.round(n * 10) / 10;
+  /* One stroke -> an SVG path of its filled outline (works for <path d> and Path2D). */
+  var inkPath = (p) => {
+    const n = p.length / 3;
+    if (!n) return "";
+    const X = (i) => p[i * 3], Y = (i) => p[i * 3 + 1], R = (i) => Math.max(0.35, p[i * 3 + 2]);
+    if (n === 1 || n === 2 && Math.hypot(X(1) - X(0), Y(1) - Y(0)) < 0.5) {
+      const x = X(0), y = Y(0), r = R(0);
+      return `M${r1(x - r)} ${r1(y)}a${r1(r)} ${r1(r)} 0 1 0 ${r1(2 * r)} 0a${r1(r)} ${r1(r)} 0 1 0 ${r1(-2 * r)} 0Z`;
+    }
+    const L = [], Rt = [];
+    for (let i = 0; i < n; i++) {
+      const a = Math.max(0, i - 1), b = Math.min(n - 1, i + 1);
+      let dx = X(b) - X(a), dy = Y(b) - Y(a);
+      const d = Math.hypot(dx, dy) || 1;
+      dx /= d; dy /= d;
+      const r = R(i);
+      L.push([X(i) - dy * r, Y(i) + dx * r]);
+      Rt.push([X(i) + dy * r, Y(i) - dx * r]);
+    }
+    const side = (pts) => {
+      let s = "";
+      for (let i = 1; i < pts.length - 1; i++) {
+        const mx = (pts[i][0] + pts[i + 1][0]) / 2, my = (pts[i][1] + pts[i + 1][1]) / 2;
+        s += `Q${r1(pts[i][0])} ${r1(pts[i][1])} ${r1(mx)} ${r1(my)}`;
+      }
+      const z = pts[pts.length - 1];
+      return s + `L${r1(z[0])} ${r1(z[1])}`;
+    };
+    const re = Rt.slice().reverse(), rEnd = R(n - 1), rStart = R(0);
+    return `M${r1(L[0][0])} ${r1(L[0][1])}` + side(L) +
+      `A${r1(rEnd)} ${r1(rEnd)} 0 0 1 ${r1(re[0][0])} ${r1(re[0][1])}` + side(re) +
+      `A${r1(rStart)} ${r1(rStart)} 0 0 1 ${r1(L[0][0])} ${r1(L[0][1])}Z`;
+  };
+  /* Trim the empty paper around the writing. */
+  var inkCrop = (strokes, pad = 4) => {
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    strokes.forEach((s) => { for (let i = 0; i < s.p.length; i += 3) { const r = s.p[i + 2]; x0 = Math.min(x0, s.p[i] - r); y0 = Math.min(y0, s.p[i + 1] - r); x1 = Math.max(x1, s.p[i] + r); y1 = Math.max(y1, s.p[i + 1] + r); } });
+    if (!isFinite(x0)) return null;
+    const ox = x0 - pad, oy = y0 - pad;
+    return {
+      w: Math.ceil(x1 - x0 + pad * 2),
+      h: Math.ceil(y1 - y0 + pad * 2),
+      strokes: strokes.map((s) => ({ p: s.p.map((v, i) => i % 3 === 0 ? r1(v - ox) : i % 3 === 1 ? r1(v - oy) : Math.round(v * 100) / 100) }))
+    };
+  };
+  function InkView({ ink, maxH = 120, className = "" }) {
+    const h = React.createElement;
+    if (!ink || !ink.strokes) return h("span", { className: "ps-ink-missing" }, "✎ Handwriting…");
+    return h("svg", { className: "ps-ink-view " + className, viewBox: `0 0 ${ink.w} ${ink.h}`, width: ink.w, height: ink.h, preserveAspectRatio: "xMinYMid meet", style: { width: ink.w, maxWidth: "100%", maxHeight: maxH, height: "auto" }, role: "img", "aria-label": "Handwritten to-do" },
+      ink.strokes.map((s, i) => h("path", { key: i, d: inkPath(s.p) })));
+  }
+  /* The writing pad. `strokes` / `setStrokes` belong to the parent. */
+  function InkPad({ strokes, setStrokes, minH = 150, autoFocusHint = true }) {
+    const h = React.createElement;
+    const wrap = useRef(null), cv = useRef(null), live = useRef(null), mode = useRef(null);
+    const sref = useRef(strokes);
+    sref.current = strokes;
+    const [height, setHeight] = useState(minH);
+    const [eraser, setEraser] = useState(false);
+    const [penSeen, setPenSeen] = useState(inkLS("ps-pen-seen") === "1");
+    const [finger, setFinger] = useState(inkLS("ps-pen-finger") === "1");
+    const opts = useRef({});
+    opts.current = { eraser, penSeen, finger };
+    const draw = () => {
+      const c = cv.current, w = wrap.current;
+      if (!c || !w) return;
+      const dpr = window.devicePixelRatio || 1, W = w.clientWidth, H = height;
+      if (c.width !== Math.round(W * dpr) || c.height !== Math.round(H * dpr)) { c.width = Math.round(W * dpr); c.height = Math.round(H * dpr); }
+      const g = c.getContext("2d");
+      g.setTransform(dpr, 0, 0, dpr, 0, 0);
+      g.clearRect(0, 0, W, H);
+      g.fillStyle = getComputedStyle(w).color;
+      const all = live.current ? [...sref.current, live.current] : sref.current;
+      all.forEach((s) => { try { g.fill(new Path2D(inkPath(s.p))); } catch (e) {} });
+    };
+    useEffect(draw);
+    useEffect(() => {
+      if (!wrap.current || typeof ResizeObserver === "undefined") return;
+      const ro = new ResizeObserver(() => draw());
+      ro.observe(wrap.current);
+      return () => ro.disconnect();
+    }, []);
+    useEffect(() => { if (!strokes.length) setHeight(minH); }, [strokes.length]);
+    const pt = (e) => { const r = cv.current.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; };
+    const radius = (e) => {
+      const pr = e.pointerType === "pen" ? (e.pressure > 0 ? e.pressure : 0.5) : 0.5;
+      return INK_R * (0.45 + 1.1 * pr);
+    };
+    const eraseAt = ([x, y]) => {
+      const keep = sref.current.filter((s) => { for (let i = 0; i < s.p.length; i += 3) if (Math.hypot(s.p[i] - x, s.p[i + 1] - y) < 9 + s.p[i + 2]) return false; return true; });
+      if (keep.length !== sref.current.length) { sref.current = keep; setStrokes(keep); }
+    };
+    const grow = (y) => { if (y > height - 34 && height < 640) setHeight((v) => Math.min(640, v + 90)); };
+    const down = (e) => {
+      const o = opts.current;
+      if (e.pointerType === "pen" && !o.penSeen) { inkLS("ps-pen-seen", "1"); setPenSeen(true); o.penSeen = true; }
+      if (e.pointerType === "touch" && o.penSeen && !o.finger) return; /* palm or finger: ignore */
+      if (mode.current) return;
+      e.preventDefault();
+      try { cv.current.setPointerCapture(e.pointerId); } catch (er) {}
+      const rub = o.eraser || e.pointerType === "pen" && (e.buttons & 32 || e.buttons & 2 || e.button === 5);
+      mode.current = { id: e.pointerId, rub };
+      if (rub) { eraseAt(pt(e)); return; }
+      const [x, y] = pt(e);
+      live.current = { p: [x, y, radius(e)] };
+      draw();
+    };
+    const move = (e) => {
+      const m = mode.current;
+      if (!m || m.id !== e.pointerId) return;
+      e.preventDefault();
+      const evs = e.getCoalescedEvents ? e.getCoalescedEvents() : [e];
+      if (m.rub) { (evs.length ? evs : [e]).forEach((ev) => eraseAt(pt(ev))); return; }
+      const p = live.current.p;
+      (evs.length ? evs : [e]).forEach((ev) => {
+        const [rx, ry] = pt(ev), n = p.length;
+        const lx = p[n - 3], ly = p[n - 2], lr = p[n - 1];
+        const x = lx + (rx - lx) * 0.6, y = ly + (ry - ly) * 0.6;
+        if (Math.hypot(x - lx, y - ly) < 0.7) return;
+        p.push(x, y, lr + (radius(ev) - lr) * 0.35);
+        grow(y);
+      });
+      draw();
+    };
+    const up = (e) => {
+      const m = mode.current;
+      if (!m || m.id !== e.pointerId) return;
+      mode.current = null;
+      if (m.rub) return;
+      const s = live.current;
+      live.current = null;
+      if (s) { const p = s.p; if (p.length >= 6) { const n = p.length; p[n - 1] = Math.max(p[n - 1] * 0.7, 0.4); } setStrokes([...sref.current, { p: p.map((v) => r1(v)) }]); }
+    };
+    const toggleFinger = () => { const v = !finger; setFinger(v); inkLS("ps-pen-finger", v ? "1" : "0"); };
+    return h("div", { className: "ps-ink-pad" },
+      h("div", { ref: wrap, className: `ps-ink-paper ${eraser ? "rub" : ""}`, style: { height } },
+        h("canvas", { ref: cv, style: { width: "100%", height }, onPointerDown: down, onPointerMove: move, onPointerUp: up, onPointerCancel: up, onContextMenu: (e) => e.preventDefault() }),
+        !strokes.length && autoFocusHint && h("span", { className: "ps-ink-hint" }, penSeen && !finger ? "Write with your S Pen" : "Write here with your pen")),
+      h("div", { className: "ps-ink-tools" },
+        h("button", { type: "button", className: "ps-ink-tool", disabled: !strokes.length, onClick: () => setStrokes(strokes.slice(0, -1)), title: "Undo last stroke" }, "↶ Undo"),
+        h("button", { type: "button", className: `ps-ink-tool ${eraser ? "on" : ""}`, onClick: () => setEraser(!eraser), title: "Rub out strokes (the S Pen button works too)" }, "⌫ Eraser"),
+        h("button", { type: "button", className: "ps-ink-tool", disabled: !strokes.length, onClick: () => { setStrokes([]); setEraser(false); } }, "Clear"),
+        penSeen && h("button", { type: "button", className: `ps-ink-tool ${finger ? "on" : ""}`, onClick: toggleFinger, title: "Fingers are ignored so your palm can rest on the screen" }, finger ? "Finger writes: on" : "Finger writes: off")));
+  }
+
+  var tdLabel = (t) => t.text || (t.ink ? "Handwritten to-do" : "Untitled");
+  function TodoRow({ t, db, today, open, setOpen, update, toggle, remove, ink, rewrite }) {
     const h = React.createElement;
     const [text, setText] = useState(t.text || "");
     const [notes, setNotes] = useState(t.notes || "");
@@ -5470,7 +5648,9 @@ html[data-theme="dark"] .ps-open{background:#10151D}
     const late = !t.done && t.due && t.due < today;
     const steps = t.steps || [];
     const stepsDone = steps.filter((s) => s.done).length;
-    const commitText = () => { const v = text.trim(); if (!v) { setText(t.text || ""); return; } if (v !== t.text) update(t.id, { text: v }); };
+    const commitText = () => { const v = text.trim(); if (!v && !t.ink) { setText(t.text || ""); return; } if (v !== (t.text || "")) update(t.id, { text: v }); };
+    const [redo, setRedo] = useState(null);
+    useEffect(() => { if (!open) setRedo(null); }, [open]);
     const addStep = () => { const v = step.trim(); if (!v) return; update(t.id, { steps: [...steps, { id: uid("s"), text: v, done: false }] }); setStep(""); };
     const sub = [
       t.done && t.doneAt ? "Done " + shortDate(t.doneAt) : !t.done && t.due ? tdFmt(t.due, { weekday: "short", month: "short", day: "numeric" }) + (late ? ` \xB7 ${tdWhen(t.due, today).toLowerCase()}` : "") : "",
@@ -5480,8 +5660,9 @@ html[data-theme="dark"] .ps-open{background:#10151D}
     return h("div", { className: `ps-td-row ${open ? "open" : ""} ${t.done ? "done" : ""}` },
       h("div", { className: "ps-td-line" },
         h("button", { className: `ps-td-tick ${t.done ? "on" : ""}`, "aria-label": t.done ? "Mark not done" : "Mark done", onClick: () => toggle(t) }, t.done ? "✓" : ""),
-        open ? h("div", { className: "ps-td-main" }, h("input", { className: "ps-td-title", autoFocus: true, value: text, onChange: (e) => setText(e.target.value), onBlur: commitText, onKeyDown: (e) => { if (e.key === "Enter") e.target.blur(); }, "aria-label": "To-do" })) : h("div", { className: "ps-td-main", onClick: () => setOpen(t.id) },
-          h("span", { className: "ps-td-text" }, t.pri === "high" && !t.done ? h("span", { className: "ps-td-flag", title: "High priority" }, "!") : null, t.text || "Untitled"),
+        open ? h("div", { className: "ps-td-main" }, t.ink && !redo && h(InkView, { ink, maxH: 260 }), h("input", { className: "ps-td-title", autoFocus: !t.ink, placeholder: t.ink ? "Typed label (optional, helps search)" : "", value: text, onChange: (e) => setText(e.target.value), onBlur: commitText, onKeyDown: (e) => { if (e.key === "Enter") e.target.blur(); }, "aria-label": "To-do" })) : h("div", { className: "ps-td-main", onClick: () => setOpen(t.id) },
+          h("span", { className: `ps-td-text ${t.ink ? "ink" : ""}` }, t.pri === "high" && !t.done ? h("span", { className: "ps-td-flag", title: "High priority" }, "!") : null, t.ink ? h(InkView, { ink, maxH: 120 }) : t.text || "Untitled"),
+          t.ink && t.text ? h("span", { className: "ps-td-sub" }, t.text) : null,
           sub ? h("span", { className: `ps-td-sub ${late ? "late" : ""}` }, sub) : null),
         h("div", { className: "ps-td-icons" },
           h("button", { className: "ps-td-icon", title: "Edit", "aria-label": "Edit", onClick: () => setOpen(open ? null : t.id) },
@@ -5489,6 +5670,12 @@ html[data-theme="dark"] .ps-open{background:#10151D}
           h("button", { className: "ps-td-icon", title: "Delete", "aria-label": "Delete", onClick: () => remove(t) },
             h("svg", { viewBox: "0 0 24 24", width: 17, height: 17, fill: "none", stroke: "currentColor", strokeWidth: 1.8, strokeLinecap: "round", strokeLinejoin: "round" }, h("path", { d: "M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13" }))))),
       open && h("div", { className: "ps-td-edit" },
+        t.ink && (redo ? h("div", { className: "ps-ink-redo" },
+          h(InkPad, { strokes: redo, setStrokes: setRedo, minH: 140 }),
+          h("div", { className: "ps-ink-redo-btns" },
+            h("button", { className: "ps-btn ghost small", onClick: () => setRedo(null) }, "Cancel"),
+            h("button", { className: "ps-btn small", disabled: !redo.length, onClick: async () => { if (await rewrite(t, redo)) setRedo(null); } }, "Save handwriting"))) :
+          h("button", { className: "ps-btn ghost small ps-ink-rewrite", onClick: () => setRedo([]) }, "✎ Rewrite")),
         h("textarea", { rows: 2, value: notes, placeholder: "Notes", onChange: (e) => setNotes(e.target.value), onBlur: () => { if (notes !== (t.notes || "")) update(t.id, { notes }); } }),
         steps.length > 0 && h("div", { className: "ps-td-steps" }, steps.map((s) => h("div", { key: s.id, className: `ps-td-step ${s.done ? "on" : ""}` },
           h("input", { type: "checkbox", checked: !!s.done, onChange: () => update(t.id, { steps: steps.map((x) => x.id === s.id ? { ...x, done: !x.done } : x) }) }),
@@ -5514,11 +5701,54 @@ html[data-theme="dark"] .ps-open{background:#10151D}
     const [showDone, setShowDone] = useState(false);
     const [rep, setRep] = useState("");
     const [showRep, setShowRep] = useState(true);
+    /* Pen mode: write a to-do by hand. Starts on if this device has a pen. */
+    const [pen, setPenMode] = useState(() => { const v = inkLS("ps-td-pen"); return v ? v === "1" : inkLS("ps-pen-seen") === "1"; });
+    const setPen = (v) => { setPenMode(v); inkLS("ps-td-pen", v ? "1" : "0"); };
+    const [strokes, setStrokes] = useState([]);
+    const [inks, setInks] = useState({});
+    const [saving, setSaving] = useState(false);
     const mine = myTodos(db, me);
+    const inkIds = mine.filter((t) => t.ink).map((t) => t.ink).sort().join(",");
+    useEffect(() => {
+      if (!inkIds) return;
+      let off = false;
+      inkApi().list().then((rows) => { if (off) return; const m = {}; rows.forEach((r) => { m[r.id] = r; }); setInks((o) => ({ ...o, ...m })); })
+        .catch((e) => { if (!off) setToast(e.message || "Couldn't load your handwriting."); });
+      return () => { off = true; };
+    }, [inkIds]);
+    /* Delete handwriting nobody points at any more (after a delete / clear). */
+    const dropInk = (ids, rows) => {
+      const used = new Set((rows || []).filter((x) => x && x.ink).map((x) => x.ink));
+      const gone = [...new Set(ids.filter((id) => id && !used.has(id)))];
+      if (gone.length) inkApi().remove(gone).catch((e) => console.warn("ink remove", e));
+    };
     const stamp = () => (/* @__PURE__ */ new Date()).toISOString();
     const update = (id, patch) => mutate((n) => {
       n.todos = (n.todos || []).map((x) => x.id === id ? { ...x, ...patch, at: stamp() } : x);
     });
+    const addInk = async () => {
+      const ink = inkCrop(strokes);
+      if (!ink || saving) return;
+      const inkId = uid("ink");
+      setSaving(true);
+      try { await inkApi().save(inkId, ink); } catch (e) { setSaving(false); setToast(e.message || "Your handwriting didn't save. Try again."); return; }
+      setSaving(false);
+      setInks((o) => ({ ...o, [inkId]: { id: inkId, ...ink } }));
+      const d = due || (rep ? today : "");
+      const row = { id: uid("td"), owner: me.id, text: "", ink: inkId, notes: "", due: d, dom: d ? Number(d.slice(8, 10)) : void 0, pri: "normal", list: "", clientId: "", repeat: rep, steps: [], done: false, created: stamp(), at: stamp() };
+      mutate((n) => { n.todos = [...(n.todos || []), row]; });
+      setStrokes([]);
+      setDue("");
+      setRep("");
+    };
+    const rewrite = async (t, st) => {
+      const ink = inkCrop(st);
+      if (!ink) return false;
+      try { await inkApi().save(t.ink, ink); } catch (e) { setToast(e.message || "Your handwriting didn't save. Try again."); return false; }
+      setInks((o) => ({ ...o, [t.ink]: { id: t.ink, ...ink } }));
+      update(t.id, {});
+      return true;
+    };
     const add = () => {
       const v = text.trim();
       if (!v) return;
@@ -5541,16 +5771,16 @@ html[data-theme="dark"] .ps-open{background:#10151D}
     };
     const remove = (t) => confirm({
       title: "Delete this to-do?",
-      lines: [`“${t.text}”`, "This cannot be undone."],
+      lines: [`“${tdLabel(t)}”`, "This cannot be undone."],
       confirmLabel: "Delete",
-      onYes: () => { mutate((n) => { n.todos = (n.todos || []).filter((x) => x.id !== t.id); }); setOpenId(null); }
+      onYes: () => { const left = (db.todos || []).filter((x) => x.id !== t.id); mutate((n) => { n.todos = (n.todos || []).filter((x) => x.id !== t.id); }); setOpenId(null); if (t.ink) dropInk([t.ink], left); }
     });
     const done = mine.filter((t) => t.done).sort((a, b) => String(b.doneAt || "").localeCompare(String(a.doneAt || "")));
     const clearDone = () => confirm({
       title: `Clear ${done.length} completed to-do${done.length === 1 ? "" : "s"}?`,
       lines: ["They're removed for good."],
       confirmLabel: "Clear",
-      onYes: () => { mutate((n) => { n.todos = (n.todos || []).filter((x) => !(x.owner === me.id && x.done)); }); setShowDone(false); }
+      onYes: () => { const keep = (x) => !(x.owner === me.id && x.done); mutate((n) => { n.todos = (n.todos || []).filter(keep); }); setShowDone(false); dropInk(done.map((x) => x.ink), (db.todos || []).filter(keep)); }
     });
     const open = mine.filter((t) => !t.done);
     const recurring = open.filter((t) => t.repeat).sort((a, b) => String(a.due || "").localeCompare(String(b.due || "")));
@@ -5560,19 +5790,25 @@ html[data-theme="dark"] .ps-open{background:#10151D}
       ["Upcoming", open.filter((t) => t.due > today)],
       ["Someday", open.filter((t) => !t.due)]
     ].map(([k, rows]) => [k, rows.slice().sort(k === "Upcoming" ? (a, b) => a.due.localeCompare(b.due) || tdSort(a, b) : tdSort)]);
-    const row = (t) => h(TodoRow, { key: t.id, t, db, today, open: openId === t.id, setOpen: setOpenId, update, toggle, remove });
+    const row = (t) => h(TodoRow, { key: t.id, t, db, today, open: openId === t.id, setOpen: setOpenId, update, toggle, remove, ink: t.ink ? inks[t.ink] : null, rewrite });
     const dateChip = due ? (due === today ? "Today" : due === tdAdd(today, 1) ? "Tomorrow" : tdFmt(due, { month: "short", day: "numeric" })) : "No date";
     return h("div", { className: "ps-td" },
       h("h1", { className: "ps-td-h1" }, "To-dos"),
-      h("div", { className: "ps-td-add" },
-        h("span", { className: "ps-td-plus", "aria-hidden": "true" }, "+"),
-        h("input", { className: "ps-td-addtext", placeholder: "Add a to-do", value: text, onChange: (e) => setText(e.target.value), onKeyDown: (e) => { if (e.key === "Enter") add(); }, "aria-label": "New to-do" }),
+      h("div", { className: "ps-td-modes", role: "tablist", "aria-label": "How to add" },
+        h("button", { role: "tab", "aria-selected": !pen, className: `ps-td-mode ${!pen ? "on" : ""}`, onClick: () => setPen(false) }, "⌨ Type"),
+        h("button", { role: "tab", "aria-selected": pen, className: `ps-td-mode ${pen ? "on" : ""}`, onClick: () => setPen(true) }, "✎ Write")),
+      pen && h(InkPad, { strokes, setStrokes }),
+      h("div", { className: `ps-td-add ${pen ? "pen" : ""}` },
+        !pen && h("span", { className: "ps-td-plus", "aria-hidden": "true" }, "+"),
+        !pen && h("input", { className: "ps-td-addtext", placeholder: "Add a to-do", value: text, onChange: (e) => setText(e.target.value), onKeyDown: (e) => { if (e.key === "Enter") add(); }, "aria-label": "New to-do" }),
+        pen && h("span", { className: "ps-td-addtext ps-td-penhint" }, strokes.length ? "" : "Write, then tap Add"),
         h("label", { className: `ps-td-date ${due ? "on" : ""}`, title: "Due date" },
           h("span", null, dateChip),
           h("input", { type: "date", value: due, onChange: (e) => setDue(e.target.value), "aria-label": "Due date" })),
         h("label", { className: `ps-td-date ${rep ? "on" : ""}`, title: "Repeat" },
           h("span", null, "\u21BB ", rep ? TODO_REPEAT_SHORT[rep] : "Repeat"),
-          h("select", { value: rep, onChange: (e) => setRep(e.target.value), "aria-label": "Repeat" }, TODO_REPEAT.map(([k, l]) => h("option", { key: k, value: k }, l))))),
+          h("select", { value: rep, onChange: (e) => setRep(e.target.value), "aria-label": "Repeat" }, TODO_REPEAT.map(([k, l]) => h("option", { key: k, value: k }, l)))),
+        pen && h("button", { className: "ps-btn small ps-ink-add", disabled: !strokes.length || saving, onClick: addInk }, saving ? "Saving…" : "Add")),
       open.length === 0 && h("p", { className: "ps-td-empty" }, mine.length ? "All clear." : "Nothing here yet. Type a to-do above and press Enter."),
       groups.filter(([, rows]) => rows.length).map(([k, rows]) => h("section", { key: k, className: `ps-td-group ${k === "Late" ? "late" : ""}` },
         h("h3", { className: "ps-td-gh" }, k, " ", h("span", null, rows.length)),
@@ -5582,7 +5818,7 @@ html[data-theme="dark"] .ps-open{background:#10151D}
           h("button", { className: "ps-td-gh fold", onClick: () => setShowRep(!showRep), "aria-expanded": showRep }, showRep ? "\u25BE" : "\u25B8", " Recurring ", h("span", null, recurring.length))),
         showRep && recurring.map((t) => h("div", { key: "r" + t.id, className: "ps-td-rec", onClick: () => setOpenId(t.id) },
           h("span", { className: "ps-td-rec-icon", "aria-hidden": "true" }, "\u21BB"),
-          h("span", { className: "ps-td-rec-text" }, t.text),
+          h("span", { className: "ps-td-rec-text" }, t.ink ? h(InkView, { ink: inks[t.ink], maxH: 30, className: "small" }) : t.text),
           h("span", { className: "ps-td-rec-when" }, TODO_REPEAT_SHORT[t.repeat] || "", t.due ? ` \xB7 ${t.due < today ? "late" : /^(Today|Tomorrow)$/.test(tdWhen(t.due, today)) ? "due " + tdWhen(t.due, today).toLowerCase() : "next " + tdFmt(t.due, { month: "short", day: "numeric" })}` : "")))),
       done.length > 0 && h("section", { className: "ps-td-group donegrp" },
         h("div", { className: "ps-td-gh-row" },
@@ -8629,6 +8865,15 @@ ${lines.join("\n")}`);
         mutate((n) => { n.trash = (n.trash || []).filter((t) => new Date(t.trashedAt).getTime() >= cut); });
       }
     }, [!!db, me && me.id]);
+    /* Opened from the home-screen app icon (?app=todos): go straight to My to-dos. */
+    useEffect(() => {
+      if (!db || !me) return;
+      let want = null;
+      try { want = new URLSearchParams(window.location.search).get("app"); } catch (e) {}
+      if (want !== "todos") return;
+      try { history.replaceState(null, "", window.location.pathname + window.location.hash); } catch (e) {}
+      if (canTodo(me)) setPage({ tab: "todos" });
+    }, [!!db, me && me.id]);
     /* Opening a shared task link. Waits for the data and the signed-in person. */
     useEffect(() => {
       if (!db || !me) return;
@@ -11563,6 +11808,33 @@ html.ps-theming .ps-theme-knob,html.ps-theming .ps-theme-ic{transition:transform
 .ps-root .ps-td-edit .ps-td-stepin{background:none}
 .ps-td-opts{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
 .ps-td-opts .ps-btn{margin-left:auto}
+.ps-td-modes{display:inline-flex;gap:2px;background:var(--card);border:1px solid var(--line);border-radius:999px;padding:3px;margin:0 0 12px}
+.ps-root .ps-td-mode{background:none;border:0;border-radius:999px;padding:6px 14px;font:inherit;font-size:13.5px;font-weight:600;color:var(--muted);cursor:pointer}
+.ps-root .ps-td-mode.on{background:var(--accent);color:#fff}
+.ps-root.dark .ps-td-mode.on{color:#05201D}
+.ps-td-add.pen{border-bottom:0;padding-top:0;margin-bottom:22px}
+.ps-td-penhint{color:var(--muted);font-size:14px}
+.ps-root .ps-ink-add{min-width:84px}
+.ps-ink-pad{margin-bottom:8px}
+.ps-ink-paper{position:relative;color:var(--ink);background-color:var(--card);border:1px solid var(--line);border-radius:12px;overflow:hidden;
+  background-image:repeating-linear-gradient(to bottom,transparent 0,transparent 43px,var(--line) 43px,var(--line) 44px);background-position:0 18px;transition:height .15s}
+.ps-ink-paper canvas{display:block;touch-action:none;-webkit-user-select:none;user-select:none;cursor:crosshair}
+.ps-ink-paper.rub canvas{cursor:cell}
+.ps-ink-hint{position:absolute;left:16px;top:16px;color:var(--muted);font-size:14px;pointer-events:none;opacity:.8}
+.ps-ink-tools{display:flex;flex-wrap:wrap;gap:4px;margin-top:6px}
+.ps-root .ps-ink-tool{background:none;border:1px solid transparent;border-radius:8px;padding:6px 10px;font:inherit;font-size:13px;color:var(--muted);cursor:pointer}
+.ps-root .ps-ink-tool:hover:not(:disabled){background:var(--card);color:var(--ink)}
+.ps-root .ps-ink-tool.on{background:var(--okbg);color:var(--accent);border-color:var(--accent)}
+.ps-root .ps-ink-tool:disabled{opacity:.4;cursor:default}
+.ps-ink-view{display:block;fill:currentColor;max-width:100%}
+.ps-ink-view.small{display:inline-block;vertical-align:middle}
+.ps-td-text.ink{display:block;align-self:flex-start;max-width:100%;color:var(--ink)}
+.ps-td-row.done .ps-td-text.ink{opacity:.45;background:linear-gradient(var(--muted),var(--muted)) no-repeat 0 55%/100% 1.5px}
+.ps-ink-missing{color:var(--muted);font-size:14px}
+.ps-ink-redo{display:flex;flex-direction:column;gap:6px}
+.ps-ink-redo-btns{display:flex;gap:6px;justify-content:flex-end}
+.ps-root .ps-ink-rewrite{align-self:flex-start}
+@media (max-width:640px){.ps-td-penhint{display:none}.ps-td-add.pen{justify-content:flex-end;flex-wrap:wrap}}
 @media (max-width:640px){.ps-td-edit{padding-left:0}.ps-td-opts select,.ps-td-opts input{flex:1 1 40%}.ps-td-opts .ps-btn{width:100%}}
 `;
   window.ProjeclabStudios = ProjeclabStudios;
@@ -11786,6 +12058,30 @@ if (sb) {
     },
     remove: async (id) => {
       const { error } = await sb.from("invoices").delete().eq("id", id);
+      if (error) throw error;
+    }
+  };
+}
+
+/* Handwritten to-dos: the pen strokes live in their own Supabase table (pen_ink).
+   Row-level security only lets the login that wrote a row read or change it, so
+   handwriting never goes into the shared app data, Realtime, Slack or backups. */
+if (sb) {
+  window.psInk = {
+    live: true,
+    list: async () => {
+      const { data, error } = await sb.from("pen_ink").select("id, w, h, strokes");
+      if (error) throw new Error(/does not exist|schema cache/i.test(error.message || "") ? "Handwriting storage isn't set up yet - run pen_ink_setup.sql in Supabase." : error.message);
+      return data || [];
+    },
+    save: async (id, ink) => {
+      const { error } = await sb.from("pen_ink").upsert({ id, w: ink.w, h: ink.h, strokes: ink.strokes, updated_at: new Date().toISOString() });
+      if (error) throw new Error("Your handwriting didn't save: " + (error.message || "unknown error"));
+    },
+    remove: async (ids) => {
+      const list = [].concat(ids).filter(Boolean);
+      if (!list.length) return;
+      const { error } = await sb.from("pen_ink").delete().in("id", list);
       if (error) throw error;
     }
   };

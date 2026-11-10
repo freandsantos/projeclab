@@ -5484,6 +5484,8 @@ html[data-theme="dark"] .ps-open{background:#10151D}
      Palm rejection: once a pen has been used on this device, fingers don't
      draw (switchable). The S Pen button or the Eraser button rubs strokes out. */
   var INK_R = 1.6;
+  /* The pad is 10 ruled lines: 18px top margin, 44px per line, 18px below the last. */
+  var INK_LINES = 10, INK_LINE = 44, INK_PAD_H = 18 + INK_LINES * INK_LINE + 18;
   var inkDemo = {
     list: async () => { try { const m = JSON.parse(localStorage.getItem("ps-ink-demo") || "{}"); return Object.keys(m).map((id) => ({ id, ...m[id] })); } catch (e) { return []; } },
     save: async (id, ink) => { const m = JSON.parse(localStorage.getItem("ps-ink-demo") || "{}"); m[id] = ink; localStorage.setItem("ps-ink-demo", JSON.stringify(m)); },
@@ -5544,7 +5546,7 @@ html[data-theme="dark"] .ps-open{background:#10151D}
       ink.strokes.map((s, i) => h("path", { key: i, d: inkPath(s.p) })));
   }
   /* The writing pad. `strokes` / `setStrokes` belong to the parent. */
-  function InkPad({ strokes, setStrokes, minH = 150, autoFocusHint = true }) {
+  function InkPad({ strokes, setStrokes, minH = INK_PAD_H, autoFocusHint = true }) {
     const h = React.createElement;
     const wrap = useRef(null), cv = useRef(null), live = useRef(null), mode = useRef(null);
     const sref = useRef(strokes);
@@ -5584,7 +5586,7 @@ html[data-theme="dark"] .ps-open{background:#10151D}
       const keep = sref.current.filter((s) => { for (let i = 0; i < s.p.length; i += 3) if (Math.hypot(s.p[i] - x, s.p[i + 1] - y) < 9 + s.p[i + 2]) return false; return true; });
       if (keep.length !== sref.current.length) { sref.current = keep; setStrokes(keep); }
     };
-    const grow = (y) => { if (y > height - 34 && height < 640) setHeight((v) => Math.min(640, v + 90)); };
+    const grow = () => {}; /* fixed at 10 lines */
     const down = (e) => {
       const o = opts.current;
       if (e.pointerType === "pen" && !o.penSeen) { inkLS("ps-pen-seen", "1"); setPenSeen(true); o.penSeen = true; }
@@ -5671,7 +5673,7 @@ html[data-theme="dark"] .ps-open{background:#10151D}
             h("svg", { viewBox: "0 0 24 24", width: 17, height: 17, fill: "none", stroke: "currentColor", strokeWidth: 1.8, strokeLinecap: "round", strokeLinejoin: "round" }, h("path", { d: "M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13" }))))),
       open && h("div", { className: "ps-td-edit" },
         t.ink && (redo ? h("div", { className: "ps-ink-redo" },
-          h(InkPad, { strokes: redo, setStrokes: setRedo, minH: 140 }),
+          h(InkPad, { strokes: redo, setStrokes: setRedo }),
           h("div", { className: "ps-ink-redo-btns" },
             h("button", { className: "ps-btn ghost small", onClick: () => setRedo(null) }, "Cancel"),
             h("button", { className: "ps-btn small", disabled: !redo.length, onClick: async () => { if (await rewrite(t, redo)) setRedo(null); } }, "Save handwriting"))) :

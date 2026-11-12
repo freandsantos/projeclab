@@ -5066,6 +5066,45 @@ html[data-theme="dark"] .ps-open{background:#10151D}
         h("span", { className: "ps-row-go mine" }, "Open"));
     }));
   }
+  /* Pipeline Board: one column per stage, a card per task or video.
+     Clicking a card opens it; stages still move only through the task flow
+     (Editor -> QA -> Lead/Coordinator), so nothing can be dragged past QA.
+     On hold shows only when something is parked there. */
+  function PipelineBoard({ rows, db, me, openVideo, openTask }) {
+    const h = React.createElement;
+    const key = (r) => {
+      if (!r.__task) { const d = dueOf(r); return d ? +d : 8e15; }
+      return r.due ? +new Date(String(r.due).length > 10 ? r.due : r.due + "T23:59") : 8e15;
+    };
+    const cols = STAGES.filter((s) => s.id !== "ready").map((s) => ({
+      s, items: rows.filter((r) => r.stage === s.id && !r.archived).sort((a, b) => key(a) - key(b))
+    })).filter((c) => c.s.id !== "in_progress" || c.items.length);
+    const open = (r) => r.__task ? openTask(r.id) : openVideo(r.id);
+    const card = (r) => {
+      const client = db.clients.find((c) => c.id === r.clientId);
+      const who = db.people.find((p) => p.id === (r.__task ? r.personId : r.editorId));
+      const d = r.__task ? (r.due ? taskDueText(r.due) : { text: "No date", tone: "" }) : dueText(dueOf(r));
+      return h("button", { key: (r.__task ? "t" : "v") + r.id, type: "button", className: `ps-bcard ${d.tone === "late" ? "late" : ""}`, onClick: () => open(r) },
+        (client || !r.__task) && h("span", { className: "ps-bcard-top" },
+          h("span", { className: "ps-bcard-client" }, client ? client.name : ""),
+          !r.__task && h("span", { className: "ps-rowtag" }, "Video")),
+        h("span", { className: "ps-bcard-title" }, (r.__task ? r.text : r.title) || "Untitled"),
+        h("span", { className: "ps-bcard-foot" },
+          h("span", { className: "ps-bcard-who" }, who && h(Avatar, { person: who, size: 20 }), who ? who.name : ""),
+          d.text && h("span", { className: `ps-due ${d.tone}` }, d.text)));
+    };
+    return h("div", { className: "ps-board" }, cols.map(({ s, items }) => {
+      const r = ROLES[s.owner];
+      const hot = items.length > 0 && (s.id === "final" && isManager(me.role) || s.id === "qa" && me.role === "qa");
+      return h("section", { key: s.id, className: `ps-bcol ${hot ? "hot" : ""}`, "aria-label": `${s.name}: ${items.length}` },
+        h("span", { className: "ps-bcol-bar", style: { background: r.color } }),
+        h("div", { className: "ps-bcol-head" },
+          h("span", { className: "ps-bcol-name" }, s.name, hot && h("span", { className: "ps-bcol-you" }, " \xB7 you")),
+          h("span", { className: "ps-bcol-n" }, items.length)),
+        h("div", { className: "ps-bcol-list" }, items.length ? items.map(card) : h("p", { className: "ps-bcol-empty" }, "Nothing here")),
+        hot && h("button", { type: "button", className: "ps-btn ps-bcol-go", onClick: () => open(items[0]) }, "Review next"));
+    }));
+  }
   function FilmStrip({ videos, filter, setFilter }) {
     return /* @__PURE__ */ React.createElement("div", { className: "ps-strip", role: "list" }, STAGES.filter((s) => s.id !== "ready").map((s, i) => {
       const n = videos.filter((v) => v.stage === s.id && !v.archived).length;
@@ -9059,6 +9098,8 @@ ${pay}
     const [openId, setOpenId] = useState(null);
     const [taskId, setTaskId] = useState(null);
     const [filter, setFilter] = useState(null);
+    const [pipeView, setPipeViewRaw] = useState(() => { try { return localStorage.getItem("ps-pipe-view") || "board"; } catch (e) { return "board"; } });
+    const setPipeView = (v) => { setPipeViewRaw(v); try { localStorage.setItem("ps-pipe-view", v); } catch (e) {} };
     const [dark, setDark] = useState(() => {
       try {
         const saved = localStorage.getItem("ps-theme");
@@ -9694,7 +9735,15 @@ ${lines.join("\n")}`);
       const openTasks = pipeTasks;
       const inMotion = [...pipeVideos, ...openTasks];
       const rows = filter ? inMotion.filter((v) => v.stage === filter) : inMotion;
-      body = /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("h1", { className: "ps-h1" }, "Pipeline"), /* @__PURE__ */ React.createElement("p", { className: "ps-lede" }, pipeVideos.length, " video", pipeVideos.length === 1 ? "" : "s", " and ", openTasks.length, " task", openTasks.length === 1 ? "" : "s", lead ? " in motion" : " on your plate", late.length ? `, ${late.length} past due` : "", ". Select a frame to see only that stage."), /* @__PURE__ */ React.createElement(FilmStrip, { videos: inMotion, filter, setFilter }), /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, filter ? stageOf(filter).name : lead ? "Everything in motion" : "Everything on your plate"), /* @__PURE__ */ React.createElement(PipelineTable, { rows, db, me, openVideo: setOpenId, openTask: setTaskId }));
+      const boardOn = pipeView === "board";
+      const lede = React.createElement("p", { className: "ps-lede" }, pipeVideos.length, " video", pipeVideos.length === 1 ? "" : "s", " and ", openTasks.length, " task", openTasks.length === 1 ? "" : "s", lead ? " in motion" : " on your plate", late.length ? `, ${late.length} past due` : "", boardOn ? "." : ". Select a frame to see only that stage.");
+      const toggle = React.createElement("div", { className: "ps-viewtog", role: "group", "aria-label": "Pipeline view" },
+        React.createElement("button", { type: "button", className: boardOn ? "on" : "", "aria-pressed": boardOn, onClick: () => setPipeView("board") }, "Board"),
+        React.createElement("button", { type: "button", className: boardOn ? "" : "on", "aria-pressed": !boardOn, onClick: () => setPipeView("list") }, "List"));
+      body = React.createElement(React.Fragment, null,
+        React.createElement("div", { className: "ps-pipehead" }, React.createElement("div", null, React.createElement("h1", { className: "ps-h1" }, "Pipeline"), lede), toggle),
+        boardOn ? React.createElement(PipelineBoard, { rows: inMotion, db, me, openVideo: setOpenId, openTask: setTaskId }) : React.createElement(React.Fragment, null,
+          React.createElement(FilmStrip, { videos: inMotion, filter, setFilter }), React.createElement("h3", { className: "ps-h3" }, filter ? stageOf(filter).name : lead ? "Everything in motion" : "Everything on your plate"), React.createElement(PipelineTable, { rows, db, me, openVideo: setOpenId, openTask: setTaskId })));
     } else if (page.tab === "client") {
       const c = db.clients.find((x) => x.id === page.id);
       const rows = visible.filter((v) => v.clientId === page.id);
@@ -11478,6 +11527,32 @@ ${lines.join("\n")}`);
 .ps-lede{color:var(--muted);margin:0 0 22px;max-width:62ch}
 .ps-muted{color:var(--muted);font-size:13px;font-weight:400;margin:0}
 .ps-empty{color:var(--muted);padding:6px 0;margin:0}
+.ps-pipehead{display:flex;align-items:flex-end;justify-content:space-between;gap:12px 20px;flex-wrap:wrap}
+.ps-pipehead .ps-lede{margin-bottom:18px}
+.ps-viewtog{display:inline-flex;gap:3px;background:var(--card);border:1px solid var(--line);padding:3px;border-radius:9px;margin-bottom:18px}
+.ps-viewtog button{border:0;background:transparent;padding:7px 16px;border-radius:6px;cursor:pointer;color:var(--muted);font-size:14px;min-height:36px}
+.ps-viewtog button.on{background:var(--paper);color:var(--ink);font-weight:600}
+.ps-board{display:flex;gap:12px;overflow-x:auto;align-items:flex-start;padding-bottom:10px}
+.ps-bcol{flex:1 0 190px;min-width:190px;display:flex;flex-direction:column;background:color-mix(in srgb,var(--card) 45%,var(--paper));border:1px solid var(--line);border-radius:10px;overflow:hidden}
+.ps-bcol.hot{border-color:var(--warn);background:color-mix(in srgb,var(--warnbg) 45%,var(--paper))}
+.ps-bcol-bar{height:4px;flex:none}
+.ps-bcol-head{display:flex;justify-content:space-between;align-items:baseline;gap:8px;padding:10px 12px 8px}
+.ps-bcol-name{font-weight:600}
+.ps-bcol-you{color:var(--warn);font-size:12px;font-weight:600}
+.ps-bcol-n{font-weight:800;font-size:20px;letter-spacing:-.02em;line-height:1}
+.ps-bcol-list{display:flex;flex-direction:column;gap:8px;padding:0 10px 10px;max-height:calc(100vh - 300px);min-height:48px;overflow-y:auto}
+.ps-bcol-empty{color:var(--muted);font-size:13px;margin:4px 2px}
+.ps-bcol-go{margin:0 10px 10px}
+.ps-bcard{display:flex;flex-direction:column;gap:6px;width:100%;text-align:left;padding:10px 12px;border-radius:8px;border:1px solid var(--line);background:var(--card);cursor:pointer;flex:none}
+.ps-bcard:hover{border-color:var(--accent)}
+.ps-bcard.late{border-color:var(--late)}
+.ps-bcard-top{display:flex;justify-content:space-between;align-items:center;gap:8px;font-size:12px;color:var(--muted)}
+.ps-bcard-client{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ps-bcard-title{font-weight:600;font-size:14px;line-height:1.3;overflow-wrap:anywhere}
+.ps-bcard-foot{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:4px 8px;font-size:12px;color:var(--muted)}
+.ps-bcard-who{display:inline-flex;align-items:center;gap:6px;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ps-bcard .ps-due{font-size:12px}
+@media (max-width:700px){.ps-bcol{flex-basis:78vw;min-width:78vw}.ps-bcol-list{max-height:none}}
 .ps-strip{display:flex;gap:6px;overflow-x:auto;background:var(--film);padding:18px 12px;border-radius:6px;margin-top:12px;
   background-image:radial-gradient(circle,var(--paper) 3px,transparent 3.5px),radial-gradient(circle,var(--paper) 3px,transparent 3.5px);
   background-size:18px 18px,18px 18px;background-position:0 -2px,0 calc(100% + 2px);background-repeat:repeat-x}

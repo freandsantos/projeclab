@@ -5718,8 +5718,8 @@ html[data-theme="dark"] .ps-open{background:#10151D}
      NOT in the shared app_state, so a busy feed never slows the rest of the
      app. Photos go to the task-photos bucket like every other picture.
      Outside the live site a localStorage stand-in (feedDemo) is used.
-     Test phase: the tab is shown to the Lead only (FEED_FOR). */
-  var FEED_FOR = (me) => me.role === "lead";
+     Test phase: the tab is shown to the Lead and HR only (FEED_FOR). */
+  var FEED_FOR = (me) => me.role === "lead" || me.role === "hr";
   var FEED_TOPICS = [["video", "Video editing"], ["design", "Graphic design"], ["brand", "Branding"], ["ai", "AI tools"]];
   var feedTopic = (id) => (FEED_TOPICS.find((t) => t[0] === id) || [id, id])[1];
   var feedDemo = (() => {
@@ -5926,7 +5926,7 @@ html[data-theme="dark"] .ps-open{background:#10151D}
 
     return h("div", { className: "ps-fd" },
       h("h1", { className: "ps-h1" }, "Feed"),
-      h("p", { className: "ps-lede" }, "Share what you're proud of, what inspires you, or a line that stuck with you. Creative news from around the world shows up here too.", FEED_FOR({ role: "editor" }) ? "" : " Test mode: only you can see this tab for now."),
+      h("p", { className: "ps-lede" }, "Share what you're proud of, what inspires you, or a line that stuck with you. Creative news from around the world shows up here too.", FEED_FOR({ role: "editor" }) ? "" : " Test mode: only the Lead and HR can see this tab for now."),
       h("div", { className: "ps-fd-new" },
         h("div", { className: "ps-fd-kinds", role: "tablist" }, [["photo", "Photo"], ["quote", "Quote"], ["text", "Post"]].map(([k, l]) => h("button", { key: k, role: "tab", "aria-selected": kind === k, className: kind === k ? "on" : "", onClick: () => setKind(k) }, l))),
         kind === "photo" && (pics.length ? h("div", { className: "ps-fd-thumbs", onDragOver: (e) => e.preventDefault(), onDrop: (e) => { e.preventDefault(); pickPhoto(e.dataTransfer.files); } },

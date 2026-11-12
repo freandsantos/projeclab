@@ -5774,8 +5774,8 @@ html[data-theme="dark"] .ps-open{background:#10151D}
      NOT in the shared app_state, so a busy feed never slows the rest of the
      app. Photos go to the task-photos bucket like every other picture.
      Outside the live site a localStorage stand-in (feedDemo) is used.
-     Test phase: the tab is shown to the Lead and HR only (FEED_FOR). */
-  var FEED_FOR = (me) => me.role === "lead" || me.role === "hr";
+     Everyone except clients sees the tab (FEED_FOR). */
+  var FEED_FOR = (me) => !!me && me.role !== "client";
   var FEED_TOPICS = [["video", "Video editing"], ["design", "Graphic design"], ["brand", "Branding"], ["ai", "AI tools"]];
   var feedTopic = (id) => (FEED_TOPICS.find((t) => t[0] === id) || [id, id])[1];
   var feedDemo = (() => {

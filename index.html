@@ -6125,8 +6125,9 @@ html[data-theme="dark"] .ps-open{background:#10151D}
           h("button", { className: "ps-btn ps-fd-postbtn", disabled: !canPost, onClick: submit }, busy && !pics.length ? "Posting\u2026" : "Post"))),
       h("div", { className: "ps-fd-filters" },
         [["all", "Everything"], ["team", "Team posts"], ["news", "Creative news"]].map(([k, l]) => h("button", { key: k, className: `ps-fd-f ${view === k ? "on" : ""}`, onClick: () => { setView(k); setShown(24); } }, l)),
-        view !== "team" && h("span", { className: "ps-fd-topics" }, h("button", { className: `ps-fd-f small ${!topic ? "on" : ""}`, onClick: () => setTopic("") }, "All topics"),
-          FEED_TOPICS.map(([k, l]) => h("button", { key: k, className: `ps-fd-f small ${topic === k ? "on" : ""}`, onClick: () => setTopic(topic === k ? "" : k) }, l)))),
+        view !== "team" && h("select", { className: `ps-fd-f ps-fd-topicsel ${topic ? "on" : ""}`, value: topic, "aria-label": "News topic", onChange: (e) => setTopic(e.target.value) },
+          h("option", { value: "" }, "All topics"),
+          FEED_TOPICS.map(([k, l]) => h("option", { key: k, value: k }, l)))),
       view !== "news" && h("div", { className: "ps-fd-sort", ref: sortWrap },
         h("button", { className: "ps-fd-sortbtn", "aria-haspopup": "listbox", "aria-expanded": sortOpen, onClick: () => setSortOpen(!sortOpen) },
           (FEED_SORTS.find((x) => x[0] === sort) || FEED_SORTS[0])[1], h("span", { className: "ps-fd-caret", "aria-hidden": "true" }, "\u25BE")),
@@ -12307,7 +12308,9 @@ html.ps-theming .ps-theme-knob,html.ps-theming .ps-theme-ic{transition:transform
 .ps-fd-postrow .ps-btn{order:0;grid-column:auto;grid-row:auto;align-self:auto}
 .ps-btn:disabled{opacity:.45;cursor:default}
 .ps-fd-filters{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-bottom:14px}
-.ps-fd-topics{display:flex;flex-wrap:wrap;gap:6px;flex-basis:100%}
+.ps-root select.ps-fd-topicsel{appearance:none;-webkit-appearance:none;font-size:15px;font-weight:400;line-height:22.5px;border:1px solid var(--line);border-radius:999px;padding:6px 32px 6px 14px;color:var(--muted);background:transparent url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%23888' stroke-width='1.6' stroke-linecap='round'/%3E%3C/svg%3E") no-repeat right 12px center;cursor:pointer}
+.ps-root select.ps-fd-topicsel.on{background:var(--accent) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%23fff' stroke-width='1.6' stroke-linecap='round'/%3E%3C/svg%3E") no-repeat right 12px center;border-color:var(--accent);color:#fff}
+.ps-root select.ps-fd-topicsel option{color:var(--ink);background:var(--card)}
 .ps-fd-list{display:flex;flex-direction:column;gap:14px}
 .ps-fd-card{background:var(--card);border:1px solid var(--line);border-radius:14px;overflow:hidden}
 .ps-fd-head{display:flex;align-items:center;gap:10px;padding:12px 14px}

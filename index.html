@@ -3653,6 +3653,7 @@ html[data-theme="dark"] .ps-open{background:#10151D}
   });
   function Avatar({ person, size = 28 }) {
     if (!person) return null;
+    if (person.studio) return /* @__PURE__ */ React.createElement("span", { className: "ps-av ps-av-studio", "aria-hidden": "true", style: { width: size, height: size } }, /* @__PURE__ */ React.createElement("img", { src: PS_MARK, alt: "" }));
     const role = ROLES[person.role];
     const initials = person.name.split(/\s+/).map((w) => w[0]).filter(Boolean).slice(0, 2).join("").toUpperCase();
     return person.avatar ? /* @__PURE__ */ React.createElement("img", { className: "ps-av", src: person.avatar, alt: "", style: { width: size, height: size } }) : /* @__PURE__ */ React.createElement(
@@ -4679,7 +4680,7 @@ html[data-theme="dark"] .ps-open{background:#10151D}
       if (!p) return;
       p.notifCleared = [...p.notifCleared || [], ...keys].slice(-400);
     });
-    const who = (id) => (db.people.find((p) => p.id === id) || {}).name || "Someone";
+    const who = (id) => id === FEED_STUDIO ? FEED_STUDIO_PERSON.name : (db.people.find((p) => p.id === id) || {}).name || "Someone";
     const when = (at) => {
       const mins = Math.round((Date.now() - new Date(at).getTime()) / 6e4);
       if (mins < 1) return "just now";
@@ -5776,6 +5777,12 @@ html[data-theme="dark"] .ps-open{background:#10151D}
      Outside the live site a localStorage stand-in (feedDemo) is used.
      Everyone except clients sees the tab (FEED_FOR). */
   var FEED_FOR = (me) => !!me && me.role !== "client";
+  /* Posts from the studio itself (made through the Claude connector, person_id
+     "studio"). Shown with the Projeclab mark as the profile picture. Only the
+     connector can post as the studio (RLS blocks person_id "studio" from the app);
+     the Lead and HR can delete these posts like any other. */
+  var FEED_STUDIO = "studio";
+  var FEED_STUDIO_PERSON = { id: FEED_STUDIO, name: "Projeclab Studios", role: "", studio: true };
   var FEED_TOPICS = [["video", "Video editing"], ["design", "Graphic design"], ["brand", "Branding"], ["ai", "AI tools"]];
   var feedTopic = (id) => (FEED_TOPICS.find((t) => t[0] === id) || [id, id])[1];
   var feedDemo = (() => {
@@ -5949,7 +5956,7 @@ html[data-theme="dark"] .ps-open{background:#10151D}
     const isMod = me.role === "lead" || me.role === "hr";
     /* Anyone on the team can be tagged (not clients, not yourself). */
     const tagPeople = (db.people || []).filter((p) => p.role !== "client" && p.id !== who && p.name);
-    const person = (id) => (db.people || []).find((p) => p.id === id) || { id, name: "Former teammate" };
+    const person = (id) => id === FEED_STUDIO ? FEED_STUDIO_PERSON : (db.people || []).find((p) => p.id === id) || { id, name: "Former teammate" };
     const reload = async () => {
       try { setData(await api.load()); setErr(""); } catch (e) { setErr(e && e.message ? e.message : "The feed didn't load."); }
     };
@@ -6056,7 +6063,7 @@ html[data-theme="dark"] .ps-open{background:#10151D}
       const showCs = isOpen ? cs : cs.slice(-2);
       return h("article", { key: "p" + p.id, className: "ps-fd-card" },
         h("header", { className: "ps-fd-head" }, h(Avatar, { person: au, size: 36 }),
-          h("span", { className: "ps-fd-who" }, h("b", null, au.name), h("span", { className: "ps-muted" }, (ROLES[au.role] || {}).label || "", au.role ? " \xB7 " : "", feedAgo(p.created_at))),
+          h("span", { className: "ps-fd-who" }, h("b", null, au.name), h("span", { className: "ps-muted" }, au.studio ? "Studio \xB7 " : "", (ROLES[au.role] || {}).label || "", au.role ? " \xB7 " : "", feedAgo(p.created_at))),
           (p.person_id === who || isMod) && h("button", { className: "ps-fd-x", "aria-label": "Delete post", title: "Delete post", onClick: () => delPost(p) }, "\xD7")),
         p.kind === "quote" ? h("blockquote", { className: "ps-fd-quote" }, h("p", null, "\u201C", p.body, "\u201D"), p.quote_by && h("cite", null, "\u2014 ", p.quote_by))
           : p.body ? h("p", { className: "ps-fd-body" }, feedRich(p.body, db, p.tags)) : null,
@@ -12296,6 +12303,8 @@ html.ps-theming .ps-theme-knob,html.ps-theming .ps-theme-ic{transition:transform
 .ps-fd-list{display:flex;flex-direction:column;gap:14px}
 .ps-fd-card{background:var(--card);border:1px solid var(--line);border-radius:14px;overflow:hidden}
 .ps-fd-head{display:flex;align-items:center;gap:10px;padding:12px 14px}
+.ps-av-studio{display:inline-flex;align-items:center;justify-content:center;background:#fff;box-shadow:inset 0 0 0 1px rgba(0,0,0,.08);overflow:hidden;flex:0 0 auto}
+.ps-av-studio img{width:62%;height:auto;display:block}
 .ps-fd-who{display:flex;flex-direction:column;line-height:1.25;min-width:0;flex:1}
 .ps-fd-who .ps-muted{font-size:12.5px}
 .ps-fd-x{border:0;background:transparent;color:var(--muted);font-size:20px;line-height:1;width:30px;height:30px;border-radius:50%;cursor:pointer;flex:none}

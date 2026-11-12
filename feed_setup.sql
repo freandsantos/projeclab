@@ -1,0 +1,4 @@
+-- Feed tab (already run in Supabase on 12 Nov 2026 - kept here for the record).
+-- Tables: feed_posts, feed_comments, feed_hearts (team posts) and feed_news
+-- (filled by the creative-news Edge Function). Team members only (RLS).
+-- See migration "creative_feed" in Supabase for the exact statements.

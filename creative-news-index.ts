@@ -24,6 +24,7 @@ const SOURCES: { topic: string; source: string; url: string }[] = [
   { topic: "ai", source: "VentureBeat", url: "https://venturebeat.com/category/ai/feed/" },
 ];
 const PER_SOURCE = 12;
+const UA = "Mozilla/5.0 (ProjeclabFeed; +https://projeclab-alpha-1.vercel.app)";
 const EVERY_MS = 3 * 60 * 60 * 1000;
 const KEEP_DAYS = 60;
 
@@ -74,6 +75,39 @@ function parse(xml: string) {
   }).filter((x) => x.title && /^https?:\/\//.test(x.link));
 }
 
+// The article's own "share image" (what Facebook shows), for feeds that don't send a picture.
+async function ogImage(url: string): Promise<string | null> {
+  try {
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), 8000);
+    const r = await fetch(url, { signal: ctl.signal, headers: { "User-Agent": UA, "Accept": "text/html" } });
+    clearTimeout(timer);
+    if (!r.ok || !r.body) return null;
+    // Only the <head> matters: read at most ~250 KB.
+    const reader = r.body.getReader();
+    let html = "";
+    const dec = new TextDecoder();
+    while (html.length < 250000) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      html += dec.decode(value, { stream: true });
+      if (/<\/head>/i.test(html)) break;
+    }
+    try { reader.cancel(); } catch (_) { /* fine */ }
+    const metas = html.match(/<meta\b[^>]*>/gi) || [];
+    for (const want of ["og:image:secure_url", "og:image", "twitter:image", "twitter:image:src"]) {
+      for (const m of metas) {
+        const key = (m.match(/\b(?:property|name)=["']([^"']+)["']/i) || [])[1];
+        if (key && key.toLowerCase() === want) {
+          const c = (m.match(/\bcontent=["']([^"']+)["']/i) || [])[1];
+          if (c) { const u = decode(c.trim()); const abs = new URL(u, url).href; if (/^https:\/\//.test(abs)) return abs; }
+        }
+      }
+    }
+  } catch (_) { /* no picture */ }
+  return null;
+}
+
 async function sha1(s: string) {
   const d = await crypto.subtle.digest("SHA-1", new TextEncoder().encode(s));
   return Array.from(new Uint8Array(d)).map((b) => b.toString(16).padStart(2, "0")).join("");
@@ -100,10 +134,11 @@ Deno.serve(async (req) => {
     try {
       const ctl = new AbortController();
       const timer = setTimeout(() => ctl.abort(), 12000);
-      const r = await fetch(s.url, { signal: ctl.signal, headers: { "User-Agent": "Mozilla/5.0 (ProjeclabFeed; +https://projeclab-alpha-1.vercel.app)", "Accept": "application/rss+xml, application/atom+xml, application/xml, text/xml, */*" } });
+      const r = await fetch(s.url, { signal: ctl.signal, headers: { "User-Agent": UA, "Accept": "application/rss+xml, application/atom+xml, application/xml, text/xml, */*" } });
       clearTimeout(timer);
       if (!r.ok) { report[s.source] = "HTTP " + r.status; return; }
       const items = parse(await r.text()).slice(0, PER_SOURCE);
+      await Promise.all(items.filter((it) => !it.image).map(async (it) => { it.image = await ogImage(it.link); }));
       for (const it of items) rows.push({ id: await sha1(it.link), topic: s.topic, source: s.source, ...it, published_at: it.published_at || now, fetched_at: now });
       report[s.source] = items.length;
     } catch (e) {

@@ -5757,6 +5757,46 @@ html[data-theme="dark"] .ps-open{background:#10151D}
     const h = React.createElement;
     return String(text || "").split(/(https?:\/\/[^\s]+)/g).map((bit, i) => /^https?:\/\//.test(bit) ? h("a", { key: i, href: bit, target: "_blank", rel: "noreferrer noopener" }, bit) : bit);
   };
+  var FEED_MAX_PICS = 10;
+  var feedPics = (p) => Array.isArray(p.photos) && p.photos.length ? p.photos : p.photo_url ? [p.photo_url] : [];
+  var feedHost = (u) => { try { return new URL(u).hostname.replace(/^www\./, "").toUpperCase(); } catch (e) { return ""; } };
+  /* Facebook-style photo grid: 1 big; 2 side by side; 3 = one big + two; 4 = 2x2;
+     5+ = two on top, three below, "+N" on the last when there are more. */
+  var feedGrid = (list, open, alt) => {
+    const h = React.createElement;
+    const n = list.length;
+    if (!n) return null;
+    const shown = n > 5 ? list.slice(0, 5) : list;
+    return h("div", { className: `ps-fd-grid g${Math.min(n, 5)}` }, shown.map((u, i) => h("button", { key: i, className: "ps-fd-gi", onClick: () => open(i), "aria-label": `Open photo ${i + 1} of ${n}` },
+      h("img", { src: u, alt: n === 1 ? alt : `${alt} (${i + 1} of ${n})`, loading: "lazy" }),
+      i === 4 && n > 5 && h("span", { className: "ps-fd-plus" }, "+", n - 5))));
+  };
+  /* Full-screen photo viewer with previous / next (arrow keys, Esc to close). */
+  function FeedViewer({ list, start, onClose }) {
+    const h = React.createElement;
+    const [i, setI] = useState(start || 0);
+    const go = (d) => setI((x) => (x + d + list.length) % list.length);
+    useEffect(() => {
+      const k = (e) => { if (e.key === "Escape") onClose(); else if (e.key === "ArrowRight") go(1); else if (e.key === "ArrowLeft") go(-1); };
+      window.addEventListener("keydown", k);
+      return () => window.removeEventListener("keydown", k);
+    }, [list.length]);
+    return h("div", { className: "ps-fd-view", role: "dialog", "aria-label": "Photo viewer", onClick: (e) => { if (e.target === e.currentTarget) onClose(); } },
+      h("img", { src: list[i], alt: `Photo ${i + 1} of ${list.length}` }),
+      h("button", { className: "ps-fd-vx", "aria-label": "Close", onClick: onClose }, "\xD7"),
+      list.length > 1 && h(React.Fragment, null,
+        h("button", { className: "ps-fd-vnav prev", "aria-label": "Previous photo", onClick: () => go(-1) }, "‹"),
+        h("button", { className: "ps-fd-vnav next", "aria-label": "Next photo", onClick: () => go(1) }, "›"),
+        h("span", { className: "ps-fd-vcount" }, i + 1, " / ", list.length)),
+      h("a", { className: "ps-fd-vopen", href: list[i], target: "_blank", rel: "noreferrer noopener" }, "Open full size"));
+  }
+  /* News picture, big on top. No picture (or a broken one) = a topic banner. */
+  function FeedNewsImg({ n }) {
+    const h = React.createElement;
+    const [bad, setBad] = useState(false);
+    if (!n.image || bad) return h("span", { className: `ps-fd-nimg none ps-fd-b-${n.topic}` }, h("span", null, feedTopic(n.topic)));
+    return h("span", { className: "ps-fd-nimg" }, h("img", { src: n.image, alt: "", loading: "lazy", referrerPolicy: "no-referrer", onError: () => setBad(true) }));
+  }
   function FeedPage({ db, me, who, setToast, confirm }) {
     const h = React.createElement;
     const api = feedApi();
@@ -5768,7 +5808,8 @@ html[data-theme="dark"] .ps-open{background:#10151D}
     const [kind, setKind] = useState("photo");
     const [text, setText] = useState("");
     const [by, setBy] = useState("");
-    const [pic, setPic] = useState(null);
+    const [pics, setPics] = useState([]);
+    const [view2, setView2] = useState(null); /* photo viewer: { list, i } */
     const [busy, setBusy] = useState(false);
     const [open, setOpen] = useState({});
     const [drafts, setDrafts] = useState({});
@@ -5786,18 +5827,24 @@ html[data-theme="dark"] .ps-open{background:#10151D}
       return () => { alive = false; clearTimeout(t); stop && stop(); };
     }, []);
     const pickPhoto = async (files) => {
-      if (!files || !files.length) return;
+      const list = Array.from(files || []).filter((f) => f && /^image\//.test(f.type));
+      if (!list.length) return;
+      const room = FEED_MAX_PICS - pics.length;
+      if (room <= 0) return setToast(`Up to ${FEED_MAX_PICS} photos per post.`);
+      if (list.length > room) setToast(`Only the first ${room} added \u2014 up to ${FEED_MAX_PICS} photos per post.`);
       setBusy(true);
-      try { const [ph] = await uploadPhotos([files[0]]); setPic(ph); } catch (e) { setToast(e && e.message ? e.message : "That photo didn't upload."); }
+      for (const f of list.slice(0, room)) {
+        try { const [ph] = await uploadPhotos([f]); setPics((a) => [...a, ph]); } catch (e) { setToast(e && e.message ? e.message : "A photo didn't upload."); }
+      }
       setBusy(false);
     };
-    const canPost = !busy && (kind === "photo" ? !!pic : text.trim().length > 0);
+    const canPost = !busy && (kind === "photo" ? pics.length > 0 : text.trim().length > 0);
     const submit = async () => {
       if (!canPost) return;
       setBusy(true);
       try {
-        await api.post({ person_id: who, kind, body: text.trim().slice(0, 2000), quote_by: kind === "quote" ? by.trim().slice(0, 120) || null : null, photo_url: kind === "photo" && pic ? pic.url : null });
-        setText(""); setBy(""); setPic(null);
+        await api.post({ person_id: who, kind, body: text.trim().slice(0, 2000), quote_by: kind === "quote" ? by.trim().slice(0, 120) || null : null, photo_url: kind === "photo" && pics.length ? pics[0].url : null, photos: kind === "photo" ? pics.map((x) => x.url) : [] });
+        setText(""); setBy(""); setPics([]);
         setToast("Posted to the feed.");
         reload();
       } catch (e) { setToast(e && e.message ? e.message : "That didn't post."); }
@@ -5848,9 +5895,9 @@ html[data-theme="dark"] .ps-open{background:#10151D}
         h("header", { className: "ps-fd-head" }, h(Avatar, { person: au, size: 36 }),
           h("span", { className: "ps-fd-who" }, h("b", null, au.name), h("span", { className: "ps-muted" }, (ROLES[au.role] || {}).label || "", au.role ? " \xB7 " : "", feedAgo(p.created_at))),
           (p.person_id === who || isMod) && h("button", { className: "ps-fd-x", "aria-label": "Delete post", title: "Delete post", onClick: () => delPost(p) }, "\xD7")),
-        p.kind === "photo" && p.photo_url && h("a", { className: "ps-fd-photo", href: p.photo_url, target: "_blank", rel: "noreferrer noopener" }, h("img", { src: p.photo_url, alt: p.body || `Photo from ${au.name}`, loading: "lazy" })),
-        p.kind === "quote" ? h("blockquote", { className: "ps-fd-quote" }, h("p", null, "“", p.body, "”"), p.quote_by && h("cite", null, "— ", p.quote_by))
+        p.kind === "quote" ? h("blockquote", { className: "ps-fd-quote" }, h("p", null, "\u201C", p.body, "\u201D"), p.quote_by && h("cite", null, "\u2014 ", p.quote_by))
           : p.body ? h("p", { className: "ps-fd-body" }, feedText(p.body)) : null,
+        p.kind === "photo" && feedGrid(feedPics(p), (i) => setView2({ list: feedPics(p), i }), p.body || `Photo from ${au.name}`),
         h("div", { className: "ps-fd-acts" },
           h("button", { className: `ps-fd-heart ${mineH ? "on" : ""}`, "aria-pressed": mineH, title: hs.length ? hs.map((x) => person(x.person_id).name).join(", ") : "Heart this", onClick: () => toggleHeart(p, !mineH) },
             h("svg", { viewBox: "0 0 24 24", width: 20, height: 20, "aria-hidden": "true" }, h("path", { d: "M12 20.5s-7.5-4.6-9.3-9.2C1.5 8 3.6 4.5 7.1 4.5c2 0 3.6 1.1 4.9 2.9 1.3-1.8 2.9-2.9 4.9-2.9 3.5 0 5.6 3.5 4.4 6.8-1.8 4.6-9.3 9.2-9.3 9.2z", fill: mineH ? "currentColor" : "none", stroke: "currentColor", strokeWidth: 1.9, strokeLinejoin: "round" })),
@@ -5868,9 +5915,12 @@ html[data-theme="dark"] .ps-open{background:#10151D}
     };
     const newsCard = (n) => h("article", { key: "n" + n.id, className: "ps-fd-card ps-fd-news" },
       h("a", { className: "ps-fd-nlink", href: n.link, target: "_blank", rel: "noreferrer noopener" },
-        n.image && h("span", { className: "ps-fd-nimg" }, h("img", { src: n.image, alt: "", loading: "lazy", referrerPolicy: "no-referrer", onError: (e) => { e.currentTarget.parentNode.style.display = "none"; } })),
+        h("header", { className: "ps-fd-head" },
+          h("span", { className: `ps-fd-src ps-fd-t-${n.topic}`, "aria-hidden": "true" }, String(n.source || "?").replace(/^the\s+/i, "").charAt(0).toUpperCase()),
+          h("span", { className: "ps-fd-who" }, h("b", null, n.source), h("span", { className: "ps-muted" }, feedTopic(n.topic), " \xB7 ", feedAgo(n.published_at)))),
+        h(FeedNewsImg, { n }),
         h("span", { className: "ps-fd-ntext" },
-          h("span", { className: "ps-fd-nmeta" }, h("span", { className: `ps-chip ps-fd-t-${n.topic}` }, feedTopic(n.topic)), h("span", { className: "ps-muted" }, n.source, " \xB7 ", feedAgo(n.published_at))),
+          h("span", { className: "ps-fd-ndom" }, feedHost(n.link)),
           h("b", { className: "ps-fd-ntitle" }, n.title),
           n.summary && h("span", { className: "ps-fd-nsum" }, n.summary))));
 
@@ -5879,12 +5929,16 @@ html[data-theme="dark"] .ps-open{background:#10151D}
       h("p", { className: "ps-lede" }, "Share what you're proud of, what inspires you, or a line that stuck with you. Creative news from around the world shows up here too.", FEED_FOR({ role: "editor" }) ? "" : " Test mode: only you can see this tab for now."),
       h("div", { className: "ps-fd-new" },
         h("div", { className: "ps-fd-kinds", role: "tablist" }, [["photo", "Photo"], ["quote", "Quote"], ["text", "Post"]].map(([k, l]) => h("button", { key: k, role: "tab", "aria-selected": kind === k, className: kind === k ? "on" : "", onClick: () => setKind(k) }, l))),
-        kind === "photo" && (pic ? h("div", { className: "ps-fd-prev" }, h("img", { src: pic.url, alt: "Your photo" }), h("button", { className: "ps-fd-x", "aria-label": "Remove photo", onClick: () => setPic(null) }, "\xD7"))
-          : h("label", { className: `ps-fd-drop ${busy ? "busy" : ""}`, onDragOver: (e) => e.preventDefault(), onDrop: (e) => { e.preventDefault(); pickPhoto(Array.from(e.dataTransfer.files || [])); } },
-            busy ? "Uploading…" : "Choose a photo, or drop one here",
-            h("input", { type: "file", accept: "image/*", hidden: true, disabled: busy, onChange: (e) => { const f = Array.from(e.target.files || []); e.target.value = ""; pickPhoto(f); } }))),
+        kind === "photo" && (pics.length ? h("div", { className: "ps-fd-thumbs", onDragOver: (e) => e.preventDefault(), onDrop: (e) => { e.preventDefault(); pickPhoto(e.dataTransfer.files); } },
+            pics.map((ph, i) => h("span", { key: ph.id || i, className: "ps-fd-thumb" }, h("img", { src: ph.url, alt: `Photo ${i + 1}` }),
+              h("button", { className: "ps-fd-x", "aria-label": `Remove photo ${i + 1}`, onClick: () => setPics((a) => a.filter((_, j) => j !== i)) }, "\xD7"))),
+            pics.length < FEED_MAX_PICS && h("label", { className: `ps-fd-thumb ps-fd-addmore ${busy ? "busy" : ""}`, title: "Add more photos" }, busy ? "\u2026" : "+",
+              h("input", { type: "file", accept: "image/*", multiple: true, hidden: true, disabled: busy, onChange: (e) => { const f = Array.from(e.target.files || []); e.target.value = ""; pickPhoto(f); } })))
+          : h("label", { className: `ps-fd-drop ${busy ? "busy" : ""}`, onDragOver: (e) => e.preventDefault(), onDrop: (e) => { e.preventDefault(); pickPhoto(e.dataTransfer.files); } },
+            busy ? "Uploading\u2026" : `Choose photos (up to ${FEED_MAX_PICS}), or drop them here`,
+            h("input", { type: "file", accept: "image/*", multiple: true, hidden: true, disabled: busy, onChange: (e) => { const f = Array.from(e.target.files || []); e.target.value = ""; pickPhoto(f); } }))),
         h("textarea", { className: kind === "quote" ? "ps-fd-qin" : "", rows: kind === "photo" ? 2 : 3, maxLength: 2000, placeholder: kind === "photo" ? "Say something about it (optional)" : kind === "quote" ? "The quote" : "What's on your mind?", value: text, onChange: (e) => setText(e.target.value),
-          onPaste: (e) => { if (kind !== "photo") return; const pics = pastedPics(e); if (pics.length) { e.preventDefault(); pickPhoto(pics); } } }),
+          onPaste: (e) => { if (kind !== "photo") return; const got = pastedPics(e); if (got.length) { e.preventDefault(); pickPhoto(got); } } }),
         kind === "quote" && h("input", { placeholder: "Who said it? (optional)", value: by, maxLength: 120, onChange: (e) => setBy(e.target.value) }),
         h("div", { className: "ps-fd-postrow" }, h("button", { className: "ps-btn", disabled: !canPost, onClick: submit }, busy && kind !== "photo" ? "Posting…" : "Post"))),
       h("div", { className: "ps-fd-filters" },
@@ -5895,7 +5949,8 @@ html[data-theme="dark"] .ps-open{background:#10151D}
         : !data ? h("p", { className: "ps-empty" }, "Loading the feed…")
         : !items.length ? h("p", { className: "ps-empty" }, view === "news" ? "No news yet — check back in a bit." : "Nothing here yet. Be the first to post!")
         : h("div", { className: "ps-fd-list" }, items.map((it) => it.t === "post" ? postCard(it.p) : newsCard(it.n)),
-          more && h("button", { className: "ps-btn ghost ps-fd-loadmore", onClick: () => setShown((n) => n + 24) }, "Show more")));
+          more && h("button", { className: "ps-btn ghost ps-fd-loadmore", onClick: () => setShown((n) => n + 24) }, "Show more")),
+      view2 && h(FeedViewer, { list: view2.list, start: view2.i, onClose: () => setView2(null) }));
   }
   function TodosPage({ db, me, mutate, setToast, confirm }) {
     const h = React.createElement;
@@ -12095,14 +12150,51 @@ html.ps-theming .ps-theme-knob,html.ps-theming .ps-theme-ic{transition:transform
 .ps-fd-cin{display:flex;gap:8px}
 .ps-fd-cin input{flex:1;font:inherit;font-size:14px;border:1px solid var(--line);border-radius:999px;padding:7px 14px;background:var(--paper);color:var(--ink);min-width:0}
 .ps-fd-cin .ps-btn{order:0;grid-column:auto;grid-row:auto;align-self:auto;padding:7px 14px}
-.ps-fd-nlink{display:flex;color:inherit;text-decoration:none}
-.ps-fd-nlink:hover .ps-fd-ntitle{color:var(--accent)}
-.ps-fd-nimg{flex:none;width:180px;background:var(--paper)}
-.ps-fd-nimg img{display:block;width:100%;height:100%;object-fit:cover;min-height:120px}
-.ps-fd-ntext{display:flex;flex-direction:column;gap:6px;padding:12px 14px;min-width:0}
-.ps-fd-nmeta{display:flex;flex-wrap:wrap;gap:8px;align-items:center;font-size:12.5px}
-.ps-fd-ntitle{font-size:16px;line-height:1.35}
-.ps-fd-nsum{color:var(--muted);font-size:13.5px;line-height:1.45;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+.ps-fd-nlink{display:block;color:inherit;text-decoration:none}
+.ps-fd-nlink:hover .ps-fd-ntitle{text-decoration:underline}
+.ps-fd-src{flex:none;width:36px;height:36px;border-radius:50%;display:grid;place-items:center;font-weight:800;font-size:16px;color:#fff}
+.ps-fd-src.ps-fd-t-video{background:#2563EB}
+.ps-fd-src.ps-fd-t-design{background:#DB2777}
+.ps-fd-src.ps-fd-t-ai{background:#7C3AED}
+.ps-fd-nimg{display:block;background:var(--paper);aspect-ratio:1.91/1;overflow:hidden}
+.ps-fd-nimg img{display:block;width:100%;height:100%;object-fit:cover}
+.ps-fd-nimg.none{display:grid;place-items:center;color:#fff;font-weight:800;font-size:26px;letter-spacing:-.02em}
+.ps-fd-b-video{background:linear-gradient(135deg,#1D4ED8,#0F766E)}
+.ps-fd-b-design{background:linear-gradient(135deg,#BE185D,#F59E0B)}
+.ps-fd-b-ai{background:linear-gradient(135deg,#6D28D9,#2563EB)}
+.ps-fd-ntext{display:flex;flex-direction:column;gap:4px;padding:10px 14px 14px;background:var(--paper)}
+.ps-root.dark .ps-fd-ntext{background:rgba(255,255,255,.03)}
+.ps-fd-ndom{font-size:12px;color:var(--muted);letter-spacing:.02em}
+.ps-fd-ntitle{font-size:17px;line-height:1.3}
+.ps-fd-nsum{color:var(--muted);font-size:14px;line-height:1.45;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.ps-fd-grid{display:grid;gap:3px;margin-top:10px;background:var(--line)}
+.ps-fd-grid.g1{grid-template-columns:1fr}
+.ps-fd-grid.g2,.ps-fd-grid.g3,.ps-fd-grid.g4{grid-template-columns:1fr 1fr}
+.ps-fd-grid.g3 .ps-fd-gi:first-child{grid-column:1 / -1;aspect-ratio:16/9}
+.ps-fd-grid.g5{grid-template-columns:repeat(6,1fr)}
+.ps-fd-grid.g5 .ps-fd-gi{grid-column:span 2}
+.ps-fd-grid.g5 .ps-fd-gi:nth-child(-n+2){grid-column:span 3}
+.ps-fd-gi{position:relative;border:0;padding:0;margin:0;cursor:zoom-in;background:var(--paper);aspect-ratio:1/1;overflow:hidden;display:block;width:100%}
+.ps-fd-gi img{display:block;width:100%;height:100%;object-fit:cover}
+.ps-fd-grid.g1 .ps-fd-gi{aspect-ratio:auto}
+.ps-fd-grid.g1 .ps-fd-gi img{height:auto;max-height:640px;object-fit:contain;margin:0 auto}
+.ps-fd-plus{position:absolute;inset:0;display:grid;place-items:center;background:rgba(0,0,0,.5);color:#fff;font-size:30px;font-weight:700}
+.ps-fd-thumbs{display:grid;grid-template-columns:repeat(auto-fill,minmax(96px,1fr));gap:8px}
+.ps-fd-thumb{position:relative;aspect-ratio:1/1;border-radius:10px;overflow:hidden;background:var(--paper)}
+.ps-fd-thumb img{width:100%;height:100%;object-fit:cover;display:block}
+.ps-fd-thumb .ps-fd-x{position:absolute;top:4px;right:4px;width:24px;height:24px;font-size:16px;background:rgba(0,0,0,.6);color:#fff}
+.ps-fd-addmore{display:grid;place-items:center;border:2px dashed var(--line);color:var(--muted);font-size:30px;cursor:pointer;background:transparent}
+.ps-fd-addmore:hover{border-color:var(--accent);color:var(--accent)}
+.ps-fd-view{position:fixed;inset:0;z-index:9999;background:rgba(5,8,12,.94);display:grid;place-items:center}
+.ps-fd-view img{max-width:92vw;max-height:86vh;object-fit:contain}
+.ps-fd-vx,.ps-fd-vnav{position:absolute;border:0;background:rgba(255,255,255,.12);color:#fff;border-radius:50%;cursor:pointer;display:grid;place-items:center}
+.ps-fd-vx{top:16px;right:16px;width:42px;height:42px;font-size:26px}
+.ps-fd-vnav{top:50%;transform:translateY(-50%);width:48px;height:48px;font-size:34px;line-height:1}
+.ps-fd-vnav.prev{left:16px}
+.ps-fd-vnav.next{right:16px}
+.ps-fd-vx:hover,.ps-fd-vnav:hover{background:rgba(255,255,255,.25)}
+.ps-fd-vcount{position:absolute;top:24px;left:50%;transform:translateX(-50%);color:#fff;font-weight:600}
+.ps-fd-vopen{position:absolute;bottom:18px;left:50%;transform:translateX(-50%);color:#fff;font-size:13px;opacity:.8}
 .ps-chip.ps-fd-t-video{background:#E0EDFF;color:#1D4ED8}
 .ps-chip.ps-fd-t-design{background:#FCE7F3;color:#BE185D}
 .ps-chip.ps-fd-t-ai{background:#EDE9FE;color:#6D28D9}
@@ -12111,9 +12203,6 @@ html.ps-theming .ps-theme-knob,html.ps-theming .ps-theme-ic{transition:transform
 .ps-root.dark .ps-chip.ps-fd-t-ai{background:#2E1F5E;color:#C4B5FD}
 .ps-fd-loadmore{align-self:center}
 @media (max-width:640px){
-  .ps-fd-nlink{flex-direction:column}
-  .ps-fd-nimg{width:100%}
-  .ps-fd-nimg img{max-height:200px}
   .ps-fd-topics{margin-left:0}
   .ps-fd-quote p{font-size:18px}
 }
@@ -12376,7 +12465,7 @@ if (sb) {
   window.psFeed = {
     live: true,
     load: async () => {
-      const { data: posts, error } = await sb.from("feed_posts").select("id, author, person_id, kind, body, quote_by, photo_url, created_at").order("created_at", { ascending: false }).limit(200);
+      const { data: posts, error } = await sb.from("feed_posts").select("id, author, person_id, kind, body, quote_by, photo_url, photos, created_at").order("created_at", { ascending: false }).limit(200);
       if (error) throw feedErr(error, "The feed didn't load");
       const ids = (posts || []).map((p) => p.id);
       const [c, hts, nw] = await Promise.all([

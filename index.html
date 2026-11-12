@@ -5821,7 +5821,8 @@ html[data-theme="dark"] .ps-open{background:#10151D}
     return String(text || "").split(/(https?:\/\/[^\s]+)/g).map((bit, i) => /^https?:\/\//.test(bit) ? h("a", { key: i, href: bit, target: "_blank", rel: "noreferrer noopener" }, bit) : bit);
   };
   var FEED_MAX_PICS = 10;
-  var FEED_SORTS = [["relevant", "Most relevant", "Show the most relevant posts first: lively ones and anything you're part of."], ["activity", "Recent activity", "Show posts with recent comments first."], ["new", "New posts", "Show the newest posts first."]];
+  var FEED_FRESH_MS = 36e5;
+  var FEED_SORTS = [["relevant", "Most relevant", "Show the most relevant posts first: new posts (first hour), lively ones and anything you're part of."], ["activity", "Recent activity", "Show posts with recent comments first."], ["new", "New posts", "Show the newest posts first."]];
   var feedPics = (p) => Array.isArray(p.photos) && p.photos.length ? p.photos : p.photo_url ? [p.photo_url] : [];
   var feedHost = (u) => { try { return new URL(u).hostname.replace(/^www\./, "").toUpperCase(); } catch (e) { return ""; } };
   /* Facebook-style photo grid: 1 big; 2 side by side; 3 = one big + two; 4 = 2x2;
@@ -6010,7 +6011,12 @@ html[data-theme="dark"] .ps-open{background:#10151D}
       confirmLabel: "Delete post",
       onYes: async () => { try { await api.removePost(p.id); setToast("Post deleted."); reload(); } catch (e) { setToast("That post couldn't be deleted."); } }
     });
-    const delComment = async (c) => { try { await api.removeComment(c.id); reload(); } catch (e) { setToast("That comment couldn't be deleted."); } };
+    const delComment = (c) => confirm({
+      title: "Delete this comment?",
+      lines: ["This can't be undone."],
+      confirmLabel: "Delete comment",
+      onYes: async () => { try { await api.removeComment(c.id); setToast("Comment deleted."); reload(); } catch (e) { setToast("That comment couldn't be deleted."); } }
+    });
 
     /* New posts: when posted. Recent activity: newest of the post or its latest
        comment, so a fresh comment brings a post back up. Most relevant: activity
@@ -6038,7 +6044,9 @@ html[data-theme="dark"] .ps-open{background:#10151D}
       };
       const sc = {};
       list.forEach((p) => { sc[p.id] = score(p); });
-      return list.sort((a, b) => sc[b.id] - sc[a.id] || lastAct[b.id] - lastAct[a.id]);
+      /* Posts less than an hour old stay on top, newest first (Frean, 12 Nov). */
+      const fresh = (p) => now - T(p.created_at) < FEED_FRESH_MS;
+      return list.sort((a, b) => (fresh(b) - fresh(a)) || (fresh(a) ? T(b.created_at) - T(a.created_at) : 0) || sc[b.id] - sc[a.id] || lastAct[b.id] - lastAct[a.id]);
     })();
     const news = data ? (data.news || []).filter((n) => !topic || n.topic === topic) : [];
     /* "All": team posts in time order, with a news card after every two posts;

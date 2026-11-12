@@ -6048,7 +6048,6 @@ html[data-theme="dark"] .ps-open{background:#10151D}
 
     return h("div", { className: "ps-fd" },
       h("h1", { className: "ps-h1" }, "Feed"),
-      h("p", { className: "ps-lede" }, "Share what you're proud of, what inspires you, or a line that stuck with you. Creative news from around the world shows up here too.", FEED_FOR({ role: "editor" }) ? "" : " Test mode: only the Lead and HR can see this tab for now."),
       h("div", { className: `ps-fd-new ${quote ? "quote" : ""}`, onDragOver: (e) => e.preventDefault(), onDrop: (e) => { if (quote) return; e.preventDefault(); pickPhoto(e.dataTransfer.files); } },
         h("div", { className: "ps-fd-newtop" }, h(Avatar, { person: person(who), size: 40 }),
           h(FeedInput, { multiline: true, people: tagPeople, className: quote ? "ps-fd-qin" : "", rows: 2, value: text, onChange: setText, placeholder: quote ? "Type the quote\u2026" : `What's on your mind, ${firstNameOf(person(who)) || "there"}? Type @ to tag someone`,

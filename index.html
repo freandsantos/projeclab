@@ -6103,7 +6103,7 @@ html[data-theme="dark"] .ps-open{background:#10151D}
           n.summary && h("span", { className: "ps-fd-nsum" }, n.summary))));
 
     return h("div", { className: "ps-fd" },
-      h("h1", { className: "ps-h1" }, "Feed"),
+      h("h1", { className: "ps-sr" }, "Feed"),
       h("div", { className: `ps-fd-new ${quote ? "quote" : ""}`, onDragOver: (e) => e.preventDefault(), onDrop: (e) => { if (quote) return; e.preventDefault(); pickPhoto(e.dataTransfer.files); } },
         h("div", { className: "ps-fd-newtop" }, h(Avatar, { person: person(who), size: 40 }),
           h(FeedInput, { multiline: true, people: tagPeople, className: quote ? "ps-fd-qin" : "", rows: 2, value: text, onChange: setText, placeholder: quote ? "Type the quote\u2026" : `What's on your mind, ${firstNameOf(person(who)) || "there"}? Type @ to tag someone`,

@@ -5814,6 +5814,7 @@ html[data-theme="dark"] .ps-open{background:#10151D}
     return String(text || "").split(/(https?:\/\/[^\s]+)/g).map((bit, i) => /^https?:\/\//.test(bit) ? h("a", { key: i, href: bit, target: "_blank", rel: "noreferrer noopener" }, bit) : bit);
   };
   var FEED_MAX_PICS = 10;
+  var FEED_SORTS = [["relevant", "Most relevant", "Show the most relevant posts first: lively ones and anything you're part of."], ["activity", "Recent activity", "Show posts with recent comments first."], ["new", "New posts", "Show the newest posts first."]];
   var feedPics = (p) => Array.isArray(p.photos) && p.photos.length ? p.photos : p.photo_url ? [p.photo_url] : [];
   var feedHost = (u) => { try { return new URL(u).hostname.replace(/^www\./, "").toUpperCase(); } catch (e) { return ""; } };
   /* Facebook-style photo grid: 1 big; 2 side by side; 3 = one big + two; 4 = 2x2;
@@ -5924,6 +5925,19 @@ html[data-theme="dark"] .ps-open{background:#10151D}
     const [view, setView] = useState("all");
     const [topic, setTopic] = useState("");
     const [shown, setShown] = useState(24);
+    /* Sort order, Facebook style. Remembered on this device. */
+    const [sort, setSortS] = useState(() => { try { return localStorage.getItem("ps-feed-sort") || "relevant"; } catch (e) { return "relevant"; } });
+    const setSort = (v) => { setSortS(v); setShown(24); try { localStorage.setItem("ps-feed-sort", v); } catch (e) {} };
+    const [sortOpen, setSortOpen] = useState(false);
+    const sortWrap = useRef(null);
+    useEffect(() => {
+      if (!sortOpen) return;
+      const away = (e) => { if (sortWrap.current && !sortWrap.current.contains(e.target)) setSortOpen(false); };
+      const esc = (e) => { if (e.key === "Escape") setSortOpen(false); };
+      document.addEventListener("mousedown", away);
+      document.addEventListener("keydown", esc);
+      return () => { document.removeEventListener("mousedown", away); document.removeEventListener("keydown", esc); };
+    }, [sortOpen]);
     const [quote, setQuote] = useState(false);
     const [text, setText] = useState("");
     const [by, setBy] = useState("");
@@ -5991,7 +6005,34 @@ html[data-theme="dark"] .ps-open{background:#10151D}
     });
     const delComment = async (c) => { try { await api.removeComment(c.id); reload(); } catch (e) { setToast("That comment couldn't be deleted."); } };
 
-    const posts = data ? data.posts : [];
+    /* New posts: when posted. Recent activity: newest of the post or its latest
+       comment, so a fresh comment brings a post back up. Most relevant: activity
+       time plus engagement (hearts, comments) and anything involving you (tagged,
+       your post, a post you commented on), fading with age. */
+    const posts = (() => {
+      const list = data ? data.posts.slice() : [];
+      if (!data || sort === "new") return list;
+      const T = (x) => Date.parse(x) || 0;
+      const lastAct = {}, nC = {}, nH = {}, iJoined = {};
+      list.forEach((p) => { lastAct[p.id] = T(p.created_at); nC[p.id] = 0; nH[p.id] = 0; });
+      data.comments.forEach((c) => {
+        if (!(c.post_id in lastAct)) return;
+        lastAct[c.post_id] = Math.max(lastAct[c.post_id], T(c.created_at));
+        nC[c.post_id]++;
+        if (c.person_id === who) iJoined[c.post_id] = true;
+      });
+      data.hearts.forEach((x) => { if (x.post_id in nH) nH[x.post_id]++; });
+      if (sort === "activity") return list.sort((a, b) => lastAct[b.id] - lastAct[a.id]);
+      const now = Date.now();
+      const score = (p) => {
+        const hrs = Math.max(0, (now - lastAct[p.id]) / 36e5);
+        const me2 = (Array.isArray(p.tags) && p.tags.includes(who) ? 6 : 0) + (p.person_id === who ? 2 : 0) + (iJoined[p.id] ? 2 : 0);
+        return (1 + nH[p.id] + 2 * nC[p.id] + me2) / Math.pow(hrs + 2, 1.3);
+      };
+      const sc = {};
+      list.forEach((p) => { sc[p.id] = score(p); });
+      return list.sort((a, b) => sc[b.id] - sc[a.id] || lastAct[b.id] - lastAct[a.id]);
+    })();
     const news = data ? (data.news || []).filter((n) => !topic || n.topic === topic) : [];
     /* "All": team posts in time order, with a news card after every two posts;
        when the team posts run out, the news carries on. */
@@ -6071,6 +6112,12 @@ html[data-theme="dark"] .ps-open{background:#10151D}
         [["all", "Everything"], ["team", "Team posts"], ["news", "Creative news"]].map(([k, l]) => h("button", { key: k, className: `ps-fd-f ${view === k ? "on" : ""}`, onClick: () => { setView(k); setShown(24); } }, l)),
         view !== "team" && h("span", { className: "ps-fd-topics" }, h("button", { className: `ps-fd-f small ${!topic ? "on" : ""}`, onClick: () => setTopic("") }, "All topics"),
           FEED_TOPICS.map(([k, l]) => h("button", { key: k, className: `ps-fd-f small ${topic === k ? "on" : ""}`, onClick: () => setTopic(topic === k ? "" : k) }, l)))),
+      view !== "news" && h("div", { className: "ps-fd-sort", ref: sortWrap },
+        h("button", { className: "ps-fd-sortbtn", "aria-haspopup": "listbox", "aria-expanded": sortOpen, onClick: () => setSortOpen(!sortOpen) },
+          (FEED_SORTS.find((x) => x[0] === sort) || FEED_SORTS[0])[1], h("span", { className: "ps-fd-caret", "aria-hidden": "true" }, "\u25BE")),
+        sortOpen && h("div", { className: "ps-fd-sortmenu", role: "listbox" }, FEED_SORTS.map(([k, l, d]) => h("button", { key: k, role: "option", "aria-selected": sort === k, className: sort === k ? "on" : "", onClick: () => { setSort(k); setSortOpen(false); } },
+          h("span", null, h("b", null, l), h("span", { className: "ps-muted" }, d)),
+          sort === k && h("span", { className: "ps-fd-check", "aria-hidden": "true" }, "\u2713"))))),
       err ? h("p", { className: "ps-empty" }, err)
         : !data ? h("p", { className: "ps-empty" }, "Loading the feed…")
         : !items.length ? h("p", { className: "ps-empty" }, view === "news" ? "No news yet — check back in a bit." : "Nothing here yet. Be the first to post!")
@@ -12336,6 +12383,15 @@ html.ps-theming .ps-theme-knob,html.ps-theming .ps-theme-ic{transition:transform
 .ps-fd-in .ps-mentions{bottom:calc(100% + 4px)}
 .ps-fd-in.multi .ps-mentions{top:calc(100% + 4px);bottom:auto}
 .ps-fd-tag{color:var(--accent);font-weight:700}
+.ps-fd-sort{position:relative;margin:-4px 0 10px}
+.ps-fd-sortbtn{font:inherit;font-size:15px;font-weight:600;border:0;background:transparent;color:var(--muted);padding:6px 8px;margin-left:-8px;border-radius:8px;cursor:pointer;display:inline-flex;align-items:center;gap:6px}
+.ps-fd-sortbtn:hover{background:var(--line);color:var(--ink)}
+.ps-fd-sortmenu{position:absolute;left:0;top:calc(100% + 4px);z-index:8;width:min(380px,92vw);background:var(--card);border:1px solid var(--line);border-radius:12px;box-shadow:0 18px 40px -14px rgba(0,0,0,.5);padding:6px}
+.ps-fd-sortmenu button{font:inherit;width:100%;display:flex;align-items:center;gap:10px;text-align:left;border:0;background:transparent;color:var(--ink);padding:10px 12px;border-radius:10px;cursor:pointer}
+.ps-fd-sortmenu button>span:first-child{display:flex;flex-direction:column;gap:2px;flex:1}
+.ps-fd-sortmenu button .ps-muted{font-size:13px;line-height:1.35}
+.ps-fd-sortmenu button:hover,.ps-fd-sortmenu button.on{background:var(--paper)}
+.ps-fd-check{color:var(--accent);font-weight:800;font-size:18px}
 .ps-fd-thumbs{display:grid;grid-template-columns:repeat(auto-fill,minmax(96px,1fr));gap:8px}
 .ps-fd-thumb{position:relative;aspect-ratio:1/1;border-radius:10px;overflow:hidden;background:var(--paper)}
 .ps-fd-thumb img{width:100%;height:100%;object-fit:cover;display:block}

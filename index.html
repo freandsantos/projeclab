@@ -7132,6 +7132,10 @@ html[data-theme="dark"] .ps-open{background:#10151D}
     /* One punch only: in the late afternoon it's a time out, otherwise a time in. */
     if (tin && tout && tin === tout) tout = "";
     if (tin && !tout && hm(tin) >= 15 * 60) { tout = tin; tin = ""; }
+    /* Times typed in by HR / the Lead win over the machine's. */
+    const man = d.man || {};
+    if ("tin" in man) tin = man.tin || "";
+    if ("tout" in man) tout = man.tout || "";
     const worked = tin && tout ? hm(tout) - hm(tin) : null;
     const out = { ...d, tin, tout, worked, lateMin: 0, lateAmt: 0, status: "ok" };
     if (d.excused) return { ...out, status: "excused" };
@@ -7150,6 +7154,25 @@ html[data-theme="dark"] .ps-open{background:#10151D}
     return out;
   };
   var ATT_LABEL = { ok: ["On time", "ok"], late: ["Late", "warn"], short: ["Short hours", "warn"], noout: ["No time out", "warn"], noin: ["No time in", "warn"], absent: ["Absent", "warn"], leave: ["Approved leave", "ok"], excused: ["Excused", ""], restday: ["Rest day", ""], off: ["", ""] };
+
+  /* One In / Out cell in the day list: click to type a time; ↺ puts the machine's time back. */
+  function AttTime({ value, star, edited, was, onSave, onReset, label }) {
+    const h = React.createElement;
+    const [editing, setEditing] = useState(false);
+    const [val, setVal] = useState(value || "");
+    const done = useRef(false);
+    const open = () => { done.current = false; setVal(value || ""); setEditing(true); };
+    const save = (v) => { if (done.current) return; done.current = true; setEditing(false); if ((v || "") !== (value || "")) onSave(v || ""); };
+    if (editing) return h("span", { className: "ps-att-timeedit" },
+      h("input", { type: "time", autoFocus: true, value: val, "aria-label": label, onChange: (e) => setVal(e.target.value),
+        onKeyDown: (e) => { if (e.key === "Enter") save(val); if (e.key === "Escape") { done.current = true; setEditing(false); } },
+        onBlur: () => save(val) }),
+      h("button", { type: "button", className: "ps-pay-link", onMouseDown: (e) => e.preventDefault(), onClick: () => save("") }, "Clear"));
+    return h("span", { className: "ps-att-time" },
+      h("button", { type: "button", className: "ps-att-timebtn" + (edited ? " edited" : ""), title: edited ? `Edited${was ? " · machine had " + was : " · machine had no punch"}. Click to change.` : "Click to change", "aria-label": label, onClick: open }, value || "—"),
+      star && !edited ? h("small", { className: "ps-muted", title: "Filled from the Att.log sheet" }, " *") : null,
+      edited ? h("button", { type: "button", className: "ps-att-reset", title: `Put back the machine's time (${was || "none"})`, "aria-label": "Undo edit", onClick: onReset }, "↺") : null);
+  }
 
   function AttendanceTab({ db, me, rows, put, setToast, confirm, crew, emps, profiles }) {
     const h = React.createElement;
@@ -7191,8 +7214,9 @@ html[data-theme="dark"] .ps-open{background:#10151D}
         const id = `att:${parsed.from}_${parsed.to}`;
         const old = imports.find((x) => x.id === id);
         const keepEx = {};
-        if (old) old.people.forEach((p) => p.days.forEach((d) => { if (d.excused) keepEx[p.bioId + "|" + d.date] = d.excused; }));
-        const people = active.map((p) => ({ ...p, days: p.days.map((d) => keepEx[p.bioId + "|" + d.date] ? { ...d, excused: keepEx[p.bioId + "|" + d.date] } : d) }));
+        const keepMan = {};
+        if (old) old.people.forEach((p) => p.days.forEach((d) => { if (d.excused) keepEx[p.bioId + "|" + d.date] = d.excused; if (d.man) keepMan[p.bioId + "|" + d.date] = d.man; }));
+        const people = active.map((p) => ({ ...p, days: p.days.map((d) => { const k = p.bioId + "|" + d.date; return keepEx[k] || keepMan[k] ? { ...d, ...(keepEx[k] ? { excused: keepEx[k] } : {}), ...(keepMan[k] ? { man: keepMan[k] } : {}) } : d; }) }));
         const skipped = parsed.people.length - active.length;
         await put(id, "att", { id, from: parsed.from, to: parsed.to, file: file.name, people, skipped, by: me.name, at: new Date().toISOString(), appliedAt: old ? old.appliedAt : null }, `Read ${active.length} people for ${shortDate(fromIso(parsed.from))} – ${shortDate(fromIso(parsed.to))}${skipped ? ` (${skipped} with no punches left out)` : ""}.`);
         setOpenImp(id);
@@ -7209,6 +7233,19 @@ html[data-theme="dark"] .ps-open{background:#10151D}
     const setExcuse = (bioId, date, val) => {
       const next = { ...imp, people: imp.people.map((p) => p.bioId !== bioId ? p : { ...p, days: p.days.map((d) => d.date !== date ? d : { ...d, excused: val ? (val === true ? "Excused" : val) : undefined }) }) };
       put(imp.id, "att", next);
+    };
+    /* field = "tin" | "tout"; val = "HH:MM", "" (no punch) or null (put the machine's time back). */
+    const setTime = (bioId, date, field, val) => {
+      const next = { ...imp, people: imp.people.map((p) => p.bioId !== bioId ? p : { ...p, days: p.days.map((d) => {
+        if (d.date !== date) return d;
+        const man = { ...(d.man || {}) };
+        if (val === null) delete man[field]; else man[field] = val;
+        const any = "tin" in man || "tout" in man;
+        const nd = { ...d };
+        if (any) nd.man = { ...man, by: me.name, at: new Date().toISOString() }; else delete nd.man;
+        return nd;
+      }) }) };
+      put(imp.id, "att", next, val === null ? "Put back the machine's time." : "Time saved.");
     };
     const summary = (bp) => {
       const pid = byBio[bp.bioId] || "";
@@ -7250,7 +7287,7 @@ html[data-theme="dark"] .ps-open{background:#10151D}
     };
     const exportCsv = () => downloadCsv(`time-in-out-${imp.from}-to-${imp.to}.csv`, [
       ["Name", "Biometric name", "Date", "Time in", "Time out", "Hours (out − in)", "Status", "Late (min)", "Late deduction", "Filled from Sheet 3", "Note"],
-      ...imp.people.flatMap((bp) => { const s = summary(bp); return s.days.filter((d) => d.status !== "off").map((d) => [nameOf(s.pid) || "(not linked)", bp.name, d.date, d.tin, d.tout, d.worked != null ? (d.worked / 60).toFixed(2) : "", ATT_LABEL[d.status][0], d.lateMin || "", d.lateAmt ? d.lateAmt.toFixed(2) : "", d.src, d.excused || ""]); })]);
+      ...imp.people.flatMap((bp) => { const s = summary(bp); return s.days.filter((d) => d.status !== "off").map((d) => [nameOf(s.pid) || "(not linked)", bp.name, d.date, d.tin, d.tout, d.worked != null ? (d.worked / 60).toFixed(2) : "", ATT_LABEL[d.status][0], d.lateMin || "", d.lateAmt ? d.lateAmt.toFixed(2) : "", d.src, [d.excused || "", d.man ? `time edited by ${d.man.by}` : ""].filter(Boolean).join(" · ")]); })]);
 
     const rulesBox = h("div", { className: "ps-pay-person ps-att-rules" },
       h("div", { className: "ps-pay-row" },
@@ -7311,8 +7348,16 @@ html[data-theme="dark"] .ps-open{background:#10151D}
                 const [lab, cls] = ATT_LABEL[d.status];
                 return h("tr", { key: d.date },
                   h("td", null, new Date(d.date + "T00:00").toLocaleDateString("en-PH", { weekday: "short", month: "short", day: "numeric" })),
-                  h("td", null, d.tin || "—", d.tin && d.src && d.src.includes("in") ? h("small", { className: "ps-muted", title: "Filled from the Att.log sheet" }, " *") : null),
-                  h("td", null, d.tout || "—", d.tout && d.src && d.src.includes("out") ? h("small", { className: "ps-muted", title: "Filled from the Att.log sheet" }, " *") : null),
+                  ["tin", "tout"].map((f) => {
+                    const raw = bp.days.find((x) => x.date === d.date) || {};
+                    const ed = !!(raw.man && f in raw.man);
+                    return h("td", { key: f }, h(AttTime, {
+                      value: d[f], edited: ed, was: raw[f] || "",
+                      star: !!(d[f] && d.src && d.src.includes(f === "tin" ? "in" : "out")),
+                      label: `${f === "tin" ? "Time in" : "Time out"} ${d.date}`,
+                      onSave: (v) => setTime(bp.bioId, d.date, f, v),
+                      onReset: () => setTime(bp.bioId, d.date, f, null) }));
+                  }),
                   h("td", null, d.worked != null ? fmtHm(d.worked) : ""),
                   h("td", null, h("span", { className: `ps-chip ${cls}` }, lab), d.excused && d.excused !== "Excused" ? h("span", { className: "ps-muted" }, " " + d.excused) : null),
                   h("td", null, d.lateMin && d.status !== "excused" ? `${d.lateMin} min · ${d.lateAmt ? "−" + peso(d.lateAmt) : "no pay rate"}${d.lateHours ? ` (${d.lateHours} h)` : ""}` : ""),
@@ -7320,7 +7365,7 @@ html[data-theme="dark"] .ps-open{background:#10151D}
                     ? h("button", { className: "ps-pay-link", onClick: () => setExcuse(bp.bioId, d.date, null) }, "Undo excuse")
                     : (d.status === "absent" || d.lateMin || d.status === "noout" || d.status === "noin" || d.status === "short") && h("button", { className: "ps-pay-link", title: "No deduction for this day", onClick: () => setExcuse(bp.bioId, d.date, true) }, "Excuse"))));
               }))),
-            h("p", { className: "ps-muted ps-pay-hint" }, "* filled in from the Att.log report sheet. Excused days aren't counted as late or absent.")))))))));
+            h("p", { className: "ps-muted ps-pay-hint" }, "* filled in from the Att.log report sheet. Click any In or Out time to change it (blue = changed by hand; ↺ puts the machine's time back). Excused days aren't counted as late or absent.")))))))));
   }
 
   function HrisPage({ db, me, mutate, setToast, confirm }) {
@@ -11845,6 +11890,9 @@ ${lines.join("\n")}`);
 .ps-att-table select{font:inherit;font-size:13px;padding:4px 6px;border:1px solid var(--line);border-radius:6px;background:var(--card);color:var(--ink);max-width:170px}
 .ps-att-unlinked td{opacity:.75}
 .ps-att-days>td{padding:6px 10px 12px}
+.ps-att-timebtn{background:none;border:0;padding:2px 4px;margin:-2px -4px;font:inherit;color:inherit;cursor:pointer;border-radius:6px;border-bottom:1px dashed var(--line)}.ps-att-timebtn:hover{background:var(--soft,rgba(0,0,0,.05))}.ps-att-timebtn.edited{color:#2563eb;font-weight:600}
+.ps-att-reset{background:none;border:0;padding:0 4px;cursor:pointer;color:var(--muted);font-size:13px}.ps-att-reset:hover{color:inherit}
+.ps-att-timeedit{display:inline-flex;gap:6px;align-items:center}.ps-att-timeedit input{font:inherit;padding:2px 4px;width:110px}
 .ps-att-daytable{width:100%;border-collapse:collapse;font-size:13px}.ps-att-daytable th{text-align:left;color:var(--muted);font-weight:600;padding:4px 6px}.ps-att-daytable td{padding:4px 6px;border-top:1px solid var(--line)}
 .ps-hris-chips{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}
 .ps-hris-alerts{border:1px solid var(--line);background:var(--card);border-radius:12px;padding:10px 14px;margin:0 0 14px;display:flex;flex-direction:column;gap:4px;font-size:13.5px}

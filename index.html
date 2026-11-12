@@ -8595,15 +8595,22 @@ ${pay}
     const url = (key, label, may) => {
       const v = (t[key] || "").trim();
       if (!may && !v) return null;
-      return /* @__PURE__ */ React.createElement("label", { className: "ps-field", key }, /* @__PURE__ */ React.createElement("span", null, label), may ? /* @__PURE__ */ React.createElement(
+      /* Copy button beside the link so the Drive folder can be pasted into a chat in one tap. */
+      const copyBtn = v ? /* @__PURE__ */ React.createElement("button", { type: "button", className: "ps-btn ghost small ps-urlcopy", title: "Copy this link", onClick: async (e) => {
+        e.preventDefault();
+        const ok = await copyText(v);
+        setToast(ok ? "Link copied." : "Couldn't copy. Your browser blocked it.");
+      } }, "Copy") : null;
+      return /* @__PURE__ */ React.createElement("div", { className: "ps-field", key }, /* @__PURE__ */ React.createElement("span", null, label), /* @__PURE__ */ React.createElement("div", { className: "ps-urlrow" }, may ? /* @__PURE__ */ React.createElement(
         "input",
         {
           type: "url",
+          "aria-label": label,
           value: t[key] || "",
           placeholder: "https://\u2026",
           onChange: (e) => updateTask(t.id, { [key]: e.target.value })
         }
-      ) : /* @__PURE__ */ React.createElement("a", { className: "ps-linkout", href: v, target: "_blank", rel: "noopener noreferrer" }, v.replace(/^https?:\/\/(www\.)?/, ""), /* @__PURE__ */ React.createElement("span", { "aria-hidden": "true" }, " \u2197")));
+      ) : /* @__PURE__ */ React.createElement("a", { className: "ps-linkout", href: v, target: "_blank", rel: "noopener noreferrer" }, v.replace(/^https?:\/\/(www\.)?/, ""), /* @__PURE__ */ React.createElement("span", { "aria-hidden": "true" }, " \u2197")), copyBtn));
     };
     /* Ctrl+V anywhere in this window attaches the picture to the comment being
        written - the same reflex as dropping a screenshot into a chat. */
@@ -8646,7 +8653,7 @@ ${pay}
         disabled: !t.due || !lead,
         onChange: (e) => updateTask(t.id, { due: combineDue(dueDatePart(t.due), e.target.value) })
       }
-    )))), /* @__PURE__ */ React.createElement("div", { className: "ps-fields" }, url("link", "Reference link", lead), url("deliverable", "Google Drive link", canEdit)), status === "todo" ? steps.length > 0 && /* @__PURE__ */ React.createElement("p", { className: "ps-checkhint" }, steps.length, " check", steps.length === 1 ? "" : "s", " to work through \u2014 they appear once the task is started.") : (steps.length > 0 || lead) && /* @__PURE__ */ React.createElement("fieldset", { className: "ps-checks" }, /* @__PURE__ */ React.createElement("legend", null, steps.length ? "Tick every item before finishing" : "Break it into steps (optional)"), steps.map((x, i) => /* @__PURE__ */ React.createElement("label", { key: i }, /* @__PURE__ */ React.createElement("input", { type: "checkbox", checked: x.done, disabled: !(canEdit || isHelper) || t.done, onChange: () => toggleStep(i) }), /* @__PURE__ */ React.createElement("span", { className: x.done ? "ps-step-done" : "" }, x.text), lead && /* @__PURE__ */ React.createElement("button", { className: "ps-x-small", "aria-label": "Remove step", onClick: (e) => {
+    )))), /* @__PURE__ */ React.createElement("div", { className: "ps-fields one" }, url("deliverable", "Google Drive link", canEdit)), status === "todo" ? steps.length > 0 && /* @__PURE__ */ React.createElement("p", { className: "ps-checkhint" }, steps.length, " check", steps.length === 1 ? "" : "s", " to work through \u2014 they appear once the task is started.") : (steps.length > 0 || lead) && /* @__PURE__ */ React.createElement("fieldset", { className: "ps-checks" }, /* @__PURE__ */ React.createElement("legend", null, steps.length ? "Tick every item before finishing" : "Break it into steps (optional)"), steps.map((x, i) => /* @__PURE__ */ React.createElement("label", { key: i }, /* @__PURE__ */ React.createElement("input", { type: "checkbox", checked: x.done, disabled: !(canEdit || isHelper) || t.done, onChange: () => toggleStep(i) }), /* @__PURE__ */ React.createElement("span", { className: x.done ? "ps-step-done" : "" }, x.text), lead && /* @__PURE__ */ React.createElement("button", { className: "ps-x-small", "aria-label": "Remove step", onClick: (e) => {
       e.preventDefault();
       removeStep(i);
     } }, "\xD7"))), lead && /* @__PURE__ */ React.createElement("div", { className: "ps-del-row" }, /* @__PURE__ */ React.createElement(
@@ -11581,6 +11588,10 @@ ${lines.join("\n")}`);
 .ps-bellrow .ps-x-small{align-self:center;flex:0 0 auto}
 .ps-linkout{display:inline-block;max-width:100%;padding:7px 0;font-size:14px;color:var(--accent);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .ps-linkout:hover{text-decoration:underline}
+.ps-fields.one{grid-template-columns:1fr}
+.ps-urlrow{display:flex;gap:8px;align-items:center;min-width:0}
+.ps-urlrow > input,.ps-urlrow > .ps-linkout{flex:1 1 auto;min-width:0}
+.ps-urlrow .ps-urlcopy{flex:0 0 auto}
 .ps-brief{display:flex;flex-direction:column;gap:6px;max-width:760px;margin-bottom:12px}
 .ps-briefnote{border:1px solid var(--line);border-radius:9px;padding:9px 13px;background:var(--card)}
 .ps-tools{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:12px;margin-bottom:30px}

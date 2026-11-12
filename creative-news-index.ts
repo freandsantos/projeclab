@@ -1,5 +1,5 @@
 // creative-news: collects creative news for the Projeclab Feed tab.
-// Reads public RSS/Atom feeds (video editing, graphic design, AI tools),
+// Reads public RSS/Atom feeds (video editing, graphic design, branding, AI tools),
 // keeps the newest articles in the feed_news table. The app calls this when
 // someone opens the Feed; it only goes out to the sites every 3 hours.
 // Writes with the service-role key that Supabase gives every Edge Function
@@ -13,17 +13,37 @@ const SOURCES: { topic: string; source: string; url: string }[] = [
   { topic: "video", source: "Frame.io Insider", url: "https://blog.frame.io/feed/" },
   { topic: "video", source: "Motionographer", url: "https://motionographer.com/feed/" },
   { topic: "video", source: "Videomaker", url: "https://www.videomaker.com/feed/" },
+  { topic: "video", source: "ProVideo Coalition", url: "https://www.provideocoalition.com/feed/" },
+  { topic: "video", source: "Larry Jordan", url: "https://larryjordan.com/feed/" },
   // Graphic design
   { topic: "design", source: "Creative Bloq", url: "https://www.creativebloq.com/feeds/all" },
   { topic: "design", source: "Creative Boom", url: "https://www.creativeboom.com/feed/" },
   { topic: "design", source: "Abduzeedo", url: "https://abduzeedo.com/rss.xml" },
   { topic: "design", source: "Dezeen", url: "https://www.dezeen.com/design/feed/" },
+  // Branding
+  { topic: "brand", source: "BP&O", url: "https://bpando.org/feed/" },
+  { topic: "brand", source: "Identity Designed", url: "https://identitydesigned.com/feed/" },
   // AI tools
   { topic: "ai", source: "The Verge", url: "https://www.theverge.com/rss/ai-artificial-intelligence/index.xml" },
   { topic: "ai", source: "TechCrunch", url: "https://techcrunch.com/category/artificial-intelligence/feed/" },
   { topic: "ai", source: "VentureBeat", url: "https://venturebeat.com/category/ai/feed/" },
 ];
 const PER_SOURCE = 12;
+
+// Only creative value: no gossip, business drama, politics or shopping deals.
+const BLOCK = /\b(scandal|affair|spy|spies|lawsuits?|sues?|sued|suing|court|judge|fired|fires|firing|resign\w*|ceo|ceos|layoffs?|laid off|stocks?|shares|shareholders?|earnings|revenue|valuation|funding|raises|investors?|acquir\w*|acquisition|merger|ipo|antitrust|congress|senate|lawmakers?|trump|biden|election\w*|politic\w*|tariffs?|government|regulat\w*|banned|ban|deals?|discount\w*|sale|black friday|cyber monday|cheapest|price drop|rumou?rs?|reportedly|allegations?|alleged\w*|controvers\w*|backlash|outrage|drama|feud|leaks?|leaked|arrest\w*|police|crime|criminal|dies|died|death|killed|war|military|nvidia|jensen|musk|openai'?s? board|xai)\b|£\d|\$\d[\d,.]*\s*(off|billion|million)|\d+% off/i;
+// Fluff, judged on the headline only: product reviews, gadgets, celebrity lists.
+const FLUFF = /\b(reviews?|reviewed|vs|versus|quote of the day|roles|villains?|heroes|celebrit\w*|actors?|actress|box office|exploitation|con artists?|nostalgia|zelda|nintendo|playstation|xbox|gaming|watch|smartwatch|chair|desk|headphones|earbuds|laptop|gift guide|gifts?)\b|^the best |^\d+ (times|movies|films|roles|actors|shows)\b/i;
+// AI stories only when they are about creative work and tools.
+const AI_ALLOW = /\b(adobe|firefly|photoshop|premiere|after effects|illustrator|lightroom|canva|figma|davinci|resolve|capcut|runway|midjourney|sora|veo|kling|pika|luma|flux|stable diffusion|dall-?e|imagen|image|images|video|videos|design\w*|creative\w*|creators?|edit\w*|animat\w*|3d|art|artists?|photo\w*|music|voice|font|typograph\w*|brand\w*|film\w*|motion|vfx|prompt\w*|tutorial|how to|workflow)\b/i;
+// Design stories about identities and logos go under Branding.
+const BRANDY = /\b(brand\w*|rebrand\w*|identity|identities|logo\w*|wordmark|visual system)\b/i;
+const keep = (topic: string, title: string, summary: string | null) => {
+  const text = title + " " + (summary || "");
+  if (BLOCK.test(text) || FLUFF.test(title)) return false;
+  if (topic === "ai" && !AI_ALLOW.test(title)) return false;
+  return true;
+};
 const UA = "Mozilla/5.0 (ProjeclabFeed; +https://projeclab-alpha-1.vercel.app)";
 const EVERY_MS = 3 * 60 * 60 * 1000;
 const KEEP_DAYS = 60;
@@ -137,9 +157,9 @@ Deno.serve(async (req) => {
       const r = await fetch(s.url, { signal: ctl.signal, headers: { "User-Agent": UA, "Accept": "application/rss+xml, application/atom+xml, application/xml, text/xml, */*" } });
       clearTimeout(timer);
       if (!r.ok) { report[s.source] = "HTTP " + r.status; return; }
-      const items = parse(await r.text()).slice(0, PER_SOURCE);
+      const items = parse(await r.text()).filter((it) => keep(s.topic, it.title, it.summary)).slice(0, PER_SOURCE);
       await Promise.all(items.filter((it) => !it.image).map(async (it) => { it.image = await ogImage(it.link); }));
-      for (const it of items) rows.push({ id: await sha1(it.link), topic: s.topic, source: s.source, ...it, published_at: it.published_at || now, fetched_at: now });
+      for (const it of items) rows.push({ id: await sha1(it.link), topic: s.topic === "design" && BRANDY.test(it.title) ? "brand" : s.topic, source: s.source, ...it, published_at: it.published_at || now, fetched_at: now });
       report[s.source] = items.length;
     } catch (e) {
       report[s.source] = "error: " + String((e as Error).message || e).slice(0, 80);
@@ -150,6 +170,12 @@ Deno.serve(async (req) => {
     const { error } = await db.from("feed_news").upsert(rows, { onConflict: "id" });
     if (error) return json({ ok: false, error: error.message, report });
   }
+  const { data: all } = await db.from("feed_news").select("id, topic, title, summary");
+  const drop = (all || []).filter((x) => !keep(x.topic, x.title, x.summary)).map((x) => x.id);
+  if (drop.length) await db.from("feed_news").delete().in("id", drop);
+  report.removed = drop.length;
+  const toBrand = (all || []).filter((x) => x.topic === "design" && BRANDY.test(x.title) && !drop.includes(x.id)).map((x) => x.id);
+  if (toBrand.length) await db.from("feed_news").update({ topic: "brand" }).in("id", toBrand);
   await db.from("feed_news").delete().lt("published_at", new Date(Date.now() - KEEP_DAYS * 864e5).toISOString());
   return json({ ok: true, saved: rows.length, report });
 });

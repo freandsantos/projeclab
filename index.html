@@ -5720,7 +5720,7 @@ html[data-theme="dark"] .ps-open{background:#10151D}
      Outside the live site a localStorage stand-in (feedDemo) is used.
      Test phase: the tab is shown to the Lead only (FEED_FOR). */
   var FEED_FOR = (me) => me.role === "lead";
-  var FEED_TOPICS = [["video", "Video editing"], ["design", "Graphic design"], ["ai", "AI tools"]];
+  var FEED_TOPICS = [["video", "Video editing"], ["design", "Graphic design"], ["brand", "Branding"], ["ai", "AI tools"]];
   var feedTopic = (id) => (FEED_TOPICS.find((t) => t[0] === id) || [id, id])[1];
   var feedDemo = (() => {
     const K = "ps-feed-demo";
@@ -12156,12 +12156,14 @@ html.ps-theming .ps-theme-knob,html.ps-theming .ps-theme-ic{transition:transform
 .ps-fd-src.ps-fd-t-video{background:#2563EB}
 .ps-fd-src.ps-fd-t-design{background:#DB2777}
 .ps-fd-src.ps-fd-t-ai{background:#7C3AED}
+.ps-fd-src.ps-fd-t-brand{background:#D97706}
 .ps-fd-nimg{display:block;background:var(--paper);aspect-ratio:1.91/1;overflow:hidden}
 .ps-fd-nimg img{display:block;width:100%;height:100%;object-fit:cover}
 .ps-fd-nimg.none{display:grid;place-items:center;color:#fff;font-weight:800;font-size:26px;letter-spacing:-.02em}
 .ps-fd-b-video{background:linear-gradient(135deg,#1D4ED8,#0F766E)}
 .ps-fd-b-design{background:linear-gradient(135deg,#BE185D,#F59E0B)}
 .ps-fd-b-ai{background:linear-gradient(135deg,#6D28D9,#2563EB)}
+.ps-fd-b-brand{background:linear-gradient(135deg,#B45309,#E11D48)}
 .ps-fd-ntext{display:flex;flex-direction:column;gap:4px;padding:10px 14px 14px;background:var(--paper)}
 .ps-root.dark .ps-fd-ntext{background:rgba(255,255,255,.03)}
 .ps-fd-ndom{font-size:12px;color:var(--muted);letter-spacing:.02em}
@@ -12198,9 +12200,11 @@ html.ps-theming .ps-theme-knob,html.ps-theming .ps-theme-ic{transition:transform
 .ps-chip.ps-fd-t-video{background:#E0EDFF;color:#1D4ED8}
 .ps-chip.ps-fd-t-design{background:#FCE7F3;color:#BE185D}
 .ps-chip.ps-fd-t-ai{background:#EDE9FE;color:#6D28D9}
+.ps-chip.ps-fd-t-brand{background:#FEF3C7;color:#B45309}
 .ps-root.dark .ps-chip.ps-fd-t-video{background:#172B4D;color:#93C5FD}
 .ps-root.dark .ps-chip.ps-fd-t-design{background:#4A1630;color:#F9A8D4}
 .ps-root.dark .ps-chip.ps-fd-t-ai{background:#2E1F5E;color:#C4B5FD}
+.ps-root.dark .ps-chip.ps-fd-t-brand{background:#45300F;color:#FCD34D}
 .ps-fd-loadmore{align-self:center}
 @media (max-width:640px){
   .ps-fd-topics{margin-left:0}

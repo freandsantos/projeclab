@@ -4582,7 +4582,32 @@ html[data-theme="dark"] .ps-open{background:#10151D}
       /* Some browsers refuse to make a sound until they are clicked in. Not worth a warning. */
     }
   };
-  function Notifications({ db, me, mutate, openTask, openVideo, openDay }) {
+  /* Feed activity for the bell: new posts by others, and comments on your own posts.
+     Read / cleared state uses the same notifRead / notifCleared lists as everything else. */
+  var feedNotifs = (act, me) => {
+    if (!act || !me) return [];
+    const out = [];
+    const cleared = new Set(me.notifCleared || []);
+    const cutoff = Date.now() - 30 * 864e5;
+    const iso = (t) => { const d = new Date(t); return isNaN(d) ? "" : d.toISOString(); };
+    const add = (key, at, by, text, id) => {
+      at = iso(at);
+      if (!at || by === me.id || cleared.has(key) || new Date(at).getTime() < cutoff) return;
+      out.push({ key, at, by, text, what: "feed", id, title: "Feed" });
+    };
+    const posts = act.posts || [];
+    posts.forEach((p) => {
+      const n = Array.isArray(p.photos) && p.photos.length ? p.photos.length : p.photo_url ? 1 : 0;
+      const text = p.kind === "quote" ? `shared a quote on the Feed: \u201C${p.body}\u201D`
+        : n ? `posted ${n > 1 ? n + " photos" : "a photo"} on the Feed${p.body ? ": " + p.body : ""}`
+        : `posted on the Feed: ${p.body}`;
+      add(`f${p.id}`, p.created_at, p.person_id, text, p.id);
+    });
+    const mine = new Set(posts.filter((p) => p.person_id === me.id).map((p) => p.id));
+    (act.comments || []).forEach((c) => { if (mine.has(c.post_id)) add(`fc${c.id}`, c.created_at, c.person_id, `commented on your post: ${c.body}`, c.post_id); });
+    return out;
+  };
+  function Notifications({ db, me, mutate, openTask, openVideo, openDay, openFeed }) {
     const h = React.createElement;
     const [open, setOpen] = useState(false);
     const wrap = useRef(null);
@@ -4594,7 +4619,22 @@ html[data-theme="dark"] .ps-open{background:#10151D}
       document.addEventListener("keydown", esc);
       return () => { document.removeEventListener("mousedown", away); document.removeEventListener("keydown", esc); };
     }, [open]);
-    const items = notifFor(db, me);
+    /* Feed posts live in their own tables, so the bell fetches them separately and
+       stays live through the same Realtime channel the Feed tab uses. */
+    const feedOn = FEED_FOR(me);
+    const [feedAct, setFeedAct] = useState(null);
+    useEffect(() => {
+      if (!feedOn) { setFeedAct(null); return; }
+      let alive = true, t = null;
+      const api = feedApi();
+      const pull = () => (api.activity ? api.activity() : api.load()).then((d) => { if (alive) setFeedAct(d); }).catch(() => {});
+      pull();
+      const stop = api.subscribe(() => { clearTimeout(t); t = setTimeout(pull, 400); });
+      const iv = setInterval(pull, 5 * 60 * 1000);
+      return () => { alive = false; clearTimeout(t); clearInterval(iv); stop && stop(); };
+    }, [feedOn]);
+    const items = [...notifFor(db, me), ...(feedOn ? feedNotifs(feedAct, me) : [])]
+      .sort((a, b) => String(b.at).localeCompare(String(a.at))).slice(0, 30);
     /* Opening a notification marks it read (greyed, still there to click again);
        only the x or "Clear all" removes it. The badge counts unread ones. */
     const readSet = new Set(me.notifRead || []);
@@ -4643,6 +4683,7 @@ html[data-theme="dark"] .ps-open{background:#10151D}
       setOpen(false);
       if (it.what === "task") openTask(it.id);
       else if (it.what === "video") openVideo(it.id);
+      else if (it.what === "feed" && openFeed) openFeed();
       else if (it.what === "meeting" && openDay) openDay(it.id);
     };
     return h("span", { className: "ps-bellwrap", ref: wrap },
@@ -9642,7 +9683,7 @@ ${lines.join("\n")}`);
       setOpenId(null);
       setTaskId(null);
       setPersonId(null);
-    } }, /* @__PURE__ */ React.createElement("img", { className: "ps-logo-mark", src: PS_MARK, alt: "", "aria-hidden": "true" }), /* @__PURE__ */ React.createElement("span", { className: "ps-logo-word" }, pickleOn() ? pickleWord() : "Projeclab", /* @__PURE__ */ React.createElement("span", { className: "ps-logo-sub" }, "Studios")))), /* @__PURE__ */ React.createElement("span", { className: "ps-spacer" }), me.role !== "client" && React.createElement("button", { className: `ps-mbtn s ${mTop === "search" ? "on" : ""}`, "aria-label": "Search", "aria-expanded": mTop === "search", onClick: () => { const o = mTop !== "search"; setMTop(o ? "search" : null); if (o) setTimeout(() => { const i = document.querySelector(".ps-top .ps-search-in"); if (i) i.focus(); }, 30); } }, React.createElement("svg", { viewBox: "0 0 24 24", width: 18, height: 18, "aria-hidden": "true" }, React.createElement("circle", { cx: 11, cy: 11, r: 6.5, fill: "none", stroke: "currentColor", strokeWidth: 2.2 }), React.createElement("path", { d: "M16 16l4.5 4.5", stroke: "currentColor", strokeWidth: 2.2, strokeLinecap: "round" }))), React.createElement("button", { className: `ps-mbtn m ${mTop === "menu" ? "on" : ""}`, "aria-label": "Account menu", "aria-expanded": mTop === "menu", onClick: () => setMTop(mTop === "menu" ? null : "menu") }, React.createElement(Avatar, { person: me, size: 34 })), me.role !== "client" && /* @__PURE__ */ React.createElement(SearchBox, { db, me, lead, openTask: setTaskId, openVideo: setOpenId, openClient: (id) => { setPage({ tab: "client", id }); setFilter(null); } }), me.role !== "client" && /* @__PURE__ */ React.createElement(Notifications, { db, me, mutate, openTask: setTaskId, openVideo: setOpenId, openDay: (d) => { setCalDay(d); setPage({ tab: "calendar" }); } }), React.createElement("span", { className: "ps-acct" }, authLock ? /* @__PURE__ */ React.createElement("span", { className: "ps-viewas" }, /* @__PURE__ */ React.createElement("b", null, me.name), /* @__PURE__ */ React.createElement("span", null, (ROLES[me.role] || {}).label || me.role)) : /* @__PURE__ */ React.createElement("label", { className: "ps-viewas" }, /* @__PURE__ */ React.createElement("span", null, "Viewing as"), /* @__PURE__ */ React.createElement("select", { value: meId, onChange: (e) => {
+    } }, /* @__PURE__ */ React.createElement("img", { className: "ps-logo-mark", src: PS_MARK, alt: "", "aria-hidden": "true" }), /* @__PURE__ */ React.createElement("span", { className: "ps-logo-word" }, pickleOn() ? pickleWord() : "Projeclab", /* @__PURE__ */ React.createElement("span", { className: "ps-logo-sub" }, "Studios")))), /* @__PURE__ */ React.createElement("span", { className: "ps-spacer" }), me.role !== "client" && React.createElement("button", { className: `ps-mbtn s ${mTop === "search" ? "on" : ""}`, "aria-label": "Search", "aria-expanded": mTop === "search", onClick: () => { const o = mTop !== "search"; setMTop(o ? "search" : null); if (o) setTimeout(() => { const i = document.querySelector(".ps-top .ps-search-in"); if (i) i.focus(); }, 30); } }, React.createElement("svg", { viewBox: "0 0 24 24", width: 18, height: 18, "aria-hidden": "true" }, React.createElement("circle", { cx: 11, cy: 11, r: 6.5, fill: "none", stroke: "currentColor", strokeWidth: 2.2 }), React.createElement("path", { d: "M16 16l4.5 4.5", stroke: "currentColor", strokeWidth: 2.2, strokeLinecap: "round" }))), React.createElement("button", { className: `ps-mbtn m ${mTop === "menu" ? "on" : ""}`, "aria-label": "Account menu", "aria-expanded": mTop === "menu", onClick: () => setMTop(mTop === "menu" ? null : "menu") }, React.createElement(Avatar, { person: me, size: 34 })), me.role !== "client" && /* @__PURE__ */ React.createElement(SearchBox, { db, me, lead, openTask: setTaskId, openVideo: setOpenId, openClient: (id) => { setPage({ tab: "client", id }); setFilter(null); } }), me.role !== "client" && /* @__PURE__ */ React.createElement(Notifications, { db, me, mutate, openTask: setTaskId, openVideo: setOpenId, openFeed: () => setPage({ tab: "feed" }), openDay: (d) => { setCalDay(d); setPage({ tab: "calendar" }); } }), React.createElement("span", { className: "ps-acct" }, authLock ? /* @__PURE__ */ React.createElement("span", { className: "ps-viewas" }, /* @__PURE__ */ React.createElement("b", null, me.name), /* @__PURE__ */ React.createElement("span", null, (ROLES[me.role] || {}).label || me.role)) : /* @__PURE__ */ React.createElement("label", { className: "ps-viewas" }, /* @__PURE__ */ React.createElement("span", null, "Viewing as"), /* @__PURE__ */ React.createElement("select", { value: meId, onChange: (e) => {
       setMeId(e.target.value);
       setPage({ tab: "queue" });
       setFilter(null);
@@ -12500,6 +12541,15 @@ if (sb) {
         sb.from("feed_news").select("id, topic, source, title, link, image, summary, published_at").order("published_at", { ascending: false }).limit(150)
       ]);
       return { posts: posts || [], comments: c.data || [], hearts: hts.data || [], news: nw.data || [] };
+    },
+    /* Light query for the bell: the last 30 days of posts and their comments. */
+    activity: async () => {
+      const since = new Date(Date.now() - 30 * 864e5).toISOString();
+      const { data: posts, error } = await sb.from("feed_posts").select("id, person_id, kind, body, photo_url, photos, created_at").gte("created_at", since).order("created_at", { ascending: false }).limit(40);
+      if (error) throw error;
+      const ids = (posts || []).map((p) => p.id);
+      const c = ids.length ? await sb.from("feed_comments").select("id, post_id, person_id, body, created_at").in("post_id", ids).gte("created_at", since) : { data: [] };
+      return { posts: posts || [], comments: c.data || [] };
     },
     refreshNews: async () => {
       const { data, error } = await sb.functions.invoke("creative-news", { body: {} });

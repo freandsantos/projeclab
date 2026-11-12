@@ -627,7 +627,7 @@ function makeHandler({ store, feed = null, env = {}, slackPost = null, now = () 
       const kind = quoteBy ? "quote" : urls.length ? "photo" : "text";
       const row = { person_id: STUDIO, author: null, kind, body: text, quote_by: quoteBy || null, photo_url: urls[0] || null, photos: urls, tags };
       const id = await feed.insert(row);
-      const what = kind === "quote" ? "a quote" : kind === "photo" ? `${urls.length > 1 ? urls.length + " photos" : "a photo"}${text ? " with a caption" : ""}` : "a post";
+      const what = kind === "quote" ? "a quote" : kind === "photo" ? `${urls.length > 1 ? urls.length + " photos" : "a photo"}${text ? " with a caption" : ""}` : "";
       const tagged = tags.length ? ` Tagged: ${tags.map((t) => crew.find((p) => p.id === t).name).join(", ")}.` : "";
       return `Posted ${what ? what + " " : ""}to the Feed as Projeclab Studios. The team sees it now.${tagged}\nOpen: ${siteUrl} → Feed [id ${id}]`;
     },

@@ -5710,6 +5710,193 @@ html[data-theme="dark"] .ps-open{background:#10151D}
           h("button", { className: "ps-btn small", onClick: () => setOpen(null) }, "Done"))));
   }
 
+  /* ---- Feed (creative wall) ------------------------------------------------
+     Team posts (a photo, a quote or a short post), hearts and comments, mixed
+     with creative news (video editing, design, AI tools) collected by the
+     `creative-news` Edge Function. All of it lives in its own Supabase tables
+     (feed_posts, feed_comments, feed_hearts, feed_news) through window.psFeed,
+     NOT in the shared app_state, so a busy feed never slows the rest of the
+     app. Photos go to the task-photos bucket like every other picture.
+     Outside the live site a localStorage stand-in (feedDemo) is used.
+     Test phase: the tab is shown to the Lead only (FEED_FOR). */
+  var FEED_FOR = (me) => me.role === "lead";
+  var FEED_TOPICS = [["video", "Video editing"], ["design", "Graphic design"], ["ai", "AI tools"]];
+  var feedTopic = (id) => (FEED_TOPICS.find((t) => t[0] === id) || [id, id])[1];
+  var feedDemo = (() => {
+    const K = "ps-feed-demo";
+    const read = () => { try { return JSON.parse(localStorage.getItem(K) || "null") || { posts: [], comments: [], hearts: [], news: [] }; } catch (e) { return { posts: [], comments: [], hearts: [], news: [] }; } };
+    const write = (s) => { try { localStorage.setItem(K, JSON.stringify(s)); } catch (e) {} subs.forEach((f) => f()); };
+    const subs = new Set();
+    const rid = () => "d" + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+    return {
+      live: false,
+      load: async () => { const s = read(); return { ...s, posts: s.posts.slice().sort((a, b) => b.created_at.localeCompare(a.created_at)) }; },
+      news: async () => read().news,
+      refreshNews: async () => ({ skipped: true }),
+      post: async (row) => { const s = read(); s.posts.push({ id: rid(), author: "demo", created_at: new Date().toISOString(), ...row }); write(s); },
+      removePost: async (id) => { const s = read(); s.posts = s.posts.filter((p) => p.id !== id); s.comments = s.comments.filter((c) => c.post_id !== id); s.hearts = s.hearts.filter((x) => x.post_id !== id); write(s); },
+      comment: async (post_id, person_id, body) => { const s = read(); s.comments.push({ id: rid(), post_id, person_id, author: "demo", body, created_at: new Date().toISOString() }); write(s); },
+      removeComment: async (id) => { const s = read(); s.comments = s.comments.filter((c) => c.id !== id); write(s); },
+      heart: async (post_id, person_id, on) => { const s = read(); s.hearts = s.hearts.filter((x) => !(x.post_id === post_id && x.person_id === person_id)); if (on) s.hearts.push({ post_id, person_id, created_at: new Date().toISOString() }); write(s); },
+      subscribe: (f) => { subs.add(f); return () => subs.delete(f); }
+    };
+  })();
+  var feedApi = () => typeof window !== "undefined" && window.psFeed || feedDemo;
+  var feedAgo = (iso) => {
+    const t = Date.parse(iso || "");
+    if (isNaN(t)) return "";
+    const s = Math.max(0, (Date.now() - t) / 1e3);
+    if (s < 60) return "just now";
+    if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+    if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
+    if (s < 7 * 86400) return `${Math.floor(s / 86400)}d ago`;
+    return new Date(t).toLocaleDateString("en-PH", { month: "short", day: "numeric", timeZone: "Asia/Manila", ...(new Date(t).getFullYear() !== new Date().getFullYear() ? { year: "numeric" } : {}) });
+  };
+  /* Links in posts and comments become clickable; everything else stays plain text. */
+  var feedText = (text) => {
+    const h = React.createElement;
+    return String(text || "").split(/(https?:\/\/[^\s]+)/g).map((bit, i) => /^https?:\/\//.test(bit) ? h("a", { key: i, href: bit, target: "_blank", rel: "noreferrer noopener" }, bit) : bit);
+  };
+  function FeedPage({ db, me, who, setToast, confirm }) {
+    const h = React.createElement;
+    const api = feedApi();
+    const [data, setData] = useState(null);
+    const [err, setErr] = useState("");
+    const [view, setView] = useState("all");
+    const [topic, setTopic] = useState("");
+    const [shown, setShown] = useState(24);
+    const [kind, setKind] = useState("photo");
+    const [text, setText] = useState("");
+    const [by, setBy] = useState("");
+    const [pic, setPic] = useState(null);
+    const [busy, setBusy] = useState(false);
+    const [open, setOpen] = useState({});
+    const [drafts, setDrafts] = useState({});
+    const isMod = me.role === "lead" || me.role === "hr";
+    const person = (id) => (db.people || []).find((p) => p.id === id) || { id, name: "Former teammate" };
+    const reload = async () => {
+      try { setData(await api.load()); setErr(""); } catch (e) { setErr(e && e.message ? e.message : "The feed didn't load."); }
+    };
+    useEffect(() => {
+      let alive = true, t = null;
+      reload();
+      /* Ask the news collector for fresh articles (it only really goes out every 3 h). */
+      api.refreshNews().then((r) => { if (alive && r && r.saved) reload(); }).catch(() => {});
+      const stop = api.subscribe(() => { clearTimeout(t); t = setTimeout(() => alive && reload(), 250); });
+      return () => { alive = false; clearTimeout(t); stop && stop(); };
+    }, []);
+    const pickPhoto = async (files) => {
+      if (!files || !files.length) return;
+      setBusy(true);
+      try { const [ph] = await uploadPhotos([files[0]]); setPic(ph); } catch (e) { setToast(e && e.message ? e.message : "That photo didn't upload."); }
+      setBusy(false);
+    };
+    const canPost = !busy && (kind === "photo" ? !!pic : text.trim().length > 0);
+    const submit = async () => {
+      if (!canPost) return;
+      setBusy(true);
+      try {
+        await api.post({ person_id: who, kind, body: text.trim().slice(0, 2000), quote_by: kind === "quote" ? by.trim().slice(0, 120) || null : null, photo_url: kind === "photo" && pic ? pic.url : null });
+        setText(""); setBy(""); setPic(null);
+        setToast("Posted to the feed.");
+        reload();
+      } catch (e) { setToast(e && e.message ? e.message : "That didn't post."); }
+      setBusy(false);
+    };
+    const toggleHeart = async (p, on) => {
+      /* Show it straight away; the live update confirms it. */
+      setData((d) => d && { ...d, hearts: on ? [...d.hearts, { post_id: p.id, person_id: who }] : d.hearts.filter((x) => !(x.post_id === p.id && x.person_id === who)) });
+      try { await api.heart(p.id, who, on); } catch (e) { setToast("That heart didn't save."); reload(); }
+    };
+    const sendComment = async (p) => {
+      const body = String(drafts[p.id] || "").trim();
+      if (!body) return;
+      setDrafts((d) => ({ ...d, [p.id]: "" }));
+      try { await api.comment(p.id, who, body.slice(0, 1000)); reload(); } catch (e) { setToast("That comment didn't save."); setDrafts((d) => ({ ...d, [p.id]: body })); }
+    };
+    const delPost = (p) => confirm({
+      title: "Delete this post?",
+      lines: ["Its hearts and comments go with it. This can't be undone."],
+      confirmLabel: "Delete post",
+      onYes: async () => { try { await api.removePost(p.id); setToast("Post deleted."); reload(); } catch (e) { setToast("That post couldn't be deleted."); } }
+    });
+    const delComment = async (c) => { try { await api.removeComment(c.id); reload(); } catch (e) { setToast("That comment couldn't be deleted."); } };
+
+    const posts = data ? data.posts : [];
+    const news = data ? (data.news || []).filter((n) => !topic || n.topic === topic) : [];
+    /* "All": team posts in time order, with a news card after every two posts;
+       when the team posts run out, the news carries on. */
+    let items = [];
+    if (view === "team") items = posts.map((p) => ({ t: "post", p }));
+    else if (view === "news") items = news.map((n) => ({ t: "news", n }));
+    else {
+      let ni = 0;
+      posts.forEach((p, i) => { items.push({ t: "post", p }); if (i % 2 === 1 && ni < news.length) items.push({ t: "news", n: news[ni++] }); });
+      if (!posts.length || ni < news.length) news.slice(ni).forEach((n) => items.push({ t: "news", n }));
+    }
+    const more = items.length > shown;
+    items = items.slice(0, shown);
+
+    const postCard = (p) => {
+      const au = person(p.person_id);
+      const hs = data.hearts.filter((x) => x.post_id === p.id);
+      const mineH = hs.some((x) => x.person_id === who);
+      const cs = data.comments.filter((c) => c.post_id === p.id);
+      const isOpen = !!open[p.id];
+      const showCs = isOpen ? cs : cs.slice(-2);
+      return h("article", { key: "p" + p.id, className: "ps-fd-card" },
+        h("header", { className: "ps-fd-head" }, h(Avatar, { person: au, size: 36 }),
+          h("span", { className: "ps-fd-who" }, h("b", null, au.name), h("span", { className: "ps-muted" }, (ROLES[au.role] || {}).label || "", au.role ? " \xB7 " : "", feedAgo(p.created_at))),
+          (p.person_id === who || isMod) && h("button", { className: "ps-fd-x", "aria-label": "Delete post", title: "Delete post", onClick: () => delPost(p) }, "\xD7")),
+        p.kind === "photo" && p.photo_url && h("a", { className: "ps-fd-photo", href: p.photo_url, target: "_blank", rel: "noreferrer noopener" }, h("img", { src: p.photo_url, alt: p.body || `Photo from ${au.name}`, loading: "lazy" })),
+        p.kind === "quote" ? h("blockquote", { className: "ps-fd-quote" }, h("p", null, "“", p.body, "”"), p.quote_by && h("cite", null, "— ", p.quote_by))
+          : p.body ? h("p", { className: "ps-fd-body" }, feedText(p.body)) : null,
+        h("div", { className: "ps-fd-acts" },
+          h("button", { className: `ps-fd-heart ${mineH ? "on" : ""}`, "aria-pressed": mineH, title: hs.length ? hs.map((x) => person(x.person_id).name).join(", ") : "Heart this", onClick: () => toggleHeart(p, !mineH) },
+            h("svg", { viewBox: "0 0 24 24", width: 20, height: 20, "aria-hidden": "true" }, h("path", { d: "M12 20.5s-7.5-4.6-9.3-9.2C1.5 8 3.6 4.5 7.1 4.5c2 0 3.6 1.1 4.9 2.9 1.3-1.8 2.9-2.9 4.9-2.9 3.5 0 5.6 3.5 4.4 6.8-1.8 4.6-9.3 9.2-9.3 9.2z", fill: mineH ? "currentColor" : "none", stroke: "currentColor", strokeWidth: 1.9, strokeLinejoin: "round" })),
+            hs.length || ""),
+          h("button", { className: "ps-fd-cbtn", onClick: () => setOpen((o) => ({ ...o, [p.id]: !o[p.id] })) }, cs.length ? `${cs.length} comment${cs.length === 1 ? "" : "s"}` : "Comment"),
+          hs.length > 0 && h("span", { className: "ps-muted ps-fd-hwho" }, hs.slice(0, 3).map((x) => firstNameOf(person(x.person_id))).join(", "), hs.length > 3 ? ` +${hs.length - 3}` : "")),
+        (cs.length > 0 || isOpen) && h("div", { className: "ps-fd-cs" },
+          !isOpen && cs.length > 2 && h("button", { className: "ps-fd-more", onClick: () => setOpen((o) => ({ ...o, [p.id]: true })) }, `See all ${cs.length} comments`),
+          showCs.map((c) => { const ca = person(c.person_id); return h("div", { key: c.id, className: "ps-fd-c" }, h(Avatar, { person: ca, size: 24 }),
+            h("span", { className: "ps-fd-cb" }, h("b", null, ca.name), " ", feedText(c.body), h("span", { className: "ps-muted ps-fd-ct" }, " \xB7 ", feedAgo(c.created_at))),
+            (c.person_id === who || isMod) && h("button", { className: "ps-fd-x small", "aria-label": "Delete comment", onClick: () => delComment(c) }, "\xD7")); }),
+          h("div", { className: "ps-fd-cin" },
+            h("input", { placeholder: "Write a comment…", value: drafts[p.id] || "", maxLength: 1000, onChange: (e) => { const v = e.target.value; setDrafts((d) => ({ ...d, [p.id]: v })); }, onKeyDown: (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendComment(p); } } }),
+            h("button", { className: "ps-btn small", disabled: !String(drafts[p.id] || "").trim(), onClick: () => sendComment(p) }, "Send"))));
+    };
+    const newsCard = (n) => h("article", { key: "n" + n.id, className: "ps-fd-card ps-fd-news" },
+      h("a", { className: "ps-fd-nlink", href: n.link, target: "_blank", rel: "noreferrer noopener" },
+        n.image && h("span", { className: "ps-fd-nimg" }, h("img", { src: n.image, alt: "", loading: "lazy", referrerPolicy: "no-referrer", onError: (e) => { e.currentTarget.parentNode.style.display = "none"; } })),
+        h("span", { className: "ps-fd-ntext" },
+          h("span", { className: "ps-fd-nmeta" }, h("span", { className: `ps-chip ps-fd-t-${n.topic}` }, feedTopic(n.topic)), h("span", { className: "ps-muted" }, n.source, " \xB7 ", feedAgo(n.published_at))),
+          h("b", { className: "ps-fd-ntitle" }, n.title),
+          n.summary && h("span", { className: "ps-fd-nsum" }, n.summary))));
+
+    return h("div", { className: "ps-fd" },
+      h("h1", { className: "ps-h1" }, "Feed"),
+      h("p", { className: "ps-lede" }, "Share what you're proud of, what inspires you, or a line that stuck with you. Creative news from around the world shows up here too.", FEED_FOR({ role: "editor" }) ? "" : " Test mode: only you can see this tab for now."),
+      h("div", { className: "ps-fd-new" },
+        h("div", { className: "ps-fd-kinds", role: "tablist" }, [["photo", "Photo"], ["quote", "Quote"], ["text", "Post"]].map(([k, l]) => h("button", { key: k, role: "tab", "aria-selected": kind === k, className: kind === k ? "on" : "", onClick: () => setKind(k) }, l))),
+        kind === "photo" && (pic ? h("div", { className: "ps-fd-prev" }, h("img", { src: pic.url, alt: "Your photo" }), h("button", { className: "ps-fd-x", "aria-label": "Remove photo", onClick: () => setPic(null) }, "\xD7"))
+          : h("label", { className: `ps-fd-drop ${busy ? "busy" : ""}`, onDragOver: (e) => e.preventDefault(), onDrop: (e) => { e.preventDefault(); pickPhoto(Array.from(e.dataTransfer.files || [])); } },
+            busy ? "Uploading…" : "Choose a photo, or drop one here",
+            h("input", { type: "file", accept: "image/*", hidden: true, disabled: busy, onChange: (e) => { const f = Array.from(e.target.files || []); e.target.value = ""; pickPhoto(f); } }))),
+        h("textarea", { className: kind === "quote" ? "ps-fd-qin" : "", rows: kind === "photo" ? 2 : 3, maxLength: 2000, placeholder: kind === "photo" ? "Say something about it (optional)" : kind === "quote" ? "The quote" : "What's on your mind?", value: text, onChange: (e) => setText(e.target.value),
+          onPaste: (e) => { if (kind !== "photo") return; const pics = pastedPics(e); if (pics.length) { e.preventDefault(); pickPhoto(pics); } } }),
+        kind === "quote" && h("input", { placeholder: "Who said it? (optional)", value: by, maxLength: 120, onChange: (e) => setBy(e.target.value) }),
+        h("div", { className: "ps-fd-postrow" }, h("button", { className: "ps-btn", disabled: !canPost, onClick: submit }, busy && kind !== "photo" ? "Posting…" : "Post"))),
+      h("div", { className: "ps-fd-filters" },
+        [["all", "Everything"], ["team", "Team posts"], ["news", "Creative news"]].map(([k, l]) => h("button", { key: k, className: `ps-fd-f ${view === k ? "on" : ""}`, onClick: () => { setView(k); setShown(24); } }, l)),
+        view !== "team" && h("span", { className: "ps-fd-topics" }, h("button", { className: `ps-fd-f small ${!topic ? "on" : ""}`, onClick: () => setTopic("") }, "All topics"),
+          FEED_TOPICS.map(([k, l]) => h("button", { key: k, className: `ps-fd-f small ${topic === k ? "on" : ""}`, onClick: () => setTopic(topic === k ? "" : k) }, l)))),
+      err ? h("p", { className: "ps-empty" }, err)
+        : !data ? h("p", { className: "ps-empty" }, "Loading the feed…")
+        : !items.length ? h("p", { className: "ps-empty" }, view === "news" ? "No news yet — check back in a bit." : "Nothing here yet. Be the first to post!")
+        : h("div", { className: "ps-fd-list" }, items.map((it) => it.t === "post" ? postCard(it.p) : newsCard(it.n)),
+          more && h("button", { className: "ps-btn ghost ps-fd-loadmore", onClick: () => setShown((n) => n + 24) }, "Show more")));
+  }
   function TodosPage({ db, me, mutate, setToast, confirm }) {
     const h = React.createElement;
     const today = manilaDay();
@@ -9242,6 +9429,7 @@ ${lines.join("\n")}`);
       ...!lead && me.role !== "client" ? [["pipeline", "Pipeline", mineInMotion.length || ""]] : [],
       ...!lead && me.role !== "hr" && me.role !== "client" ? [["overview", "Team overview", ""]] : [],
       ...canTodo(me) ? [["todos", "My to-dos", todoBadge(db, me) || ""]] : [],
+      ...FEED_FOR(me) ? [["feed", "Feed", ""]] : [],
       ...me.role !== "client" ? [["studio", "Studio", ""]] : [],
       ...me.role !== "client" ? [["archive", "Archive", ""]] : [],
       ...me.role === "lead" || me.role === "hr" ? [["hris", "HRIS", ""]] : [],
@@ -9272,6 +9460,8 @@ ${lines.join("\n")}`);
       body = /* @__PURE__ */ React.createElement(InvoicesPage, { me, setToast, confirm: setConfirming });
     } else if ((page.tab === "hris" || page.tab === "payroll") && (me.role === "lead" || me.role === "hr")) {
       body = /* @__PURE__ */ React.createElement(HrisPage, { db, me, mutate, setToast, confirm: setConfirming });
+    } else if (page.tab === "feed" && FEED_FOR(me)) {
+      body = /* @__PURE__ */ React.createElement(FeedPage, { db, me, who: authLock || me.id, setToast, confirm: setConfirming });
     } else if (page.tab === "todos" && canTodo(me)) {
       body = /* @__PURE__ */ React.createElement(TodosPage, { db, me, mutate, setToast, confirm: setConfirming });
     } else if (page.tab === "archive" && me.role !== "client") {
@@ -11854,6 +12044,79 @@ html.ps-theming .ps-theme-knob,html.ps-theming .ps-theme-ic{transition:transform
 .ps-root .ps-ink-rewrite{align-self:flex-start}
 @media (max-width:640px){.ps-td-penhint{display:none}.ps-td-add.pen{justify-content:flex-end;flex-wrap:wrap}}
 @media (max-width:640px){.ps-td-edit{padding-left:0}.ps-td-opts select,.ps-td-opts input{flex:1 1 40%}.ps-td-opts .ps-btn{width:100%}}
+
+/* ---- Feed ---- */
+.ps-fd{max-width:640px}
+.ps-fd-new{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px;display:flex;flex-direction:column;gap:10px;margin-bottom:18px}
+.ps-fd-new textarea,.ps-fd-new input{font:inherit;width:100%;box-sizing:border-box;border:1px solid var(--line);border-radius:10px;padding:10px 12px;background:var(--paper);color:var(--ink);resize:vertical}
+.ps-fd-new textarea.ps-fd-qin{font-size:18px;font-style:italic}
+.ps-fd-kinds{display:flex;gap:6px}
+.ps-fd-kinds button,.ps-fd-f{font:inherit;font-size:13px;font-weight:600;border:1px solid var(--line);background:transparent;color:var(--muted);border-radius:999px;padding:6px 14px;cursor:pointer}
+.ps-fd-kinds button.on,.ps-fd-f.on{background:var(--accent);border-color:var(--accent);color:#fff}
+.ps-fd-f.small{font-size:12px;padding:4px 11px}
+.ps-fd-drop{display:grid;place-items:center;min-height:120px;border:2px dashed var(--line);border-radius:12px;color:var(--muted);font-weight:600;cursor:pointer;text-align:center;padding:12px}
+.ps-fd-drop:hover{border-color:var(--accent);color:var(--accent)}
+.ps-fd-drop.busy{opacity:.6;cursor:progress}
+.ps-fd-prev{position:relative;border-radius:12px;overflow:hidden;background:var(--paper)}
+.ps-fd-prev img{display:block;width:100%;max-height:420px;object-fit:contain}
+.ps-fd-prev .ps-fd-x{position:absolute;top:8px;right:8px;background:rgba(0,0,0,.6);color:#fff}
+.ps-fd-postrow{display:flex;justify-content:flex-end}
+.ps-fd-postrow .ps-btn{order:0;grid-column:auto;grid-row:auto;align-self:auto}
+.ps-btn:disabled{opacity:.45;cursor:default}
+.ps-fd-filters{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-bottom:14px}
+.ps-fd-topics{display:flex;flex-wrap:wrap;gap:6px;margin-left:auto}
+.ps-fd-list{display:flex;flex-direction:column;gap:14px}
+.ps-fd-card{background:var(--card);border:1px solid var(--line);border-radius:14px;overflow:hidden}
+.ps-fd-head{display:flex;align-items:center;gap:10px;padding:12px 14px}
+.ps-fd-who{display:flex;flex-direction:column;line-height:1.25;min-width:0;flex:1}
+.ps-fd-who .ps-muted{font-size:12.5px}
+.ps-fd-x{border:0;background:transparent;color:var(--muted);font-size:20px;line-height:1;width:30px;height:30px;border-radius:50%;cursor:pointer;flex:none}
+.ps-fd-x:hover{background:var(--line);color:var(--ink)}
+.ps-fd-x.small{font-size:16px;width:24px;height:24px}
+.ps-fd-photo{display:block;background:var(--paper)}
+.ps-fd-photo img{display:block;width:100%;max-height:640px;object-fit:contain}
+.ps-fd-body{margin:12px 14px 4px;white-space:pre-wrap;line-height:1.5;overflow-wrap:anywhere}
+.ps-fd-body a,.ps-fd-cb a{color:var(--accent)}
+.ps-fd-quote{margin:6px 14px 4px;padding:18px 20px;border-radius:12px;background:linear-gradient(135deg,var(--okbg),transparent);border-left:4px solid var(--accent)}
+.ps-fd-quote p{margin:0;font-size:21px;line-height:1.4;font-style:italic;font-weight:600;white-space:pre-wrap;overflow-wrap:anywhere}
+.ps-fd-quote cite{display:block;margin-top:10px;color:var(--muted);font-style:normal;font-weight:600}
+.ps-fd-acts{display:flex;align-items:center;gap:6px;padding:8px 10px}
+.ps-fd-heart,.ps-fd-cbtn{font:inherit;font-weight:600;font-size:14px;display:inline-flex;align-items:center;gap:6px;border:0;background:transparent;color:var(--muted);padding:6px 10px;border-radius:999px;cursor:pointer}
+.ps-fd-heart:hover,.ps-fd-cbtn:hover{background:var(--line)}
+.ps-fd-heart.on{color:#E8436A}
+.ps-fd-heart.on svg{animation:psFdPop .3s ease}
+@keyframes psFdPop{50%{transform:scale(1.3)}}
+.ps-fd-hwho{font-size:12.5px;margin-left:auto;padding-right:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ps-fd-cs{border-top:1px solid var(--line);padding:10px 14px 12px;display:flex;flex-direction:column;gap:8px}
+.ps-fd-more{font:inherit;font-size:13px;border:0;background:transparent;color:var(--muted);padding:0;cursor:pointer;text-align:left}
+.ps-fd-c{display:flex;gap:8px;align-items:flex-start}
+.ps-fd-cb{flex:1;background:var(--paper);border-radius:12px;padding:7px 11px;font-size:14px;line-height:1.4;overflow-wrap:anywhere;white-space:pre-wrap}
+.ps-fd-ct{font-size:12px}
+.ps-fd-cin{display:flex;gap:8px}
+.ps-fd-cin input{flex:1;font:inherit;font-size:14px;border:1px solid var(--line);border-radius:999px;padding:7px 14px;background:var(--paper);color:var(--ink);min-width:0}
+.ps-fd-cin .ps-btn{order:0;grid-column:auto;grid-row:auto;align-self:auto;padding:7px 14px}
+.ps-fd-nlink{display:flex;color:inherit;text-decoration:none}
+.ps-fd-nlink:hover .ps-fd-ntitle{color:var(--accent)}
+.ps-fd-nimg{flex:none;width:180px;background:var(--paper)}
+.ps-fd-nimg img{display:block;width:100%;height:100%;object-fit:cover;min-height:120px}
+.ps-fd-ntext{display:flex;flex-direction:column;gap:6px;padding:12px 14px;min-width:0}
+.ps-fd-nmeta{display:flex;flex-wrap:wrap;gap:8px;align-items:center;font-size:12.5px}
+.ps-fd-ntitle{font-size:16px;line-height:1.35}
+.ps-fd-nsum{color:var(--muted);font-size:13.5px;line-height:1.45;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+.ps-chip.ps-fd-t-video{background:#E0EDFF;color:#1D4ED8}
+.ps-chip.ps-fd-t-design{background:#FCE7F3;color:#BE185D}
+.ps-chip.ps-fd-t-ai{background:#EDE9FE;color:#6D28D9}
+.ps-root.dark .ps-chip.ps-fd-t-video{background:#172B4D;color:#93C5FD}
+.ps-root.dark .ps-chip.ps-fd-t-design{background:#4A1630;color:#F9A8D4}
+.ps-root.dark .ps-chip.ps-fd-t-ai{background:#2E1F5E;color:#C4B5FD}
+.ps-fd-loadmore{align-self:center}
+@media (max-width:640px){
+  .ps-fd-nlink{flex-direction:column}
+  .ps-fd-nimg{width:100%}
+  .ps-fd-nimg img{max-height:200px}
+  .ps-fd-topics{margin-left:0}
+  .ps-fd-quote p{font-size:18px}
+}
 `;
   window.ProjeclabStudios = ProjeclabStudios;
 })();
@@ -12101,6 +12364,64 @@ if (sb) {
       if (!list.length) return;
       const { error } = await sb.from("pen_ink").delete().in("id", list);
       if (error) throw error;
+    }
+  };
+}
+
+/* Feed tab: team posts, hearts and comments plus collected creative news.
+   Own tables (feed_posts, feed_comments, feed_hearts, feed_news), readable by
+   team members only (row-level security). Never part of app_state. */
+if (sb) {
+  const feedErr = (error, what) => new Error(/does not exist|schema cache/i.test((error && error.message) || "") ? "The feed isn't set up in Supabase yet." : what + ": " + ((error && error.message) || "unknown error"));
+  window.psFeed = {
+    live: true,
+    load: async () => {
+      const { data: posts, error } = await sb.from("feed_posts").select("id, author, person_id, kind, body, quote_by, photo_url, created_at").order("created_at", { ascending: false }).limit(200);
+      if (error) throw feedErr(error, "The feed didn't load");
+      const ids = (posts || []).map((p) => p.id);
+      const [c, hts, nw] = await Promise.all([
+        ids.length ? sb.from("feed_comments").select("id, post_id, person_id, body, created_at").in("post_id", ids).order("created_at") : { data: [] },
+        ids.length ? sb.from("feed_hearts").select("post_id, person_id").in("post_id", ids) : { data: [] },
+        sb.from("feed_news").select("id, topic, source, title, link, image, summary, published_at").order("published_at", { ascending: false }).limit(150)
+      ]);
+      return { posts: posts || [], comments: c.data || [], hearts: hts.data || [], news: nw.data || [] };
+    },
+    refreshNews: async () => {
+      const { data, error } = await sb.functions.invoke("creative-news", { body: {} });
+      if (error) throw error;
+      return data;
+    },
+    post: async (row) => {
+      const { error } = await sb.from("feed_posts").insert(row);
+      if (error) throw feedErr(error, "That didn't post");
+    },
+    removePost: async (id) => {
+      const { error } = await sb.from("feed_posts").delete().eq("id", id);
+      if (error) throw error;
+    },
+    comment: async (post_id, person_id, body) => {
+      const { error } = await sb.from("feed_comments").insert({ post_id, person_id, body });
+      if (error) throw error;
+    },
+    removeComment: async (id) => {
+      const { error } = await sb.from("feed_comments").delete().eq("id", id);
+      if (error) throw error;
+    },
+    heart: async (post_id, person_id, on) => {
+      if (on) {
+        const { error } = await sb.from("feed_hearts").upsert({ post_id, person_id }, { onConflict: "post_id,author", ignoreDuplicates: true });
+        if (error) throw error;
+      } else {
+        const { data: u } = await sb.auth.getUser();
+        const { error } = await sb.from("feed_hearts").delete().eq("post_id", post_id).eq("author", u && u.user ? u.user.id : "");
+        if (error) throw error;
+      }
+    },
+    subscribe: (cb) => {
+      const ch = sb.channel("ps-feed-" + Math.random().toString(36).slice(2, 8));
+      ["feed_posts", "feed_comments", "feed_hearts"].forEach((t) => ch.on("postgres_changes", { event: "*", schema: "public", table: t }, () => cb()));
+      ch.subscribe();
+      return () => sb.removeChannel(ch);
     }
   };
 }

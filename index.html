@@ -4582,7 +4582,47 @@ html[data-theme="dark"] .ps-open{background:#10151D}
       /* Some browsers refuse to make a sound until they are clicked in. Not worth a warning. */
     }
   };
-  function Notifications({ db, me, mutate, openTask, openVideo, openDay }) {
+  /* Feed activity for the bell: new posts by others, and comments on your own posts.
+     Read / cleared state uses the same notifRead / notifCleared lists as everything else. */
+  var feedNotifs = (act, me) => {
+    if (!act || !me) return [];
+    const out = [];
+    const cleared = new Set(me.notifCleared || []);
+    const cutoff = Date.now() - 30 * 864e5;
+    const iso = (t) => { const d = new Date(t); return isNaN(d) ? "" : d.toISOString(); };
+    const add = (key, at, by, text, id) => {
+      at = iso(at);
+      if (!at || by === me.id || cleared.has(key) || new Date(at).getTime() < cutoff) return;
+      out.push({ key, at, by, text, what: "feed", id, title: "Feed" });
+    };
+    const posts = act.posts || [];
+    const byId = {};
+    posts.forEach((p) => { byId[p.id] = p; });
+    const has = (arr) => Array.isArray(arr) && arr.includes(me.id);
+    posts.forEach((p) => {
+      const n = Array.isArray(p.photos) && p.photos.length ? p.photos.length : p.photo_url ? 1 : 0;
+      if (has(p.tags)) return add(`ft${p.id}`, p.created_at, p.person_id, `tagged you in a post: ${p.body || (n ? (n > 1 ? n + " photos" : "a photo") : "")}`, p.id);
+      const text = p.kind === "quote" ? `shared a quote on the Feed: \u201C${p.body}\u201D`
+        : n ? `posted ${n > 1 ? n + " photos" : "a photo"} on the Feed${p.body ? ": " + p.body : ""}`
+        : `posted on the Feed: ${p.body}`;
+      add(`f${p.id}`, p.created_at, p.person_id, text, p.id);
+    });
+    /* Comments: tagged you > on your post > on a post you commented on too. */
+    const comments = (act.comments || []).slice().sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)));
+    const joined = {};
+    comments.forEach((c) => {
+      const p = byId[c.post_id];
+      if (!p) return;
+      if (has(c.tags)) add(`fct${c.id}`, c.created_at, c.person_id, `tagged you in a comment: ${c.body}`, c.post_id);
+      else if (p.person_id === me.id) add(`fc${c.id}`, c.created_at, c.person_id, `commented on your post: ${c.body}`, c.post_id);
+      else if (joined[c.post_id] && c.person_id !== p.person_id) {
+        add(`fc${c.id}`, c.created_at, c.person_id, `also commented on a post you commented on: ${c.body}`, c.post_id);
+      } else if (joined[c.post_id] && c.person_id === p.person_id) add(`fc${c.id}`, c.created_at, c.person_id, `replied on their post: ${c.body}`, c.post_id);
+      if (c.person_id === me.id) joined[c.post_id] = true;
+    });
+    return out;
+  };
+  function Notifications({ db, me, mutate, openTask, openVideo, openDay, openFeed }) {
     const h = React.createElement;
     const [open, setOpen] = useState(false);
     const wrap = useRef(null);
@@ -4594,7 +4634,22 @@ html[data-theme="dark"] .ps-open{background:#10151D}
       document.addEventListener("keydown", esc);
       return () => { document.removeEventListener("mousedown", away); document.removeEventListener("keydown", esc); };
     }, [open]);
-    const items = notifFor(db, me);
+    /* Feed posts live in their own tables, so the bell fetches them separately and
+       stays live through the same Realtime channel the Feed tab uses. */
+    const feedOn = FEED_FOR(me);
+    const [feedAct, setFeedAct] = useState(null);
+    useEffect(() => {
+      if (!feedOn) { setFeedAct(null); return; }
+      let alive = true, t = null;
+      const api = feedApi();
+      const pull = () => (api.activity ? api.activity() : api.load()).then((d) => { if (alive) setFeedAct(d); }).catch(() => {});
+      pull();
+      const stop = api.subscribe(() => { clearTimeout(t); t = setTimeout(pull, 400); });
+      const iv = setInterval(pull, 5 * 60 * 1000);
+      return () => { alive = false; clearTimeout(t); clearInterval(iv); stop && stop(); };
+    }, [feedOn]);
+    const items = [...notifFor(db, me), ...(feedOn ? feedNotifs(feedAct, me) : [])]
+      .sort((a, b) => String(b.at).localeCompare(String(a.at))).slice(0, 30);
     /* Opening a notification marks it read (greyed, still there to click again);
        only the x or "Clear all" removes it. The badge counts unread ones. */
     const readSet = new Set(me.notifRead || []);
@@ -4643,6 +4698,7 @@ html[data-theme="dark"] .ps-open{background:#10151D}
       setOpen(false);
       if (it.what === "task") openTask(it.id);
       else if (it.what === "video") openVideo(it.id);
+      else if (it.what === "feed" && openFeed) openFeed();
       else if (it.what === "meeting" && openDay) openDay(it.id);
     };
     return h("span", { className: "ps-bellwrap", ref: wrap },
@@ -5735,7 +5791,7 @@ html[data-theme="dark"] .ps-open{background:#10151D}
       refreshNews: async () => ({ skipped: true }),
       post: async (row) => { const s = read(); s.posts.push({ id: rid(), author: "demo", created_at: new Date().toISOString(), ...row }); write(s); },
       removePost: async (id) => { const s = read(); s.posts = s.posts.filter((p) => p.id !== id); s.comments = s.comments.filter((c) => c.post_id !== id); s.hearts = s.hearts.filter((x) => x.post_id !== id); write(s); },
-      comment: async (post_id, person_id, body) => { const s = read(); s.comments.push({ id: rid(), post_id, person_id, author: "demo", body, created_at: new Date().toISOString() }); write(s); },
+      comment: async (post_id, person_id, body, tags) => { const s = read(); s.comments.push({ id: rid(), post_id, person_id, author: "demo", body, tags: tags || [], created_at: new Date().toISOString() }); write(s); },
       removeComment: async (id) => { const s = read(); s.comments = s.comments.filter((c) => c.id !== id); write(s); },
       heart: async (post_id, person_id, on) => { const s = read(); s.hearts = s.hearts.filter((x) => !(x.post_id === post_id && x.person_id === person_id)); if (on) s.hearts.push({ post_id, person_id, created_at: new Date().toISOString() }); write(s); },
       subscribe: (f) => { subs.add(f); return () => subs.delete(f); }
@@ -5797,6 +5853,69 @@ html[data-theme="dark"] .ps-open{background:#10151D}
     if (!n.image || bad) return h("span", { className: `ps-fd-nimg none ps-fd-b-${n.topic}` }, h("span", null, feedTopic(n.topic)));
     return h("span", { className: "ps-fd-nimg" }, h("img", { src: n.image, alt: "", loading: "lazy", referrerPolicy: "no-referrer", onError: () => setBad(true) }));
   }
+  /* Text box for the Feed: "@" offers teammates to tag, and a smiley button opens
+     an emoji picker that drops the emoji where the cursor is. */
+  var FEED_EMOJI = ["\u{1F600}", "\u{1F602}", "\u{1F923}", "\u{1F60A}", "\u{1F60D}", "\u{1F970}", "\u{1F60E}", "\u{1F914}", "\u{1F62E}", "\u{1F622}", "\u{1F62D}", "\u{1F624}", "\u{1F973}", "\u{1F92F}", "\u{1F64F}", "\u{1F44F}", "\u{1F44D}", "\u{1F44C}", "\u{1F64C}", "\u{1F4AA}", "\u{1F525}", "✨", "\u{1F4AF}", "❤️", "\u{1F49C}", "\u{1F499}", "\u{1F49A}", "\u{1F389}", "\u{1F38A}", "\u{1F3AC}", "\u{1F3A5}", "\u{1F4F8}", "\u{1F3A8}", "\u{1F58C}️", "✏️", "\u{1F4A1}", "\u{1F680}", "☕", "\u{1F355}", "\u{1F440}"];
+  var feedRich = (text, db, ids) => {
+    const h = React.createElement;
+    const parts = ids && ids.length ? mentionParts(String(text || ""), db, ids) : [String(text || "")];
+    const out = [];
+    parts.forEach((pt, i) => {
+      if (typeof pt !== "string") { out.push(h("b", { key: "m" + i, className: "ps-fd-tag" }, pt.tag)); return; }
+      String(pt).split(/(https?:\/\/[^\s]+)/g).forEach((bit, j) => {
+        if (!bit) return;
+        out.push(/^https?:\/\//.test(bit) ? h("a", { key: i + "-" + j, href: bit, target: "_blank", rel: "noreferrer noopener" }, bit) : bit);
+      });
+    });
+    return out;
+  };
+  function FeedInput({ value, onChange, people, multiline, placeholder, className = "", onEnter, onPaste, maxLength = 2000, rows = 2 }) {
+    const h = React.createElement;
+    const box = useRef(null);
+    const wrap = useRef(null);
+    const [q, setQ] = useState(null);
+    const [pick, setPick] = useState(0);
+    const [emo, setEmo] = useState(false);
+    useEffect(() => {
+      if (!emo) return;
+      const away = (e) => { if (wrap.current && !wrap.current.contains(e.target)) setEmo(false); };
+      document.addEventListener("mousedown", away);
+      return () => document.removeEventListener("mousedown", away);
+    }, [emo]);
+    const matches = q === null ? [] : people.filter((p) => !q || String(p.name).toLowerCase().includes(q.toLowerCase())).slice(0, 6);
+    const picking = q !== null && matches.length > 0;
+    const scan = (v, caret) => { const m = v.slice(0, caret).match(/(?:^|\s)@([^@\s]{0,24})$/); setQ(m ? m[1] : null); setPick(0); };
+    const insertAt = (txt, replaceRe) => {
+      const el = box.current;
+      const caret = el ? el.selectionStart : value.length;
+      const head = replaceRe ? value.slice(0, caret).replace(replaceRe, txt) : value.slice(0, caret) + txt;
+      const next = (head + value.slice(el ? el.selectionEnd : caret)).slice(0, maxLength);
+      onChange(next);
+      setTimeout(() => { if (el) { el.focus(); el.setSelectionRange(head.length, head.length); } }, 0);
+    };
+    const choose = (p) => { insertAt("@" + p.name + " ", /@[^@\s]*$/); setQ(null); };
+    const keys = (e) => {
+      if (picking) {
+        if (e.key === "ArrowDown") { e.preventDefault(); setPick((i) => (i + 1) % matches.length); return; }
+        if (e.key === "ArrowUp") { e.preventDefault(); setPick((i) => (i - 1 + matches.length) % matches.length); return; }
+        if (e.key === "Enter" || e.key === "Tab") { e.preventDefault(); choose(matches[pick] || matches[0]); return; }
+        if (e.key === "Escape") { e.preventDefault(); setQ(null); return; }
+      }
+      if (onEnter && e.key === "Enter" && !e.shiftKey) { e.preventDefault(); onEnter(); }
+    };
+    return h("div", { className: `ps-fd-in ${multiline ? "multi" : ""}`, ref: wrap },
+      h(multiline ? "textarea" : "input", { ref: box, className, value, placeholder, maxLength, rows: multiline ? rows : void 0, onKeyDown: keys, onPaste,
+        onBlur: () => setTimeout(() => setQ(null), 120),
+        onChange: (e) => { onChange(e.target.value); scan(e.target.value, e.target.selectionStart); } }),
+      h("button", { type: "button", className: `ps-fd-emobtn ${emo ? "on" : ""}`, "aria-label": "Add an emoji", title: "Add an emoji", "aria-expanded": emo, onClick: () => setEmo(!emo) },
+        h("svg", { viewBox: "0 0 24 24", width: 20, height: 20, "aria-hidden": "true" }, h("circle", { cx: 12, cy: 12, r: 9, fill: "none", stroke: "currentColor", strokeWidth: 2 }), h("circle", { cx: 9, cy: 10, r: 1.3, fill: "currentColor" }), h("circle", { cx: 15, cy: 10, r: 1.3, fill: "currentColor" }), h("path", { d: "M8 14.5c1 1.4 2.4 2 4 2s3-.6 4-2", fill: "none", stroke: "currentColor", strokeWidth: 2, strokeLinecap: "round" }))),
+      emo && h("div", { className: "ps-fd-emo", role: "listbox", "aria-label": "Emoji" }, FEED_EMOJI.map((em) => h("button", { key: em, type: "button", onMouseDown: (e) => e.preventDefault(), onClick: () => { insertAt(em); setEmo(false); } }, em))),
+      picking && h("ul", { className: "ps-mentions", role: "listbox" },
+        matches.map((p, i) => h("li", { key: p.id },
+          h("button", { type: "button", className: `ps-mention-opt ${i === pick ? "on" : ""}`, onMouseDown: (e) => { e.preventDefault(); choose(p); } },
+            h(Avatar, { person: p, size: 20 }), h("span", null, p.name),
+            h("span", { className: "ps-muted" }, (ROLES[p.role] || {}).label || p.role))))));
+  }
   function FeedPage({ db, me, who, setToast, confirm }) {
     const h = React.createElement;
     const api = feedApi();
@@ -5805,7 +5924,7 @@ html[data-theme="dark"] .ps-open{background:#10151D}
     const [view, setView] = useState("all");
     const [topic, setTopic] = useState("");
     const [shown, setShown] = useState(24);
-    const [kind, setKind] = useState("photo");
+    const [quote, setQuote] = useState(false);
     const [text, setText] = useState("");
     const [by, setBy] = useState("");
     const [pics, setPics] = useState([]);
@@ -5814,6 +5933,8 @@ html[data-theme="dark"] .ps-open{background:#10151D}
     const [open, setOpen] = useState({});
     const [drafts, setDrafts] = useState({});
     const isMod = me.role === "lead" || me.role === "hr";
+    /* Anyone on the team can be tagged (not clients, not yourself). */
+    const tagPeople = (db.people || []).filter((p) => p.role !== "client" && p.id !== who && p.name);
     const person = (id) => (db.people || []).find((p) => p.id === id) || { id, name: "Former teammate" };
     const reload = async () => {
       try { setData(await api.load()); setErr(""); } catch (e) { setErr(e && e.message ? e.message : "The feed didn't load."); }
@@ -5838,13 +5959,14 @@ html[data-theme="dark"] .ps-open{background:#10151D}
       }
       setBusy(false);
     };
-    const canPost = !busy && (kind === "photo" ? pics.length > 0 : text.trim().length > 0);
+    const kind = quote ? "quote" : pics.length ? "photo" : "text";
+    const canPost = !busy && (text.trim().length > 0 || (!quote && pics.length > 0));
     const submit = async () => {
       if (!canPost) return;
       setBusy(true);
       try {
-        await api.post({ person_id: who, kind, body: text.trim().slice(0, 2000), quote_by: kind === "quote" ? by.trim().slice(0, 120) || null : null, photo_url: kind === "photo" && pics.length ? pics[0].url : null, photos: kind === "photo" ? pics.map((x) => x.url) : [] });
-        setText(""); setBy(""); setPics([]);
+        await api.post({ person_id: who, kind, tags: mentionIds(text, tagPeople), body: text.trim().slice(0, 2000), quote_by: kind === "quote" ? by.trim().slice(0, 120) || null : null, photo_url: kind === "photo" && pics.length ? pics[0].url : null, photos: kind === "photo" ? pics.map((x) => x.url) : [] });
+        setText(""); setBy(""); setPics([]); setQuote(false);
         setToast("Posted to the feed.");
         reload();
       } catch (e) { setToast(e && e.message ? e.message : "That didn't post."); }
@@ -5859,7 +5981,7 @@ html[data-theme="dark"] .ps-open{background:#10151D}
       const body = String(drafts[p.id] || "").trim();
       if (!body) return;
       setDrafts((d) => ({ ...d, [p.id]: "" }));
-      try { await api.comment(p.id, who, body.slice(0, 1000)); reload(); } catch (e) { setToast("That comment didn't save."); setDrafts((d) => ({ ...d, [p.id]: body })); }
+      try { await api.comment(p.id, who, body.slice(0, 1000), mentionIds(body, tagPeople)); reload(); } catch (e) { setToast("That comment didn't save."); setDrafts((d) => ({ ...d, [p.id]: body })); }
     };
     const delPost = (p) => confirm({
       title: "Delete this post?",
@@ -5896,7 +6018,7 @@ html[data-theme="dark"] .ps-open{background:#10151D}
           h("span", { className: "ps-fd-who" }, h("b", null, au.name), h("span", { className: "ps-muted" }, (ROLES[au.role] || {}).label || "", au.role ? " \xB7 " : "", feedAgo(p.created_at))),
           (p.person_id === who || isMod) && h("button", { className: "ps-fd-x", "aria-label": "Delete post", title: "Delete post", onClick: () => delPost(p) }, "\xD7")),
         p.kind === "quote" ? h("blockquote", { className: "ps-fd-quote" }, h("p", null, "\u201C", p.body, "\u201D"), p.quote_by && h("cite", null, "\u2014 ", p.quote_by))
-          : p.body ? h("p", { className: "ps-fd-body" }, feedText(p.body)) : null,
+          : p.body ? h("p", { className: "ps-fd-body" }, feedRich(p.body, db, p.tags)) : null,
         p.kind === "photo" && feedGrid(feedPics(p), (i) => setView2({ list: feedPics(p), i }), p.body || `Photo from ${au.name}`),
         h("div", { className: "ps-fd-acts" },
           h("button", { className: `ps-fd-heart ${mineH ? "on" : ""}`, "aria-pressed": mineH, title: hs.length ? hs.map((x) => person(x.person_id).name).join(", ") : "Heart this", onClick: () => toggleHeart(p, !mineH) },
@@ -5907,10 +6029,10 @@ html[data-theme="dark"] .ps-open{background:#10151D}
         (cs.length > 0 || isOpen) && h("div", { className: "ps-fd-cs" },
           !isOpen && cs.length > 2 && h("button", { className: "ps-fd-more", onClick: () => setOpen((o) => ({ ...o, [p.id]: true })) }, `See all ${cs.length} comments`),
           showCs.map((c) => { const ca = person(c.person_id); return h("div", { key: c.id, className: "ps-fd-c" }, h(Avatar, { person: ca, size: 24 }),
-            h("span", { className: "ps-fd-cb" }, h("b", null, ca.name), " ", feedText(c.body), h("span", { className: "ps-muted ps-fd-ct" }, " \xB7 ", feedAgo(c.created_at))),
+            h("span", { className: "ps-fd-cb" }, h("b", null, ca.name), " ", feedRich(c.body, db, c.tags), h("span", { className: "ps-muted ps-fd-ct" }, " \xB7 ", feedAgo(c.created_at))),
             (c.person_id === who || isMod) && h("button", { className: "ps-fd-x small", "aria-label": "Delete comment", onClick: () => delComment(c) }, "\xD7")); }),
           h("div", { className: "ps-fd-cin" },
-            h("input", { placeholder: "Write a comment…", value: drafts[p.id] || "", maxLength: 1000, onChange: (e) => { const v = e.target.value; setDrafts((d) => ({ ...d, [p.id]: v })); }, onKeyDown: (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendComment(p); } } }),
+            h(FeedInput, { people: tagPeople, placeholder: "Write a comment… (@ to tag)", value: drafts[p.id] || "", maxLength: 1000, onChange: (v) => setDrafts((d) => ({ ...d, [p.id]: v })), onEnter: () => sendComment(p) }),
             h("button", { className: "ps-btn small", disabled: !String(drafts[p.id] || "").trim(), onClick: () => sendComment(p) }, "Send"))));
     };
     const newsCard = (n) => h("article", { key: "n" + n.id, className: "ps-fd-card ps-fd-news" },
@@ -5927,20 +6049,25 @@ html[data-theme="dark"] .ps-open{background:#10151D}
     return h("div", { className: "ps-fd" },
       h("h1", { className: "ps-h1" }, "Feed"),
       h("p", { className: "ps-lede" }, "Share what you're proud of, what inspires you, or a line that stuck with you. Creative news from around the world shows up here too.", FEED_FOR({ role: "editor" }) ? "" : " Test mode: only the Lead and HR can see this tab for now."),
-      h("div", { className: "ps-fd-new" },
-        h("div", { className: "ps-fd-kinds", role: "tablist" }, [["photo", "Photo"], ["quote", "Quote"], ["text", "Post"]].map(([k, l]) => h("button", { key: k, role: "tab", "aria-selected": kind === k, className: kind === k ? "on" : "", onClick: () => setKind(k) }, l))),
-        kind === "photo" && (pics.length ? h("div", { className: "ps-fd-thumbs", onDragOver: (e) => e.preventDefault(), onDrop: (e) => { e.preventDefault(); pickPhoto(e.dataTransfer.files); } },
-            pics.map((ph, i) => h("span", { key: ph.id || i, className: "ps-fd-thumb" }, h("img", { src: ph.url, alt: `Photo ${i + 1}` }),
-              h("button", { className: "ps-fd-x", "aria-label": `Remove photo ${i + 1}`, onClick: () => setPics((a) => a.filter((_, j) => j !== i)) }, "\xD7"))),
-            pics.length < FEED_MAX_PICS && h("label", { className: `ps-fd-thumb ps-fd-addmore ${busy ? "busy" : ""}`, title: "Add more photos" }, busy ? "\u2026" : "+",
-              h("input", { type: "file", accept: "image/*", multiple: true, hidden: true, disabled: busy, onChange: (e) => { const f = Array.from(e.target.files || []); e.target.value = ""; pickPhoto(f); } })))
-          : h("label", { className: `ps-fd-drop ${busy ? "busy" : ""}`, onDragOver: (e) => e.preventDefault(), onDrop: (e) => { e.preventDefault(); pickPhoto(e.dataTransfer.files); } },
-            busy ? "Uploading\u2026" : `Choose photos (up to ${FEED_MAX_PICS}), or drop them here`,
-            h("input", { type: "file", accept: "image/*", multiple: true, hidden: true, disabled: busy, onChange: (e) => { const f = Array.from(e.target.files || []); e.target.value = ""; pickPhoto(f); } }))),
-        h("textarea", { className: kind === "quote" ? "ps-fd-qin" : "", rows: kind === "photo" ? 2 : 3, maxLength: 2000, placeholder: kind === "photo" ? "Say something about it (optional)" : kind === "quote" ? "The quote" : "What's on your mind?", value: text, onChange: (e) => setText(e.target.value),
-          onPaste: (e) => { if (kind !== "photo") return; const got = pastedPics(e); if (got.length) { e.preventDefault(); pickPhoto(got); } } }),
-        kind === "quote" && h("input", { placeholder: "Who said it? (optional)", value: by, maxLength: 120, onChange: (e) => setBy(e.target.value) }),
-        h("div", { className: "ps-fd-postrow" }, h("button", { className: "ps-btn", disabled: !canPost, onClick: submit }, busy && kind !== "photo" ? "Posting…" : "Post"))),
+      h("div", { className: `ps-fd-new ${quote ? "quote" : ""}`, onDragOver: (e) => e.preventDefault(), onDrop: (e) => { if (quote) return; e.preventDefault(); pickPhoto(e.dataTransfer.files); } },
+        h("div", { className: "ps-fd-newtop" }, h(Avatar, { person: person(who), size: 40 }),
+          h(FeedInput, { multiline: true, people: tagPeople, className: quote ? "ps-fd-qin" : "", rows: 2, value: text, onChange: setText, placeholder: quote ? "Type the quote\u2026" : `What's on your mind, ${firstNameOf(person(who)) || "there"}? Type @ to tag someone`,
+            onPaste: (e) => { if (quote) return; const got = pastedPics(e); if (got.length) { e.preventDefault(); pickPhoto(got); } } })),
+        quote && h("input", { className: "ps-fd-qby", placeholder: "Who said it? (optional)", value: by, maxLength: 120, onChange: (e) => setBy(e.target.value) }),
+        (pics.length > 0 || busy) && h("div", { className: "ps-fd-thumbs" },
+          pics.map((ph, i) => h("span", { key: ph.id || i, className: "ps-fd-thumb" }, h("img", { src: ph.url, alt: `Photo ${i + 1}` }),
+            h("button", { className: "ps-fd-x", "aria-label": `Remove photo ${i + 1}`, onClick: () => setPics((a) => a.filter((_, j) => j !== i)) }, "\xD7"))),
+          busy && h("span", { className: "ps-fd-thumb ps-fd-addmore busy" }, "\u2026")),
+        h("div", { className: "ps-fd-bar" },
+          !quote && h("label", { className: `ps-fd-tool ${busy || pics.length >= FEED_MAX_PICS ? "off" : ""}`, title: `Add photos (up to ${FEED_MAX_PICS})` },
+            h("svg", { viewBox: "0 0 24 24", width: 20, height: 20, "aria-hidden": "true" }, h("rect", { x: 3, y: 5, width: 18, height: 14, rx: 3, fill: "none", stroke: "currentColor", strokeWidth: 2 }), h("circle", { cx: 9, cy: 10, r: 1.8, fill: "currentColor" }), h("path", { d: "M4 17l5-4.5 4 3.5 3-2.5 4 3.5", fill: "none", stroke: "currentColor", strokeWidth: 2, strokeLinejoin: "round" })),
+            pics.length ? `Photos ${pics.length}/${FEED_MAX_PICS}` : "Photo",
+            h("input", { type: "file", accept: "image/*", multiple: true, hidden: true, disabled: busy || pics.length >= FEED_MAX_PICS, onChange: (e) => { const f = Array.from(e.target.files || []); e.target.value = ""; pickPhoto(f); } })),
+          !pics.length && h("button", { className: `ps-fd-tool ${quote ? "on" : ""}`, "aria-pressed": quote, onClick: () => setQuote(!quote), title: quote ? "Back to a normal post" : "Post it as a quote" },
+            h("svg", { viewBox: "0 0 24 24", width: 20, height: 20, "aria-hidden": "true" }, h("path", { d: "M10 7H6a2 2 0 0 0-2 2v3a2 2 0 0 0 2 2h2v1a2 2 0 0 1-2 2M20 7h-4a2 2 0 0 0-2 2v3a2 2 0 0 0 2 2h2v1a2 2 0 0 1-2 2", fill: "none", stroke: "currentColor", strokeWidth: 2, strokeLinecap: "round" })),
+            "Quote"),
+          h("span", { className: "ps-spacer" }),
+          h("button", { className: "ps-btn ps-fd-postbtn", disabled: !canPost, onClick: submit }, busy && !pics.length ? "Posting\u2026" : "Post"))),
       h("div", { className: "ps-fd-filters" },
         [["all", "Everything"], ["team", "Team posts"], ["news", "Creative news"]].map(([k, l]) => h("button", { key: k, className: `ps-fd-f ${view === k ? "on" : ""}`, onClick: () => { setView(k); setShown(24); } }, l)),
         view !== "team" && h("span", { className: "ps-fd-topics" }, h("button", { className: `ps-fd-f small ${!topic ? "on" : ""}`, onClick: () => setTopic("") }, "All topics"),
@@ -9473,6 +9600,7 @@ ${lines.join("\n")}`);
     };
     const nav = [
       ["queue", me.role === "client" ? "Your videos" : "My tasks", mine.length + (canApproveTimeoff(db, me) ? pendingTimeoff(db).filter((r) => r.personId !== me.id && ((approverFor(db, r.personId) || {}).id === me.id || (!approverFor(db, r.personId) && me.role === "lead"))).length : 0)],
+      ...FEED_FOR(me) ? [["feed", "Feed", ""]] : [],
       ...lead ? [
         ["pipeline", "Pipeline", active.length],
         ["overview", "Team overview", ""],
@@ -9484,7 +9612,6 @@ ${lines.join("\n")}`);
       ...!lead && me.role !== "client" ? [["pipeline", "Pipeline", mineInMotion.length || ""]] : [],
       ...!lead && me.role !== "hr" && me.role !== "client" ? [["overview", "Team overview", ""]] : [],
       ...canTodo(me) ? [["todos", "My to-dos", todoBadge(db, me) || ""]] : [],
-      ...FEED_FOR(me) ? [["feed", "Feed", ""]] : [],
       ...me.role !== "client" ? [["studio", "Studio", ""]] : [],
       ...me.role !== "client" ? [["archive", "Archive", ""]] : [],
       ...me.role === "lead" || me.role === "hr" ? [["hris", "HRIS", ""]] : [],
@@ -9636,7 +9763,7 @@ ${lines.join("\n")}`);
       setOpenId(null);
       setTaskId(null);
       setPersonId(null);
-    } }, /* @__PURE__ */ React.createElement("img", { className: "ps-logo-mark", src: PS_MARK, alt: "", "aria-hidden": "true" }), /* @__PURE__ */ React.createElement("span", { className: "ps-logo-word" }, pickleOn() ? pickleWord() : "Projeclab", /* @__PURE__ */ React.createElement("span", { className: "ps-logo-sub" }, "Studios")))), /* @__PURE__ */ React.createElement("span", { className: "ps-spacer" }), me.role !== "client" && React.createElement("button", { className: `ps-mbtn s ${mTop === "search" ? "on" : ""}`, "aria-label": "Search", "aria-expanded": mTop === "search", onClick: () => { const o = mTop !== "search"; setMTop(o ? "search" : null); if (o) setTimeout(() => { const i = document.querySelector(".ps-top .ps-search-in"); if (i) i.focus(); }, 30); } }, React.createElement("svg", { viewBox: "0 0 24 24", width: 18, height: 18, "aria-hidden": "true" }, React.createElement("circle", { cx: 11, cy: 11, r: 6.5, fill: "none", stroke: "currentColor", strokeWidth: 2.2 }), React.createElement("path", { d: "M16 16l4.5 4.5", stroke: "currentColor", strokeWidth: 2.2, strokeLinecap: "round" }))), React.createElement("button", { className: `ps-mbtn m ${mTop === "menu" ? "on" : ""}`, "aria-label": "Account menu", "aria-expanded": mTop === "menu", onClick: () => setMTop(mTop === "menu" ? null : "menu") }, React.createElement(Avatar, { person: me, size: 34 })), me.role !== "client" && /* @__PURE__ */ React.createElement(SearchBox, { db, me, lead, openTask: setTaskId, openVideo: setOpenId, openClient: (id) => { setPage({ tab: "client", id }); setFilter(null); } }), me.role !== "client" && /* @__PURE__ */ React.createElement(Notifications, { db, me, mutate, openTask: setTaskId, openVideo: setOpenId, openDay: (d) => { setCalDay(d); setPage({ tab: "calendar" }); } }), React.createElement("span", { className: "ps-acct" }, authLock ? /* @__PURE__ */ React.createElement("span", { className: "ps-viewas" }, /* @__PURE__ */ React.createElement("b", null, me.name), /* @__PURE__ */ React.createElement("span", null, (ROLES[me.role] || {}).label || me.role)) : /* @__PURE__ */ React.createElement("label", { className: "ps-viewas" }, /* @__PURE__ */ React.createElement("span", null, "Viewing as"), /* @__PURE__ */ React.createElement("select", { value: meId, onChange: (e) => {
+    } }, /* @__PURE__ */ React.createElement("img", { className: "ps-logo-mark", src: PS_MARK, alt: "", "aria-hidden": "true" }), /* @__PURE__ */ React.createElement("span", { className: "ps-logo-word" }, pickleOn() ? pickleWord() : "Projeclab", /* @__PURE__ */ React.createElement("span", { className: "ps-logo-sub" }, "Studios")))), /* @__PURE__ */ React.createElement("span", { className: "ps-spacer" }), me.role !== "client" && React.createElement("button", { className: `ps-mbtn s ${mTop === "search" ? "on" : ""}`, "aria-label": "Search", "aria-expanded": mTop === "search", onClick: () => { const o = mTop !== "search"; setMTop(o ? "search" : null); if (o) setTimeout(() => { const i = document.querySelector(".ps-top .ps-search-in"); if (i) i.focus(); }, 30); } }, React.createElement("svg", { viewBox: "0 0 24 24", width: 18, height: 18, "aria-hidden": "true" }, React.createElement("circle", { cx: 11, cy: 11, r: 6.5, fill: "none", stroke: "currentColor", strokeWidth: 2.2 }), React.createElement("path", { d: "M16 16l4.5 4.5", stroke: "currentColor", strokeWidth: 2.2, strokeLinecap: "round" }))), React.createElement("button", { className: `ps-mbtn m ${mTop === "menu" ? "on" : ""}`, "aria-label": "Account menu", "aria-expanded": mTop === "menu", onClick: () => setMTop(mTop === "menu" ? null : "menu") }, React.createElement(Avatar, { person: me, size: 34 })), me.role !== "client" && /* @__PURE__ */ React.createElement(SearchBox, { db, me, lead, openTask: setTaskId, openVideo: setOpenId, openClient: (id) => { setPage({ tab: "client", id }); setFilter(null); } }), me.role !== "client" && /* @__PURE__ */ React.createElement(Notifications, { db, me, mutate, openTask: setTaskId, openVideo: setOpenId, openFeed: () => setPage({ tab: "feed" }), openDay: (d) => { setCalDay(d); setPage({ tab: "calendar" }); } }), React.createElement("span", { className: "ps-acct" }, authLock ? /* @__PURE__ */ React.createElement("span", { className: "ps-viewas" }, /* @__PURE__ */ React.createElement("b", null, me.name), /* @__PURE__ */ React.createElement("span", null, (ROLES[me.role] || {}).label || me.role)) : /* @__PURE__ */ React.createElement("label", { className: "ps-viewas" }, /* @__PURE__ */ React.createElement("span", null, "Viewing as"), /* @__PURE__ */ React.createElement("select", { value: meId, onChange: (e) => {
       setMeId(e.target.value);
       setPage({ tab: "queue" });
       setFilter(null);
@@ -12181,6 +12308,35 @@ html.ps-theming .ps-theme-knob,html.ps-theming .ps-theme-ic{transition:transform
 .ps-fd-grid.g1 .ps-fd-gi{aspect-ratio:auto}
 .ps-fd-grid.g1 .ps-fd-gi img{height:auto;max-height:640px;object-fit:contain;margin:0 auto}
 .ps-fd-plus{position:absolute;inset:0;display:grid;place-items:center;background:rgba(0,0,0,.5);color:#fff;font-size:30px;font-weight:700}
+.ps-fd-new.quote{border-color:var(--accent)}
+.ps-fd-newtop{display:flex;gap:10px;align-items:flex-start}
+.ps-fd-newtop textarea{flex:1;width:100%;border:0!important;background:transparent!important;padding:9px 4px!important;font-size:16px;resize:none;min-height:44px}
+.ps-fd-newtop textarea:focus{outline:none}
+.ps-fd-newtop textarea.ps-fd-qin{font-size:19px}
+.ps-fd-qby{margin-left:50px;width:calc(100% - 50px)!important}
+.ps-fd-bar{display:flex;align-items:center;gap:4px;border-top:1px solid var(--line);padding-top:10px}
+.ps-fd-tool{font:inherit;font-size:14px;font-weight:600;display:inline-flex;align-items:center;gap:7px;border:0;background:transparent;color:var(--muted);padding:7px 12px;border-radius:999px;cursor:pointer}
+.ps-fd-tool:hover{background:var(--line);color:var(--ink)}
+.ps-root label.ps-fd-tool{font-size:14px;font-weight:600;margin:0;color:var(--muted)}
+.ps-fd-tool svg{color:#16A34A}
+.ps-fd-tool[aria-pressed] svg{color:#7C3AED}
+.ps-fd-tool.on{background:var(--okbg);color:var(--accent)}
+.ps-fd-tool.off{opacity:.45;pointer-events:none}
+.ps-fd-bar .ps-spacer{flex:1}
+.ps-fd-postbtn{order:0!important;grid-column:auto!important;grid-row:auto!important;align-self:auto!important;padding:8px 22px}
+.ps-fd-in{position:relative;flex:1;display:flex;align-items:flex-start;min-width:0}
+.ps-fd-in>input,.ps-fd-in>textarea{flex:1;min-width:0}
+.ps-fd-in>input{padding-right:40px!important}
+.ps-fd-emobtn{flex:none;border:0;background:transparent;color:var(--muted);width:34px;height:34px;border-radius:50%;display:grid;place-items:center;cursor:pointer;margin-left:2px}
+.ps-fd-in:not(.multi) .ps-fd-emobtn{position:absolute;right:3px;top:50%;transform:translateY(-50%)}
+.ps-fd-emobtn:hover,.ps-fd-emobtn.on{background:var(--line);color:var(--ink)}
+.ps-fd-emo{position:absolute;right:0;bottom:calc(100% + 6px);z-index:7;display:grid;grid-template-columns:repeat(8,34px);gap:2px;padding:8px;background:var(--card);border:1px solid var(--line);border-radius:12px;box-shadow:0 14px 30px -12px rgba(0,0,0,.45)}
+.ps-fd-in.multi .ps-fd-emo{top:calc(100% + 4px);bottom:auto}
+.ps-fd-emo button{border:0;background:transparent;font-size:20px;width:34px;height:34px;border-radius:8px;cursor:pointer;padding:0;line-height:1}
+.ps-fd-emo button:hover{background:var(--line)}
+.ps-fd-in .ps-mentions{bottom:calc(100% + 4px)}
+.ps-fd-in.multi .ps-mentions{top:calc(100% + 4px);bottom:auto}
+.ps-fd-tag{color:var(--accent);font-weight:700}
 .ps-fd-thumbs{display:grid;grid-template-columns:repeat(auto-fill,minmax(96px,1fr));gap:8px}
 .ps-fd-thumb{position:relative;aspect-ratio:1/1;border-radius:10px;overflow:hidden;background:var(--paper)}
 .ps-fd-thumb img{width:100%;height:100%;object-fit:cover;display:block}
@@ -12469,15 +12625,24 @@ if (sb) {
   window.psFeed = {
     live: true,
     load: async () => {
-      const { data: posts, error } = await sb.from("feed_posts").select("id, author, person_id, kind, body, quote_by, photo_url, photos, created_at").order("created_at", { ascending: false }).limit(200);
+      const { data: posts, error } = await sb.from("feed_posts").select("id, author, person_id, kind, body, quote_by, photo_url, photos, tags, created_at").order("created_at", { ascending: false }).limit(200);
       if (error) throw feedErr(error, "The feed didn't load");
       const ids = (posts || []).map((p) => p.id);
       const [c, hts, nw] = await Promise.all([
-        ids.length ? sb.from("feed_comments").select("id, post_id, person_id, body, created_at").in("post_id", ids).order("created_at") : { data: [] },
+        ids.length ? sb.from("feed_comments").select("id, post_id, person_id, body, tags, created_at").in("post_id", ids).order("created_at") : { data: [] },
         ids.length ? sb.from("feed_hearts").select("post_id, person_id").in("post_id", ids) : { data: [] },
         sb.from("feed_news").select("id, topic, source, title, link, image, summary, published_at").order("published_at", { ascending: false }).limit(150)
       ]);
       return { posts: posts || [], comments: c.data || [], hearts: hts.data || [], news: nw.data || [] };
+    },
+    /* Light query for the bell: the last 30 days of posts and their comments. */
+    activity: async () => {
+      const since = new Date(Date.now() - 30 * 864e5).toISOString();
+      const { data: posts, error } = await sb.from("feed_posts").select("id, person_id, kind, body, photo_url, photos, tags, created_at").gte("created_at", since).order("created_at", { ascending: false }).limit(40);
+      if (error) throw error;
+      const ids = (posts || []).map((p) => p.id);
+      const c = ids.length ? await sb.from("feed_comments").select("id, post_id, person_id, body, tags, created_at").in("post_id", ids).gte("created_at", since) : { data: [] };
+      return { posts: posts || [], comments: c.data || [] };
     },
     refreshNews: async () => {
       const { data, error } = await sb.functions.invoke("creative-news", { body: {} });
@@ -12492,8 +12657,8 @@ if (sb) {
       const { error } = await sb.from("feed_posts").delete().eq("id", id);
       if (error) throw error;
     },
-    comment: async (post_id, person_id, body) => {
-      const { error } = await sb.from("feed_comments").insert({ post_id, person_id, body });
+    comment: async (post_id, person_id, body, tags) => {
+      const { error } = await sb.from("feed_comments").insert({ post_id, person_id, body, tags: tags || [] });
       if (error) throw error;
     },
     removeComment: async (id) => {

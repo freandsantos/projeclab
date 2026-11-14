@@ -12625,6 +12625,8 @@ html.ps-theming .ps-theme-knob,html.ps-theming .ps-theme-ic{transition:transform
   function JhLogo({ height }) {
     return React.createElement("span", { className: "jh-logo", role: "img", "aria-label": "Jumphigh", dangerouslySetInnerHTML: { __html: jhLogoSvg(height || 60) } });
   }
+  /* "My next shifts" list for staff logins. Frean asked to hide it (14 Nov 2026); set to true to bring it back. */
+  var JH_SHOW_MY_NEXT = false;
   var JH_STATUS = [["work", "Working"], ["half", "Half day"], ["absent", "Absent"]];
   var JH_COLORS = ["#D4AF37", "#0F766E", "#2563EB", "#DB2777", "#D97706", "#7C3AED", "#059669", "#DC2626", "#0891B2"];
   var JH_DEFAULTS = { start: "10:00", end: "19:00", company: "Jumphigh" };
@@ -12806,7 +12808,7 @@ html.ps-theming .ps-theme-knob,html.ps-theming .ps-theme-ic{transition:transform
             admin && h("p", { className: "ps-muted jh-hint" }, "Click a name to change that shift, or + to add someone on that day. Half days count ½, absences 0.")));
     };
     return h(React.Fragment, null,
-      !admin && h("div", { className: "jh-mine" },
+      JH_SHOW_MY_NEXT && !admin && h("div", { className: "jh-mine" },
         h("h3", { className: "ps-h3" }, "My next shifts"),
         !me ? h("p", { className: "ps-muted" }, "Your login isn't linked to a name on the schedule yet. Ask your manager to link it.")
           : !mine.length ? h("p", { className: "ps-muted" }, "No shifts scheduled for you yet.")

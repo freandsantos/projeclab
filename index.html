@@ -12710,6 +12710,12 @@ html.ps-theming .ps-theme-knob,html.ps-theming .ps-theme-ic{transition:transform
     const today = manilaDay();
     const [week, setWeek] = useState(() => jhMonday(today));
     const [edit, setEdit] = useState(null);
+    /* Week or Month view (remembered for this browser tab). */
+    const [view, setView] = useState(() => { try { return sessionStorage.getItem("ps-jh-view") || "week"; } catch (e) { return "week"; } });
+    useEffect(() => { try { sessionStorage.setItem("ps-jh-view", view); } catch (e) {} }, [view]);
+    const [month, setMonth] = useState(() => today.slice(0, 7));
+    const [addFor, setAddFor] = useState(null);
+    const [onlyMine, setOnlyMine] = useState(false);
     const days = [0, 1, 2, 3, 4, 5, 6].map((i) => jhAdd(week, i));
     const crew = staff.filter((s) => s.active !== false || shifts.some((x) => x.staffId === s.id && x.date >= week && x.date <= days[6]));
     const shiftOf = (sid, d) => shifts.find((x) => x.staffId === sid && x.date === d);
@@ -12745,6 +12751,60 @@ html.ps-theming .ps-theme-knob,html.ps-theming .ps-theme-ic{transition:transform
         ? h("button", { className: "jh-shift " + x.status, style: { borderLeftColor: s.color || JH_COLORS[0] }, onClick: open }, body)
         : h("div", { className: "jh-shift " + x.status, style: { borderLeftColor: s.color || JH_COLORS[0] } }, body);
     };
+    /* ---- Month view: a calendar with everyone's shifts as small chips ---- */
+    const jhTimeS = (t) => { if (!t) return ""; const [H, M] = String(t).split(":").map(Number); return (H % 12 || 12) + (M ? ":" + String(M).padStart(2, "0") : "") + (H >= 12 ? "p" : "a"); };
+    const monthView = () => {
+      const [yy, mm] = month.split("-").map(Number);
+      const first = month + "-01";
+      const last = month + "-" + String(new Date(yy, mm, 0).getDate()).padStart(2, "0");
+      const gStart = jhMonday(first), gEnd = jhAdd(jhMonday(last), 6);
+      const cells = [];
+      for (let d = gStart; d <= gEnd; d = jhAdd(d, 1)) cells.push(d);
+      const go = (n) => { const x = new Date(yy, mm - 1 + n, 1); setMonth(isoDay(x).slice(0, 7)); setAddFor(null); };
+      const inMonth = (d) => d >= first && d <= last;
+      const mCrew = staff.filter((s) => s.active !== false || shifts.some((x) => x.staffId === s.id && x.date >= first && x.date <= last));
+      const order = (sid) => { const k = mCrew.findIndex((s) => s.id === sid); return k < 0 ? 999 : k; };
+      const label = fromIso(first).toLocaleDateString("en-US", { month: "long", year: "numeric" });
+      const dayShifts = (d) => shifts.filter((x) => x.date === d && (!onlyMine || x.staffId === myStaffId) && mCrew.some((s) => s.id === x.staffId)).sort((a, b) => order(a.staffId) - order(b.staffId));
+      const chip = (x) => {
+        const s = mCrew.find((p) => p.id === x.staffId) || { name: "?" };
+        const first = String(s.name).split(/\s+/)[0];
+        const text = [h("span", { key: "d", className: "jh-dot", style: { background: s.color || JH_COLORS[0] } }), h("span", { key: "t", className: "jh-mtext" }, first + " " + jhTimeS(x.start) + "–" + jhTimeS(x.end)),
+          x.status === "half" && h("span", { key: "s", className: "jh-st half" }, "½")];
+        const cls = "jh-mchip " + x.status + (x.staffId === myStaffId ? " me" : "");
+        const title = `${s.name}: ${jhTime(x.start)} – ${jhTime(x.end)}${x.status === "half" ? " (half day)" : x.status === "absent" ? " (absent)" : ""}${x.note ? " · " + x.note : ""}`;
+        return admin ? h("button", { key: x.id, className: cls, title, onClick: () => setEdit({ staffId: x.staffId, date: x.date }) }, text) : h("div", { key: x.id, className: cls, title }, text);
+      };
+      const totals = mCrew.map((s) => ({ s, n: r2(shifts.filter((x) => x.staffId === s.id && x.date >= first && x.date <= last).reduce((a, x) => a + jhDayValue(x), 0)) }));
+      return h(React.Fragment, null,
+        h("div", { className: "jh-weekbar" },
+          h("div", { className: "jh-weeknav" },
+            h("button", { className: "ps-btn ghost small", onClick: () => go(-1), "aria-label": "Previous month" }, "‹"),
+            h("b", null, label),
+            h("button", { className: "ps-btn ghost small", onClick: () => go(1), "aria-label": "Next month" }, "›"),
+            month !== today.slice(0, 7) && h("button", { className: "ps-btn ghost small", onClick: () => { setMonth(today.slice(0, 7)); setAddFor(null); } }, "This month"))),
+        !mCrew.length ? h("div", { className: "ps-pay-locked" }, h("b", null, "No staff yet."), h("p", null, admin ? "Add your Jumphigh staff in the Staff tab first, then come back to plan their shifts." : "Your manager hasn't added the team yet."))
+          : h(React.Fragment, null,
+            h("div", { className: "ps-pay-tablewrap" }, h("div", { className: "jh-month" },
+              h("div", { className: "jh-mhead" }, ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((w) => h("div", { key: w }, w))),
+              h("div", { className: "jh-mbody" }, cells.map((d) => {
+                const list = dayShifts(d);
+                const free = mCrew.filter((s) => s.active !== false && !shiftOf(s.id, d));
+                const working = list.filter((x) => x.status !== "absent").length;
+                return h("div", { key: d, className: "jh-mday" + (inMonth(d) ? "" : " other") + (d === today ? " today" : "") },
+                  h("div", { className: "jh-mtop" },
+                    h("span", { className: "jh-mnum" }, fromIso(d).getDate()),
+                    !onlyMine && working > 0 && h("span", { className: "jh-mcount", title: working + " working" }, working)),
+                  list.map(chip),
+                  admin && free.length > 0 && (addFor === d
+                    ? h("select", { className: "jh-madd-pick", autoFocus: true, value: "", onBlur: () => setAddFor(null), onChange: (e) => { if (e.target.value) { setEdit({ staffId: e.target.value, date: d }); } setAddFor(null); } },
+                        h("option", { value: "" }, "Who?"), free.map((s) => h("option", { key: s.id, value: s.id }, s.name)))
+                    : h("button", { className: "jh-madd", onClick: () => setAddFor(d), "aria-label": "Add a shift on " + jhShort(d) }, "+")));
+              })))),
+            h("div", { className: "jh-mtot" }, h("span", { className: "ps-muted" }, "Days on the schedule in " + fromIso(first).toLocaleDateString("en-US", { month: "long" }) + ":"),
+              totals.filter((t) => !onlyMine || t.s.id === myStaffId).map((t) => h("span", { key: t.s.id, className: "jh-mtotone" + (t.s.id === myStaffId ? " me" : "") }, h("span", { className: "jh-dot", style: { background: t.s.color || JH_COLORS[0] } }), t.s.name + " ", h("b", null, t.n)))),
+            admin && h("p", { className: "ps-muted jh-hint" }, "Click a name to change that shift, or + to add someone on that day. Half days count ½, absences 0.")));
+    };
     return h(React.Fragment, null,
       !admin && h("div", { className: "jh-mine" },
         h("h3", { className: "ps-h3" }, "My next shifts"),
@@ -12755,6 +12815,15 @@ html.ps-theming .ps-theme-knob,html.ps-theming .ps-theme-ic{transition:transform
               h("span", null, jhTime(x.start) + " – " + jhTime(x.end)),
               x.status !== "work" && h("span", { className: "jh-st " + x.status }, x.status === "half" ? "Half day" : "Absent"),
               x.note && h("span", { className: "ps-muted" }, x.note))))),
+      h("div", { className: "jh-viewbar" },
+        h("div", { className: "jh-viewtog", role: "group", "aria-label": "Schedule view" },
+          [["week", "Week"], ["month", "Month"]].map(([k, l]) => h("button", { key: k, type: "button", className: view === k ? "on" : "", "aria-pressed": view === k, onClick: () => {
+            if (k === "month" && view !== "month") setMonth(days[3].slice(0, 7));
+            if (k === "week" && view !== "week") setWeek(jhMonday(month === today.slice(0, 7) ? today : month + "-01"));
+            setView(k);
+          } }, l))),
+        !admin && me && view === "month" && h("label", { className: "ps-check jh-check jh-onlyme" }, h("input", { type: "checkbox", checked: onlyMine, onChange: (e) => setOnlyMine(e.target.checked) }), h("span", null, "Only my shifts"))),
+      view === "month" ? monthView() : h(React.Fragment, null,
       h("div", { className: "jh-weekbar" },
         h("div", { className: "jh-weeknav" },
           h("button", { className: "ps-btn ghost small", onClick: () => setWeek(jhAdd(week, -7)), "aria-label": "Previous week" }, "‹"),
@@ -12776,7 +12845,7 @@ html.ps-theming .ps-theme-knob,html.ps-theming .ps-theme-ic{transition:transform
             h("td", null, "Working"),
             days.map((d) => h("td", { key: d, className: d === today ? "today" : "" }, crew.filter((s) => { const x = shiftOf(s.id, d); return x && x.status !== "absent"; }).length)),
             h("td"))))),
-      admin && crew.length > 0 && h("p", { className: "ps-muted jh-hint" }, "Click a day to add or change a shift. Staff see this schedule when they sign in, but they can't change it."),
+      admin && crew.length > 0 && h("p", { className: "ps-muted jh-hint" }, "Click a day to add or change a shift. Staff see this schedule when they sign in, but they can't change it.")),
       edit && h(JhShiftEditor, {
         staff: staff.find((s) => s.id === edit.staffId) || { name: "" }, date: edit.date, shift: shiftOf(edit.staffId, edit.date), defaults,
         save: (f) => saveShift(edit.staffId, edit.date, f),
@@ -13167,6 +13236,38 @@ html.ps-theming .ps-theme-knob,html.ps-theming .ps-theme-ic{transition:transform
 .jh-sa .jh-h1{display:none}
 .jh-sa .jh-head{padding-bottom:12px}
 .jh-hint{margin:8px 0}
+.jh-viewbar{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin:4px 0 2px}
+.jh-viewtog{display:inline-flex;border:1px solid var(--line);border-radius:999px;padding:2px;gap:2px}
+.jh-viewtog button{border:0;background:none;color:var(--muted);font-weight:600;font-size:13px;padding:4px 14px;border-radius:999px;cursor:pointer}
+.jh-viewtog button.on{background:var(--accent);color:#111}
+.jh-onlyme{margin:0}
+.jh-month{min-width:760px}
+.jh-mhead,.jh-mbody{display:grid;grid-template-columns:repeat(7,minmax(0,1fr))}
+.jh-mhead div{font-size:12px;color:var(--muted);font-weight:600;padding:8px;border-bottom:1px solid var(--line)}
+.jh-mday{min-height:108px;padding:6px;display:flex;flex-direction:column;gap:3px;border-right:1px solid var(--line);border-bottom:1px solid var(--line);min-width:0}
+.jh-mday:nth-child(7n){border-right:0}
+.jh-mday.other{opacity:.38}
+.jh-mday.today{background:color-mix(in srgb,var(--accent) 8%,transparent)}
+.jh-mtop{display:flex;justify-content:space-between;align-items:center}
+.jh-mnum{font-size:12px;font-weight:700;padding:0 2px}
+.jh-mday.today .jh-mnum{background:var(--accent);color:#111;border-radius:999px;padding:0 7px}
+.jh-mcount{font-size:10.5px;color:var(--muted);border:1px solid var(--line);border-radius:999px;padding:0 6px}
+.jh-mchip{display:flex;align-items:center;gap:5px;width:100%;text-align:left;font:inherit;font-size:11.5px;line-height:1.3;border:1px solid var(--line);border-radius:6px;padding:2px 5px;background:var(--card);color:var(--ink);min-width:0}
+button.jh-mchip{cursor:pointer}
+button.jh-mchip:hover{border-color:var(--accent)}
+.jh-mchip .jh-dot{width:7px;height:7px;margin:0}
+.jh-mtext{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;flex:1}
+.jh-mchip.absent{opacity:.55}
+.jh-mchip.absent .jh-mtext{text-decoration:line-through}
+.jh-mchip.me{border-color:var(--accent);background:color-mix(in srgb,var(--accent) 12%,var(--card))}
+.jh-mchip .jh-st{font-size:9.5px;padding:0 4px;flex:0 0 auto}
+.jh-madd{margin-top:auto;align-self:flex-start;border:1px dashed var(--line);background:none;color:var(--muted);border-radius:6px;padding:0 8px;cursor:pointer;font-size:13px;line-height:1.5}
+.jh-madd:hover{border-color:var(--accent);color:var(--accent)}
+.jh-madd-pick{margin-top:auto;font-size:12px;padding:2px 4px!important;border-radius:6px;width:100%}
+.jh-mtot{display:flex;flex-wrap:wrap;gap:8px 14px;align-items:center;margin-top:10px;font-size:13px}
+.jh-mtotone{display:inline-flex;align-items:center;gap:6px}
+.jh-mtotone .jh-dot{margin:0}
+.jh-mtotone.me{color:var(--accent)}
 .jh-top{align-items:center;margin:0 0 12px}
 .jh-weekbar{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin:6px 0 10px}
 .jh-weeknav{display:flex;align-items:center;gap:8px}

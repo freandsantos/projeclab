@@ -12860,7 +12860,8 @@ html.ps-theming .ps-theme-knob,html.ps-theming .ps-theme-ic{transition:transform
     const [f, setF] = useState({
       name: s.name || "", position: s.position || "", color: s.color || JH_COLORS[0],
       dailyRate: rate && rate.dailyRate ? String(rate.dailyRate) : "", method: pt.method || "cash", accountNo: pt.accountNo || "", accountName: pt.accountName || "",
-      mobile: (rate && rate.mobile) || "", email: login ? login.email : "", admin: !!(login && login.role === "admin")
+      mobile: (rate && rate.mobile) || "", email: login ? login.email : "", admin: !!(login && login.role === "admin"),
+      commissionPct: rate && rate.commissionPct ? String(rate.commissionPct) : ""
     });
     const [err, setErr] = useState("");
     const set = (k) => (e) => setF({ ...f, [k]: e.target.type === "checkbox" ? e.target.checked : e.target.value });
@@ -12875,6 +12876,7 @@ html.ps-theming .ps-theme-knob,html.ps-theming .ps-theme-ic{transition:transform
         h("label", { className: "ps-field" }, h("span", null, "Name"), h("input", { value: f.name, onChange: set("name"), autoFocus: !s.name })),
         h("label", { className: "ps-field" }, h("span", null, "Position"), h("input", { value: f.position, placeholder: "e.g. Sales staff, Cashier", onChange: set("position") })),
         h("label", { className: "ps-field" }, h("span", null, "Daily rate (₱)"), h("input", { inputMode: "decimal", value: f.dailyRate, placeholder: "e.g. 610", onChange: set("dailyRate") })),
+        h("label", { className: "ps-field" }, h("span", null, "Sales commission (%)"), h("input", { inputMode: "decimal", value: f.commissionPct, placeholder: "0 = none", onChange: set("commissionPct") })),
         h("label", { className: "ps-field" }, h("span", null, "Mobile number"), h("input", { inputMode: "tel", value: f.mobile, onChange: set("mobile") })),
         h("label", { className: "ps-field" }, h("span", null, "Paid by"), h("select", { value: f.method, onChange: set("method") }, PAY_METHODS.map(([k, l]) => h("option", { key: k, value: k }, l)))),
         f.method !== "cash" && h("label", { className: "ps-field" }, h("span", null, f.method === "gcash" ? "GCash number" : "Account number"), h("input", { value: f.accountNo, onChange: set("accountNo") })),
@@ -12897,13 +12899,13 @@ html.ps-theming .ps-theme-knob,html.ps-theming .ps-theme-ic{transition:transform
     const [showFormer, setShowFormer] = useState(false);
     const [hours, setHours] = useState(() => ({ ...JH_DEFAULTS, ...settings }));
     const [newAdmin, setNewAdmin] = useState("");
-    useEffect(() => { setHours({ ...JH_DEFAULTS, ...settings }); }, [settings.start, settings.end, settings.company]);
+    useEffect(() => { setHours({ ...JH_DEFAULTS, ...settings }); }, [settings.start, settings.end, settings.company, settings.float, settings.lowStock]);
     const loginOf = (sid) => members.find((m) => m.staff_id === sid);
     const save = (s, f) => {
       const id = s.id || "st" + jhNewId();
       const row = { ...s, id, name: f.name.trim(), position: f.position.trim(), color: f.color, active: s.active !== false, order: s.order != null ? s.order : staff.length };
       putData("staff:" + id, "staff", row, s.id ? `${row.name} saved.` : `${row.name} added to Jumphigh.`);
-      putPay("rate:" + id, "rate", { staffId: id, dailyRate: r2(num(f.dailyRate)), mobile: f.mobile.trim(), payTo: { method: f.method, accountNo: f.method === "cash" ? "" : f.accountNo.trim(), accountName: f.method === "cash" ? "" : f.accountName.trim() } });
+      putPay("rate:" + id, "rate", { staffId: id, dailyRate: r2(num(f.dailyRate)), commissionPct: r2(num(f.commissionPct)), mobile: f.mobile.trim(), payTo: { method: f.method, accountNo: f.method === "cash" ? "" : f.accountNo.trim(), accountName: f.method === "cash" ? "" : f.accountName.trim() } });
       const old = loginOf(id);
       const email = f.email.trim().toLowerCase();
       if (old && old.email !== email && old.email !== myEmail) dropMember(old.email);
@@ -12929,7 +12931,7 @@ html.ps-theming .ps-theme-knob,html.ps-theming .ps-theme-ic{transition:transform
         h("div", { className: "ps-pay-row" },
           h("span", { className: "jh-dot big", style: { background: s.color || JH_COLORS[0] } }),
           h("span", { className: "ps-pay-who" }, h("b", null, s.name, s.active === false && h("span", { className: "ps-chip jh-chip" }, "Former")),
-            h("span", { className: "ps-muted" }, [s.position, r && num(r.dailyRate) ? peso(r.dailyRate) + " / day" : "No daily rate yet", methodLabel(pt.method) + (pt.accountNo ? " " + (pt.method === "gcash" ? gcashPretty(pt.accountNo) : pt.accountNo) : "")].filter(Boolean).join(" · ")),
+            h("span", { className: "ps-muted" }, [s.position, r && num(r.dailyRate) ? peso(r.dailyRate) + " / day" : "No daily rate yet", r && num(r.commissionPct) ? r.commissionPct + "% commission" : "", methodLabel(pt.method) + (pt.accountNo ? " " + (pt.method === "gcash" ? gcashPretty(pt.accountNo) : pt.accountNo) : "")].filter(Boolean).join(" · ")),
             h("span", { className: "ps-muted" }, m ? `Signs in as ${m.email}${m.role === "admin" ? " · can manage Jumphigh" : ""}` : "No login")),
           s.active === false
             ? h("button", { className: "ps-btn ghost small", onClick: () => putData("staff:" + s.id, "staff", { ...s, active: true }, `${s.name} is back on the team. Add their login again if they need it.`) }, "Bring back")
@@ -12950,8 +12952,10 @@ html.ps-theming .ps-theme-knob,html.ps-theming .ps-theme-ic{transition:transform
         h("div", { className: "ps-fields" },
           h("label", { className: "ps-field" }, h("span", null, "Usual shift starts"), h("input", { type: "time", value: hours.start, onChange: (e) => setHours({ ...hours, start: e.target.value }) })),
           h("label", { className: "ps-field" }, h("span", null, "Usual shift ends"), h("input", { type: "time", value: hours.end, onChange: (e) => setHours({ ...hours, end: e.target.value }) })),
-          h("label", { className: "ps-field" }, h("span", null, "Company name on payslips"), h("input", { value: hours.company, onChange: (e) => setHours({ ...hours, company: e.target.value }) }))),
-        h("div", { className: "ps-btnrow end" }, h("button", { className: "ps-btn", onClick: () => putData("settings", "settings", { start: hours.start, end: hours.end, company: hours.company.trim() || JH_DEFAULTS.company }, "Store settings saved.") }, "Save settings"))),
+          h("label", { className: "ps-field" }, h("span", null, "Company name on payslips and sales slips"), h("input", { value: hours.company, onChange: (e) => setHours({ ...hours, company: e.target.value }) })),
+          h("label", { className: "ps-field" }, h("span", null, "Starting cash in the drawer each day (₱)"), h("input", { inputMode: "decimal", value: hours.float == null ? "" : hours.float, placeholder: "e.g. 1000", onChange: (e) => setHours({ ...hours, float: e.target.value }) })),
+          h("label", { className: "ps-field" }, h("span", null, "Warn when a size has this many pairs or fewer"), h("input", { inputMode: "numeric", value: hours.lowStock == null ? "" : hours.lowStock, placeholder: "2", onChange: (e) => setHours({ ...hours, lowStock: e.target.value }) }))),
+        h("div", { className: "ps-btnrow end" }, h("button", { className: "ps-btn", onClick: () => putData("settings", "settings", { start: hours.start, end: hours.end, company: hours.company.trim() || JH_DEFAULTS.company, float: r2(num(hours.float)), lowStock: hours.lowStock === "" || hours.lowStock == null ? 2 : Math.max(0, Math.floor(num(hours.lowStock))) }, "Store settings saved.") }, "Save settings"))),
       h("h3", { className: "ps-h3" }, "Other managers"),
       h("div", { className: "ps-pay-person" },
         h("p", { className: "ps-muted" }, "Logins that can manage Jumphigh but aren't on the staff list (like you)."),
@@ -12986,19 +12990,30 @@ html.ps-theming .ps-theme-knob,html.ps-theming .ps-theme-ic{transition:transform
       return n.half === "first" ? { from: base + "01", to: base + "15" } : n.half === "second" ? { from: base + "16", to: base + pad(last) } : { from: base + "01", to: base + pad(last) };
     };
     const countDays = (sid, from, to) => r2(shifts.filter((x) => x.staffId === sid && x.date >= from && x.date <= to).reduce((a, x) => a + jhDayValue(x), 0));
-    const lineFor = (s, from, to, prev) => {
+    /* Commission: the person's % of their net sales (after returns) in the payroll dates,
+       kept as an extra line with id "commission" so a recount replaces it. */
+    const salesFor = async (from, to) => { try { return await jhPos().sales(from, to); } catch (e) { setToast("Sales didn't load, so commission wasn't added: " + jhErrText(e)); return null; } };
+    const lineFor = (s, from, to, prev, sales) => {
       const r = rates[s.id] || {};
+      let adjustments = prev ? (prev.adjustments || []).filter((a) => !sales || a.id !== "commission") : [];
+      const pct = num(r.commissionPct);
+      if (sales && pct > 0) {
+        const sold = r2(sales.filter((x) => x.seller_id === s.id).reduce((a, x) => a + jhSaleNet(x), 0));
+        if (sold > 0) adjustments = [{ id: "commission", label: `Commission ${pct}% of ${peso(sold)} sales`, amount: r2(sold * pct / 100) }, ...adjustments];
+      }
       return { ...prev || {}, staffId: s.id, name: s.name, position: s.position || "", rate: r2(num(r.dailyRate)), days: countDays(s.id, from, to),
-        payTo: { ...r.payTo || {} }, adjustments: prev ? prev.adjustments || [] : [], paidAt: prev ? prev.paidAt || null : null, paidRef: prev ? prev.paidRef || "" : "" };
+        payTo: { ...r.payTo || {} }, adjustments, paidAt: prev ? prev.paidAt || null : null, paidRef: prev ? prev.paidRef || "" : "" };
     };
     const note = (run, text) => ({ ...run, history: [...run.history || [], { at: (/* @__PURE__ */ new Date()).toISOString(), by: me.email, text }] });
-    const create = () => {
+    const create = async () => {
       const per = perOf(newRun);
       if (!per.from || !per.to || per.to < per.from) return setToast("Pick a start and end date for this payroll.");
       const id = "run:" + per.from + "_" + per.to;
       if (runs.some((r) => r.id === id)) { setNewRun(null); setOpenId(id); return setToast("There's already a payroll for those dates, so it's open now."); }
-      const people = staff.filter((s) => (s.active !== false && (num((rates[s.id] || {}).dailyRate) > 0 || countDays(s.id, per.from, per.to) > 0)) || (s.active === false && countDays(s.id, per.from, per.to) > 0));
-      const run = note({ id, from: per.from, to: per.to, payDate: newRun.payDate || "", status: "draft", createdAt: (/* @__PURE__ */ new Date()).toISOString(), lines: people.map((s) => lineFor(s, per.from, per.to)) }, "Payroll made");
+      const sales = await salesFor(per.from, per.to);
+      const soldBy = (sid) => !!sales && sales.some((x) => x.seller_id === sid && jhSaleNet(x) > 0) && num((rates[sid] || {}).commissionPct) > 0;
+      const people = staff.filter((s) => (s.active !== false && (num((rates[s.id] || {}).dailyRate) > 0 || countDays(s.id, per.from, per.to) > 0 || soldBy(s.id))) || (s.active === false && (countDays(s.id, per.from, per.to) > 0 || soldBy(s.id))));
+      const run = note({ id, from: per.from, to: per.to, payDate: newRun.payDate || "", status: "draft", createdAt: (/* @__PURE__ */ new Date()).toISOString(), lines: people.map((s) => lineFor(s, per.from, per.to, null, sales)) }, "Payroll made");
       putPay(id, "run", run, "Payroll made from the schedule. Check the days, then approve.");
       setNewRun(null); setOpenId(id);
     };
@@ -13009,8 +13024,8 @@ html.ps-theming .ps-theme-knob,html.ps-theming .ps-theme-ic{transition:transform
       const updLine = (sid, patch, msg) => upd({ lines: run.lines.map((l) => l.staffId === sid ? { ...l, ...patch } : l) }, msg);
       const totals = run.lines.reduce((a, l) => { const m = jhLineMath(l); return { gross: a.gross + m.gross, adj: a.adj + m.adj, net: a.net + m.net, paid: a.paid + (l.paidAt ? m.net : 0) }; }, { gross: 0, adj: 0, net: 0, paid: 0 });
       const missing = staff.filter((s) => s.active !== false && !run.lines.some((l) => l.staffId === s.id));
-      const recount = () => upd({ lines: run.lines.map((l) => { const s = staff.find((x) => x.id === l.staffId) || { id: l.staffId, name: l.name, position: l.position }; return lineFor(s, run.from, run.to, l); }) },
-        "Days and daily rates updated from the schedule and staff list.", "Recounted from the schedule");
+      const recount = async () => { const sales = await salesFor(run.from, run.to); upd({ lines: run.lines.map((l) => { const s = staff.find((x) => x.id === l.staffId) || { id: l.staffId, name: l.name, position: l.position }; return lineFor(s, run.from, run.to, l, sales); }) },
+        "Days, daily rates and commission updated from the schedule, staff list and sales.", "Recounted from the schedule and sales"); };
       const slip = (lines) => { const w = window.open("", "_blank"); if (!w) return setToast("Your browser blocked the payslip window. Allow pop-ups for this site and try again."); w.document.open(); w.document.write(jhSlipHtml(run, lines, settings.company || JH_DEFAULTS.company)); w.document.close(); };
       const csv = () => jhDownload(`Jumphigh payroll ${run.from} to ${run.to}.csv`, jhCsv([
         ["Name", "Position", "Days worked", "Daily rate", "Gross", "Additions / deductions", "Net pay", "Paid by", "Account", "Paid on", "Reference"],
@@ -13022,9 +13037,9 @@ html.ps-theming .ps-theme-knob,html.ps-theming .ps-theme-ic{transition:transform
           h("div", null, h("h3", { className: "ps-h3 jh-runtitle" }, "Payroll · " + jhPeriodLabel(run.from, run.to), h("span", { className: "ps-chip " + (draft ? "warn" : "ok") }, draft ? "Draft" : "Approved")),
             h("label", { className: "jh-paydate" }, h("span", { className: "ps-muted" }, "Pay date "), h("input", { type: "date", value: run.payDate || "", onChange: (e) => upd({ payDate: e.target.value }, "Pay date saved.") }))),
           h("div", { className: "jh-totbox" }, h("span", { className: "ps-muted" }, "Total to pay out"), h("b", null, peso(totals.net)), h("span", { className: "ps-muted" }, `Paid ${peso(totals.paid)} · still to pay ${peso(r2(totals.net - totals.paid))}`))),
-        draft && h("p", { className: "ps-muted jh-hint" }, "Days worked come from the schedule: each shift counts 1 day, a half day counts ½, absent counts 0. You can type a different number. Use “Add line” for overtime, bonuses, cash advances or deductions (type a minus for deductions)."),
-        draft && missing.length > 0 && h("p", { className: "ps-muted jh-hint" }, "Not in this payroll: " + missing.map((s) => s.name).join(", ") + " (no daily rate and no shifts in these dates). ",
-          h("button", { className: "ps-linkbtn", onClick: () => upd({ lines: [...run.lines, ...missing.map((s) => lineFor(s, run.from, run.to))] }, "Added.") }, "Add them anyway")),
+        draft && h("p", { className: "ps-muted jh-hint" }, "Days worked come from the schedule: each shift counts 1 day, a half day counts ½, absent counts 0. You can type a different number. Commission comes from the POS sales each person made in these dates. Use “Add line” for overtime, bonuses, cash advances or deductions (type a minus for deductions)."),
+        draft && missing.length > 0 && h("p", { className: "ps-muted jh-hint" }, "Not in this payroll: " + missing.map((s) => s.name).join(", ") + " (no daily rate, shifts or commission in these dates). ",
+          h("button", { className: "ps-linkbtn", onClick: () => upd({ lines: [...run.lines, ...missing.map((s) => lineFor(s, run.from, run.to, null, null))] }, "Added.") }, "Add them anyway")),
         h("div", { className: "jh-lines" }, run.lines.map((l) => {
           const m = jhLineMath(l), pt = l.payTo || {};
           return h("div", { key: l.staffId, className: "ps-pay-card jh-line " + (l.paidAt ? "paid" : "") },
@@ -13068,7 +13083,7 @@ html.ps-theming .ps-theme-knob,html.ps-theming .ps-theme-ic{transition:transform
     }
     const per = newRun ? perOf(newRun) : null;
     return h(React.Fragment, null,
-      h("div", { className: "ps-btnrow jh-top" }, h("p", { className: "ps-muted" }, "Pay = daily rate × days worked on the schedule, plus or minus any extra lines."),
+      h("div", { className: "ps-btnrow jh-top" }, h("p", { className: "ps-muted" }, "Pay = daily rate × days worked on the schedule, plus sales commission, plus or minus any extra lines."),
         !newRun && h("button", { className: "ps-btn", onClick: () => setNewRun(suggest()) }, "+ New payroll")),
       newRun && h("div", { className: "ps-pay-person jh-newrun" },
         h("div", { className: "ps-fields" },
@@ -13102,6 +13117,485 @@ html.ps-theming .ps-theme-knob,html.ps-theming .ps-theme-ic{transition:transform
       h("button", { className: "ps-linkbtn", onClick: () => setOpen(false) }, "Cancel"));
   }
 
+  /* ---- Jumphigh POS (added 14 Nov 2026) --------------------------------------
+     Sales tracking + stock per size/colour. NOT a BIR receipt: the slip says so.
+     Supabase: jh_products, jh_variants (members read, managers write), jh_sales and
+     jh_cash_counts (members read; written only through jh_record_sale / jh_return_sale
+     (managers) / jh_close_day, which work out prices, totals and stock on the server). */
+  var JH_PAY = [["cash", "Cash"], ["gcash", "GCash"], ["maya", "Maya"], ["card", "Card"], ["bank", "Bank transfer"]];
+  var jhPayLabel = (m) => (JH_PAY.find((x) => x[0] === m) || ["", m || "—"])[1];
+  var jhSaleNet = (s) => r2(num(s.total) - num(s.returned));
+  var jhClock = (iso) => new Date(iso).toLocaleTimeString("en-PH", { timeZone: "Asia/Manila", hour: "numeric", minute: "2-digit" });
+  var jhWhen = (iso) => new Date(iso).toLocaleString("en-PH", { timeZone: "Asia/Manila", month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" });
+  var jhItemLabel = (it) => [it.name, [it.color, it.size && "size " + it.size].filter(Boolean).join(", ")].filter(Boolean).join(" · ");
+  /* Server-side rules, copied for the preview/demo store only. */
+  var jhDemoPos = (() => {
+    const rd = (t) => jhDemoRows(t), wr = (t, r) => jhDemoWrite(t, r);
+    const today = () => manilaDay();
+    return {
+      catalog: async () => ({ products: rd("products"), variants: rd("variants") }),
+      saveProduct: async (p, vs) => {
+        wr("products", [...rd("products").filter((x) => x.id !== p.id), p]);
+        const cur = rd("variants");
+        wr("variants", [...cur.filter((x) => !vs.some((v) => v.id === x.id)), ...vs.map((v) => ({ ...cur.find((x) => x.id === v.id) || {}, ...v }))]);
+      },
+      sell: async (p) => {
+        const old = rd("sales").find((s) => s.id === p.id); if (old) return old;
+        const vars = rd("variants"), prods = rd("products");
+        if (!p.items || !p.items.length) throw new Error("The sale has no items.");
+        let sub = 0, idisc = 0; const items = [];
+        p.items.forEach((it) => {
+          const v = vars.find((x) => x.id === it.variantId); const pr = v && prods.find((x) => x.id === v.product_id);
+          if (!v || !pr) throw new Error("One of the items no longer exists. Refresh and try again.");
+          const q = Math.floor(num(it.qty)); if (q <= 0) throw new Error("Quantity must be at least 1.");
+          const price = v.price != null && v.price !== "" ? num(v.price) : num(pr.price);
+          const disc = Math.min(Math.max(num(it.disc), 0), price * q);
+          v.stock = num(v.stock) - q;
+          items.push({ variantId: v.id, productId: pr.id, name: pr.name, color: v.color, size: v.size, qty: q, price, disc: r2(disc) });
+          sub += price * q; idisc += disc;
+        });
+        const sdisc = Math.min(Math.max(num(p.saleDisc), 0), sub - idisc);
+        const tot = r2(sub - idisc - sdisc);
+        const paid = (p.payments || []).reduce((a, x) => a + num(x.amount), 0);
+        const cash = (p.payments || []).filter((x) => x.method === "cash").reduce((a, x) => a + num(x.amount), 0);
+        if (paid < tot) throw new Error("The payment is short by " + r2(tot - paid) + ".");
+        const chg = r2(paid - tot); if (chg > cash) throw new Error("Only cash can be overpaid (for change).");
+        wr("variants", vars);
+        const sales = rd("sales");
+        const s = { id: p.id, no: sales.reduce((a, x) => Math.max(a, x.no), 0) + 1, at: (/* @__PURE__ */ new Date()).toISOString(), day: today(), seller_id: p.sellerId || null, cashier: "you@preview",
+          items, subtotal: r2(sub), item_disc: r2(idisc), sale_disc: r2(sdisc), total: tot, payments: p.payments || [], change: chg, note: p.note || null, status: "done", returns: [], returned: 0 };
+        wr("sales", [...sales, s]); return s;
+      },
+      sales: async (from, to) => rd("sales").filter((s) => s.day >= from && s.day <= to).sort((a, b) => b.no - a.no),
+      ret: async (id, lines, method, note) => {
+        const sales = rd("sales"), s = sales.find((x) => x.id === id); if (!s) throw new Error("Sale not found.");
+        const vars = rd("variants"); const base = s.subtotal - s.item_disc; let amt = 0; const out = [];
+        lines.forEach((ln) => {
+          const q = Math.floor(num(ln.qty)); if (q <= 0) return;
+          const it = s.items[ln.i]; const done = s.returns.reduce((a, r) => a + r.lines.filter((l) => l.i === ln.i).reduce((b, l) => b + l.qty, 0), 0);
+          if (done + q > it.qty) throw new Error(`You can't return more ${it.name} than were sold.`);
+          let unit = it.price * it.qty - it.disc; if (base > 0) unit -= s.sale_disc * unit / base; unit /= it.qty;
+          const v = vars.find((x) => x.id === it.variantId); if (v) v.stock = num(v.stock) + q;
+          out.push({ i: ln.i, qty: q, amount: r2(unit * q) }); amt += r2(unit * q);
+        });
+        if (!out.length) throw new Error("Pick at least one item to return.");
+        s.returns = [...s.returns, { at: (/* @__PURE__ */ new Date()).toISOString(), by: "you@preview", lines: out, amount: r2(amt), method: method || "cash", note: note || null }];
+        s.returned = r2(num(s.returned) + amt);
+        const tq = s.items.reduce((a, x) => a + x.qty, 0), rq = s.returns.reduce((a, r) => a + r.lines.reduce((b, l) => b + l.qty, 0), 0);
+        s.status = rq >= tq ? "returned" : "partial";
+        wr("variants", vars); wr("sales", sales); return s;
+      },
+      expected: async (day) => {
+        const st = (rd("data").find((r) => r.id === "settings") || {}).data || {};
+        const all = rd("sales");
+        let e = num(st.float);
+        all.filter((s) => s.day === day).forEach((s) => { (s.payments || []).forEach((x) => { if (x.method === "cash") e += num(x.amount); }); e -= num(s.change); });
+        all.forEach((s) => (s.returns || []).forEach((r) => { if (r.method === "cash" && new Date(r.at).toLocaleDateString("en-CA", { timeZone: "Asia/Manila" }) === day) e -= num(r.amount); }));
+        return r2(e);
+      },
+      closeDay: async (day, counted, note) => {
+        const e = await jhDemoPos.expected(day); const c = rd("counts");
+        const row = { id: c.length + 1, day, counted: r2(num(counted)), expected: e, note: note || null, by_email: "you@preview", at: (/* @__PURE__ */ new Date()).toISOString() };
+        wr("counts", [...c, row]); return row;
+      },
+      counts: async (from, to) => rd("counts").filter((c) => c.day >= from && c.day <= to).sort((a, b) => String(b.at).localeCompare(String(a.at)))
+    };
+  })();
+  jhDemo.pos = jhDemoPos;
+  var jhPos = () => jhApi().pos || jhDemoPos;
+  var jhErrText = (e) => String((e && e.message) || "check your connection").replace(/^.*?ERROR:\s*/, "");
+
+  var jhSlipPrint = (s, sellerName, company) => {
+    const rows = (s.items || []).map((it) => `<tr><td>${it.qty} × ${jhEsc(jhItemLabel(it))}${num(it.disc) ? `<br><small>less ${peso(it.disc)}</small>` : ""}</td><td class="n">${peso(num(it.price) * it.qty - num(it.disc))}</td></tr>`).join("");
+    const pays = (s.payments || []).map((p) => `<tr><td>${jhEsc(jhPayLabel(p.method))}${p.ref ? " · " + jhEsc(p.ref) : ""}</td><td class="n">${peso(p.amount)}</td></tr>`).join("");
+    const logo = /^jump\s*high$/i.test(String(company).trim()) ? `<div class="logo">${jhLogoSvg(60)}</div>` : `<h1>${jhEsc(company)}</h1>`;
+    return `<!doctype html><html><head><meta charset="utf-8"><title>Sale #${s.no}</title><style>
+      body{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;color:#111;margin:0;padding:16px}.slip{max-width:300px;margin:0 auto}
+      h1{font-size:20px;margin:0}.logo{line-height:0;margin-bottom:6px}.c{text-align:center}.mut{color:#555;font-size:12px}
+      table{width:100%;border-collapse:collapse;font-size:13px;margin:8px 0}td{padding:3px 0;vertical-align:top}.n{text-align:right;white-space:nowrap}
+      tr.t td{border-top:1px dashed #999;font-weight:700;padding-top:6px}small{color:#555}.note{border:1px solid #999;border-radius:6px;padding:4px 6px;font-size:11px;text-align:center;margin-top:10px}
+      </style></head><body><div class="slip"><div class="c">${logo}<div class="mut">Sales slip #${s.no} · ${jhEsc(jhWhen(s.at))}</div>${sellerName ? `<div class="mut">Sold by ${jhEsc(sellerName)}</div>` : ""}</div>
+      <table>${rows}
+      ${num(s.sale_disc) ? `<tr><td>Discount</td><td class="n">−${peso(s.sale_disc)}</td></tr>` : ""}
+      <tr class="t"><td>Total</td><td class="n">${peso(s.total)}</td></tr>${pays}
+      ${num(s.change) ? `<tr><td>Change</td><td class="n">${peso(s.change)}</td></tr>` : ""}</table>
+      <div class="note">This is not an official receipt.</div></div><script>setTimeout(function(){window.print()},300)<\/script></body></html>`;
+  };
+
+  /* Pick colour + size for one product. */
+  function JhPickVariant({ product, variants, inCart, add, close }) {
+    const h = React.createElement;
+    const colors = [...new Set(variants.map((v) => v.color))];
+    const [color, setColor] = useState(colors[0] || "");
+    const sizes = variants.filter((v) => v.color === color);
+    return h("div", { className: "ps-overlay", onClick: (e) => e.target === e.currentTarget && close() },
+      h("div", { className: "ps-modal jh-pick", role: "dialog", "aria-modal": "true" },
+        h("h2", { className: "ps-h2" }, product.name),
+        h("p", { className: "ps-muted" }, [product.brand, peso(product.price)].filter(Boolean).join(" · ")),
+        colors.length > 1 && h("div", { className: "jh-pick-colors" }, colors.map((c) => h("button", { key: c, className: "jh-pill" + (c === color ? " on" : ""), onClick: () => setColor(c) }, c || "No colour"))),
+        h("div", { className: "jh-pick-sizes" }, sizes.map((v) => {
+          const left = num(v.stock) - (inCart[v.id] || 0);
+          return h("button", { key: v.id, className: "jh-size" + (left <= 0 ? " out" : ""), onClick: () => { add(v); close(); } },
+            h("b", null, v.size || "One size"), h("small", null, left <= 0 ? "0 left" : left + " left"));
+        })),
+        h("p", { className: "ps-muted jh-hint" }, "Tap a size to add it. Sizes showing 0 can still be sold if the pair is really there; fix the stock in Products later."),
+        h("div", { className: "ps-btnrow end" }, h("button", { className: "ps-btn ghost", onClick: close }, "Close"))));
+  }
+
+  function JhPayModal({ total, onDone, close, busy }) {
+    const h = React.createElement;
+    const [pays, setPays] = useState([{ id: jhNewId(), method: "cash", amount: String(total), ref: "" }]);
+    const paid = r2(pays.reduce((a, p) => a + num(p.amount), 0));
+    const cash = r2(pays.filter((p) => p.method === "cash").reduce((a, p) => a + num(p.amount), 0));
+    const left = r2(total - paid), change = r2(paid - total);
+    const bad = left > 0 ? "Still to pay: " + peso(left) : change > cash ? "Only cash can be more than the total (for change)." : "";
+    const set = (id, patch) => setPays(pays.map((p) => p.id === id ? { ...p, ...patch } : p));
+    const cashQuick = [total, ...[100, 200, 500, 1000].map((b) => Math.ceil(total / b) * b)].filter((v, i, a) => v > 0 && a.indexOf(v) === i).slice(0, 5);
+    return h("div", { className: "ps-overlay", onClick: (e) => e.target === e.currentTarget && !busy && close() },
+      h("div", { className: "ps-modal jh-paym", role: "dialog", "aria-modal": "true" },
+        h("p", { className: "ps-muted" }, "Total to pay"), h("div", { className: "jh-paytotal" }, peso(total)),
+        pays.map((p, i) => h("div", { key: p.id, className: "jh-payline" },
+          h("div", { className: "jh-paymethods" }, JH_PAY.map(([k, l]) => h("button", { key: k, className: "jh-pill" + (p.method === k ? " on" : ""), onClick: () => set(p.id, { method: k }) }, l))),
+          h("div", { className: "jh-payfields" },
+            h("label", { className: "ps-field" }, h("span", null, p.method === "cash" ? "Cash received" : "Amount"), h("input", { inputMode: "decimal", value: p.amount, onChange: (e) => set(p.id, { amount: e.target.value }), onFocus: (e) => e.target.select() })),
+            p.method !== "cash" && h("label", { className: "ps-field" }, h("span", null, "Reference no. (optional)"), h("input", { value: p.ref, onChange: (e) => set(p.id, { ref: e.target.value }) })),
+            pays.length > 1 && h("button", { className: "ps-x-small", "aria-label": "Remove payment", onClick: () => setPays(pays.filter((x) => x.id !== p.id)) }, "×")),
+          p.method === "cash" && i === pays.length - 1 && h("div", { className: "jh-quick" }, cashQuick.map((v) => h("button", { key: v, className: "jh-pill", onClick: () => set(p.id, { amount: String(r2(v - (paid - num(p.amount)))) }) }, peso(v - (paid - num(p.amount))).replace(".00", "")))))),
+        h("button", { className: "ps-linkbtn jh-addpay", onClick: () => setPays([...pays, { id: jhNewId(), method: "gcash", amount: left > 0 ? String(left) : "", ref: "" }]) }, "+ Split: add another payment"),
+        h("div", { className: "jh-paysum" },
+          change > 0 && !bad ? h("div", { className: "jh-change" }, h("span", null, "Change"), h("b", null, peso(change))) : null,
+          bad && h("p", { className: "ps-pay-warn" }, bad)),
+        h("div", { className: "ps-btnrow" },
+          h("button", { className: "ps-btn ghost", onClick: close, disabled: busy }, "Back"),
+          h("button", { className: "ps-btn", disabled: !!bad || busy, onClick: () => onDone(pays.filter((p) => num(p.amount) > 0).map((p) => ({ method: p.method, amount: r2(num(p.amount)), ref: p.ref.trim() || undefined }))) }, busy ? "Saving…" : "Complete sale"))));
+  }
+
+  function JhSell({ cat, setCat, staff, me, admin, settings, setToast }) {
+    const h = React.createElement;
+    const pos = jhPos();
+    const [cart, setCart] = useState(() => { try { return JSON.parse(sessionStorage.getItem("ps-jh-cart") || "[]"); } catch (e) { return []; } });
+    useEffect(() => { try { sessionStorage.setItem("ps-jh-cart", JSON.stringify(cart)); } catch (e) {} }, [cart]);
+    const [q, setQ] = useState("");
+    const [pick, setPick] = useState(null);
+    const [saleDisc, setSaleDisc] = useState({ v: "", pct: false });
+    const [seller, setSeller] = useState(me.staffId || "");
+    const [paying, setPaying] = useState(false);
+    const [busy, setBusy] = useState(false);
+    const [done, setDone] = useState(null);
+    const [saleId, setSaleId] = useState(() => "sale-" + jhNewId());
+    const products = cat.products.filter((p) => p.active !== false);
+    const vOf = (pid) => cat.variants.filter((v) => v.product_id === pid && v.active !== false).sort((a, b) => (a.sort || 0) - (b.sort || 0));
+    const shown = products.filter((p) => !q.trim() || [p.name, p.brand, p.category].join(" ").toLowerCase().includes(q.trim().toLowerCase()));
+    const inCart = {}; cart.forEach((l) => { inCart[l.variantId] = (inCart[l.variantId] || 0) + num(l.qty); });
+    const add = (p, v) => setCart((c) => {
+      const ex = c.find((l) => l.variantId === v.id);
+      if (ex) return c.map((l) => l.variantId === v.id ? { ...l, qty: num(l.qty) + 1 } : l);
+      return [...c, { variantId: v.id, name: p.name, color: v.color, size: v.size, price: v.price != null && v.price !== "" ? num(v.price) : num(p.price), qty: 1, disc: "" }];
+    });
+    const sub = r2(cart.reduce((a, l) => a + l.price * num(l.qty), 0));
+    const idisc = r2(cart.reduce((a, l) => a + Math.min(num(l.disc), l.price * num(l.qty)), 0));
+    const sdisc = r2(Math.min(saleDisc.pct ? (sub - idisc) * num(saleDisc.v) / 100 : num(saleDisc.v), sub - idisc));
+    const total = r2(sub - idisc - sdisc);
+    const crew = staff.filter((s) => s.active !== false);
+    const finish = async (payments) => {
+      setBusy(true);
+      try {
+        const s = await pos.sell({ id: saleId, sellerId: seller || null, items: cart.map((l) => ({ variantId: l.variantId, qty: Math.max(1, Math.floor(num(l.qty))), disc: r2(num(l.disc)) })), saleDisc: sdisc, payments });
+        /* Stock went down on the server; mirror it here so the next sale sees it. */
+        setCat((c) => ({ ...c, variants: c.variants.map((v) => { const n = s.items.filter((it) => it.variantId === v.id).reduce((a, it) => a + it.qty, 0); return n ? { ...v, stock: num(v.stock) - n } : v; }) }));
+        setDone(s); setPaying(false); setCart([]); setSaleDisc({ v: "", pct: false }); setSaleId("sale-" + jhNewId());
+      } catch (e) { setToast("The sale didn't save: " + jhErrText(e)); }
+      setBusy(false);
+    };
+    const sellerName = (id) => (staff.find((s) => s.id === id) || {}).name || "";
+    const lowAt = num(settings.lowStock || 2);
+    return h("div", { className: "jh-sell" },
+      h("div", { className: "jh-prodside" },
+        h("input", { className: "jh-search", placeholder: "Search shoes…", value: q, onChange: (e) => setQ(e.target.value) }),
+        !products.length ? h("div", { className: "ps-pay-locked" }, h("b", null, "No products yet."), h("p", null, admin ? "Add your shoes in the Products tab (sizes, colours and stock), then sell them here." : "Your manager hasn't added products yet."))
+          : h("div", { className: "jh-prods" }, shown.map((p) => {
+            const vs = vOf(p.id); const st = vs.reduce((a, v) => a + num(v.stock), 0);
+            return h("button", { key: p.id, className: "jh-prod", onClick: () => vs.length === 1 ? add(p, vs[0]) : setPick(p.id), disabled: !vs.length },
+              h("b", null, p.name), p.brand && h("small", null, p.brand), h("span", { className: "jh-prodprice" }, peso(p.price)),
+              h("small", { className: st <= lowAt ? "jh-low" : "" }, vs.length ? st + " in stock" : "No sizes yet"));
+          }), !shown.length && h("p", { className: "ps-muted" }, "Nothing matches “" + q + "”."))),
+      h("div", { className: "jh-cart" },
+        h("h3", { className: "ps-h3" }, "Current sale"),
+        !cart.length ? h("p", { className: "ps-muted" }, "Tap a shoe to add it.") : h("div", { className: "jh-lines2" }, cart.map((l) => {
+          const v = cat.variants.find((x) => x.id === l.variantId);
+          const over = v && num(l.qty) > num(v.stock);
+          return h("div", { key: l.variantId, className: "jh-cl" },
+            h("div", { className: "jh-cl-top" }, h("span", null, h("b", null, l.name), h("small", null, [l.color, l.size && "size " + l.size].filter(Boolean).join(" · "))),
+              h("button", { className: "ps-x-small", "aria-label": "Remove", onClick: () => setCart(cart.filter((x) => x.variantId !== l.variantId)) }, "×")),
+            h("div", { className: "jh-cl-row" },
+              h("span", { className: "jh-qty" },
+                h("button", { onClick: () => setCart(cart.map((x) => x.variantId === l.variantId ? { ...x, qty: Math.max(1, num(x.qty) - 1) } : x)), "aria-label": "One less" }, "−"),
+                h("b", null, l.qty),
+                h("button", { onClick: () => setCart(cart.map((x) => x.variantId === l.variantId ? { ...x, qty: num(x.qty) + 1 } : x)), "aria-label": "One more" }, "+")),
+              h("span", { className: "ps-muted" }, "× " + peso(l.price)),
+              h("label", { className: "jh-disc" }, "less ₱", h("input", { inputMode: "decimal", value: l.disc, placeholder: "0", onChange: (e) => setCart(cart.map((x) => x.variantId === l.variantId ? { ...x, disc: e.target.value } : x)) })),
+              h("b", { className: "jh-cl-amt" }, peso(l.price * num(l.qty) - Math.min(num(l.disc), l.price * num(l.qty))))),
+            over && h("small", { className: "jh-low" }, `Only ${Math.max(0, num(v.stock))} in stock.`));
+        })),
+        cart.length > 0 && h("div", { className: "jh-cartfoot" },
+          h("div", { className: "jh-sumrow" }, h("span", null, "Subtotal"), h("span", null, peso(sub))),
+          idisc > 0 && h("div", { className: "jh-sumrow" }, h("span", null, "Item discounts"), h("span", null, "−" + peso(idisc))),
+          h("div", { className: "jh-sumrow" }, h("span", null, "Discount on the sale"),
+            h("span", { className: "jh-sdisc" },
+              h("input", { inputMode: "decimal", value: saleDisc.v, placeholder: "0", onChange: (e) => setSaleDisc({ ...saleDisc, v: e.target.value }) }),
+              h("button", { className: "jh-pill on", onClick: () => setSaleDisc({ ...saleDisc, pct: !saleDisc.pct }), title: "Switch between pesos and percent" }, saleDisc.pct ? "%" : "₱"),
+              sdisc > 0 && h("span", null, "−" + peso(sdisc)))),
+          h("div", { className: "jh-sumrow jh-total" }, h("span", null, "Total"), h("b", null, peso(total))),
+          h("label", { className: "ps-field jh-seller" }, h("span", null, "Sold by (for commission)"),
+            h("select", { value: seller, onChange: (e) => setSeller(e.target.value) }, h("option", { value: "" }, "— Nobody / not sure —"), crew.map((s) => h("option", { key: s.id, value: s.id }, s.name)))),
+          h("div", { className: "ps-btnrow" },
+            h("button", { className: "ps-btn ghost", onClick: () => { setCart([]); setSaleDisc({ v: "", pct: false }); } }, "Clear"),
+            h("button", { className: "ps-btn jh-paybtn", onClick: () => setPaying(true) }, "Pay " + peso(total))))),
+      pick && h(JhPickVariant, { product: products.find((p) => p.id === pick), variants: vOf(pick), inCart, add: (v) => add(products.find((p) => p.id === pick), v), close: () => setPick(null) }),
+      paying && h(JhPayModal, { total, busy, onDone: finish, close: () => setPaying(false) }),
+      done && h("div", { className: "ps-overlay", onClick: (e) => e.target === e.currentTarget && setDone(null) },
+        h("div", { className: "ps-modal jh-donem", role: "dialog", "aria-modal": "true" },
+          h("div", { className: "jh-donecheck", "aria-hidden": "true" }, "✓"),
+          h("h2", { className: "ps-h2" }, "Sale #" + done.no + " saved"),
+          num(done.change) > 0 ? h("div", { className: "jh-change big" }, h("span", null, "Give change"), h("b", null, peso(done.change))) : h("p", { className: "ps-muted" }, "Paid " + peso(done.total) + " by " + done.payments.map((p) => jhPayLabel(p.method)).join(" + ") + "."),
+          h("p", { className: "ps-muted" }, "Write the official receipt from your BIR booklet as usual. This slip is for your records only."),
+          h("div", { className: "ps-btnrow" },
+            h("button", { className: "ps-btn ghost", onClick: () => { const w = window.open("", "_blank"); if (!w) return setToast("Allow pop-ups for this site to print the slip."); w.document.open(); w.document.write(jhSlipPrint(done, sellerName(done.seller_id), settings.company || JH_DEFAULTS.company)); w.document.close(); } }, "Print slip"),
+            h("button", { className: "ps-btn", autoFocus: true, onClick: () => setDone(null) }, "New sale")))));
+  }
+
+  function JhReturnModal({ sale, done, close }) {
+    const h = React.createElement;
+    const returnedOf = (i) => (sale.returns || []).reduce((a, r) => a + r.lines.filter((l) => l.i === i).reduce((b, l) => b + l.qty, 0), 0);
+    const [qty, setQty] = useState({});
+    const [method, setMethod] = useState("cash");
+    const [note, setNote] = useState("");
+    const [busy, setBusy] = useState(false);
+    const [err, setErr] = useState("");
+    const go = async () => {
+      setBusy(true); setErr("");
+      try { const s = await jhPos().ret(sale.id, Object.entries(qty).map(([i, q]) => ({ i: Number(i), qty: Math.floor(num(q)) })).filter((x) => x.qty > 0), method, note.trim()); done(s); }
+      catch (e) { setErr(jhErrText(e)); }
+      setBusy(false);
+    };
+    return h("div", { className: "ps-overlay", onClick: (e) => e.target === e.currentTarget && !busy && close() },
+      h("div", { className: "ps-modal jh-retm", role: "dialog", "aria-modal": "true" },
+        h("h2", { className: "ps-h2" }, "Return from sale #" + sale.no),
+        h("p", { className: "ps-muted" }, "The pairs go back into stock and the refund is recorded. For an exchange, do the return here, then ring up the new pair on Sell."),
+        h("div", { className: "jh-retlines" }, sale.items.map((it, i) => {
+          const left = it.qty - returnedOf(i);
+          return h("div", { key: i, className: "jh-retline" }, h("span", null, h("b", null, jhItemLabel(it)), h("small", null, `${it.qty} sold${returnedOf(i) ? `, ${returnedOf(i)} already returned` : ""}`)),
+            left > 0 ? h("label", null, "Return ", h("input", { className: "ps-pay-num small", inputMode: "numeric", value: qty[i] || "", placeholder: "0", onChange: (e) => setQty({ ...qty, [i]: String(Math.min(left, Math.max(0, Math.floor(num(e.target.value))))) }) }), ` of ${left}`) : h("span", { className: "ps-muted" }, "All returned"));
+        })),
+        h("div", { className: "ps-fields" },
+          h("label", { className: "ps-field" }, h("span", null, "Refund by"), h("select", { value: method, onChange: (e) => setMethod(e.target.value) }, JH_PAY.map(([k, l]) => h("option", { key: k, value: k }, l)), h("option", { value: "exchange" }, "No refund (exchange)"))),
+          h("label", { className: "ps-field" }, h("span", null, "Reason (optional)"), h("input", { value: note, placeholder: "e.g. wrong size", onChange: (e) => setNote(e.target.value) }))),
+        err && h("p", { className: "ps-pay-warn" }, err),
+        h("div", { className: "ps-btnrow" }, h("button", { className: "ps-btn ghost", onClick: close, disabled: busy }, "Cancel"), h("button", { className: "ps-btn", onClick: go, disabled: busy }, busy ? "Saving…" : "Record return"))));
+  }
+
+  function JhSales({ admin, staff, rates, settings, setToast, setCat }) {
+    const h = React.createElement;
+    const pos = jhPos();
+    const today = manilaDay();
+    const [range, setRange] = useState("today");
+    const [cust, setCust] = useState({ from: today, to: today });
+    const [sales, setSales] = useState(null);
+    const [counts, setCounts] = useState([]);
+    const [expected, setExpected] = useState(null);
+    const [open, setOpen] = useState(null);
+    const [ret, setRet] = useState(null);
+    const [count, setCount] = useState({ v: "", note: "" });
+    const per = (() => {
+      const d = fromIso(today);
+      if (range === "yesterday") { const y = jhAdd(today, -1); return { from: y, to: y }; }
+      if (range === "week") return { from: jhMonday(today), to: today };
+      if (range === "month") return { from: today.slice(0, 8) + "01", to: today };
+      if (range === "custom") return cust;
+      return { from: today, to: today };
+    })();
+    const load = async () => {
+      try {
+        const [s, c, e] = await Promise.all([pos.sales(per.from, per.to), pos.counts(per.from, per.to), pos.expected(today)]);
+        setSales(s || []); setCounts(c || []); setExpected(e);
+      } catch (e) { setToast("Sales didn't load: " + jhErrText(e)); setSales([]); }
+    };
+    useEffect(() => { load(); }, [per.from, per.to]);
+    const nameOf = (id) => (staff.find((s) => s.id === id) || {}).name || "—";
+    if (!sales) return h("p", { className: "ps-loading" }, "Loading sales…");
+    const gross = r2(sales.reduce((a, s) => a + num(s.subtotal), 0));
+    const disc = r2(sales.reduce((a, s) => a + num(s.item_disc) + num(s.sale_disc), 0));
+    const returned = r2(sales.reduce((a, s) => a + num(s.returned), 0));
+    const net = r2(sales.reduce((a, s) => a + jhSaleNet(s), 0));
+    const pairs = sales.reduce((a, s) => a + s.items.reduce((b, it) => b + it.qty, 0), 0);
+    const byMethod = {};
+    sales.forEach((s) => { (s.payments || []).forEach((p) => { byMethod[p.method] = r2((byMethod[p.method] || 0) + num(p.amount)); }); if (num(s.change)) byMethod.cash = r2((byMethod.cash || 0) - num(s.change)); });
+    const refundsBy = {};
+    sales.forEach((s) => (s.returns || []).forEach((r) => { if (r.method !== "exchange") refundsBy[r.method] = r2((refundsBy[r.method] || 0) + num(r.amount)); }));
+    const bySeller = {};
+    sales.forEach((s) => { const k = s.seller_id || ""; bySeller[k] = r2((bySeller[k] || 0) + jhSaleNet(s)); });
+    const best = {};
+    sales.forEach((s) => s.items.forEach((it, i) => {
+      const back = (s.returns || []).reduce((a, r) => a + r.lines.filter((l) => l.i === i).reduce((b, l) => b + l.qty, 0), 0);
+      const k = it.name + (it.color ? " · " + it.color : "");
+      best[k] = (best[k] || 0) + it.qty - back;
+    }));
+    const bestList = Object.entries(best).filter(([, n]) => n > 0).sort((a, b) => b[1] - a[1]).slice(0, 8);
+    const todayCount = counts.find((c) => c.day === today);
+    const csv = () => jhDownload(`Jumphigh sales ${per.from} to ${per.to}.csv`, jhCsv([
+      ["Sale no.", "Date", "Time", "Items", "Pairs", "Subtotal", "Discounts", "Total", "Returned", "Net", "Paid by", "Sold by", "Rung up by", "Status"],
+      ...sales.slice().reverse().map((s) => [s.no, s.day, jhClock(s.at), s.items.map((it) => it.qty + " × " + jhItemLabel(it)).join("; "), s.items.reduce((a, it) => a + it.qty, 0), s.subtotal, r2(num(s.item_disc) + num(s.sale_disc)), s.total, s.returned, jhSaleNet(s),
+        (s.payments || []).map((p) => jhPayLabel(p.method) + " " + r2(p.amount) + (p.ref ? " (" + p.ref + ")" : "")).join("; "), nameOf(s.seller_id), s.cashier || "", s.status])]));
+    const doCount = async () => {
+      if (count.v === "" || num(count.v) < 0) return setToast("Type the cash you counted in the drawer.");
+      try { await pos.closeDay(today, r2(num(count.v)), count.note.trim()); setCount({ v: "", note: "" }); setToast("Cash count saved."); load(); }
+      catch (e) { setToast("The count didn't save: " + jhErrText(e)); }
+    };
+    const s = open && sales.find((x) => x.id === open);
+    return h(React.Fragment, null,
+      h("div", { className: "jh-rangebar" },
+        h("div", { className: "jh-viewtog" }, [["today", "Today"], ["yesterday", "Yesterday"], ...admin ? [["week", "This week"], ["month", "This month"], ["custom", "Pick dates"]] : []].map(([k, l]) =>
+          h("button", { key: k, className: range === k ? "on" : "", onClick: () => setRange(k) }, l))),
+        range === "custom" && h("span", { className: "jh-custom" }, h("input", { type: "date", value: cust.from, onChange: (e) => setCust({ ...cust, from: e.target.value }) }), "to", h("input", { type: "date", value: cust.to, onChange: (e) => setCust({ ...cust, to: e.target.value }) })),
+        admin && sales.length > 0 && h("button", { className: "ps-btn ghost small", onClick: csv }, "Download CSV")),
+      h("div", { className: "jh-stats" },
+        [["Net sales", peso(net), `${sales.length} sale${sales.length === 1 ? "" : "s"} · ${pairs} pair${pairs === 1 ? "" : "s"}`], ["Before discounts", peso(gross), "Discounts −" + peso(disc)], ["Returns", (returned ? "−" : "") + peso(returned), Object.keys(refundsBy).length ? Object.entries(refundsBy).map(([m, a]) => jhPayLabel(m) + " " + peso(a)).join(" · ") : "None"]]
+          .map(([l, v, sub]) => h("div", { key: l, className: "jh-stat" }, h("span", { className: "ps-muted" }, l), h("b", null, v), h("small", null, sub)))),
+      h("div", { className: "jh-cols" },
+        h("div", { className: "ps-pay-person" }, h("h4", { className: "jh-h4" }, "Money in, by payment"),
+          !Object.keys(byMethod).length ? h("p", { className: "ps-muted" }, "No payments yet.") : JH_PAY.filter(([k]) => byMethod[k] != null).map(([k, l]) => h("div", { key: k, className: "jh-sumrow" }, h("span", null, l + (k === "cash" ? " (after change)" : "")), h("b", null, peso(byMethod[k]))))),
+        h("div", { className: "ps-pay-person" }, h("h4", { className: "jh-h4" }, "By staff"),
+          !Object.keys(bySeller).length ? h("p", { className: "ps-muted" }, "No sales yet.") : Object.entries(bySeller).sort((a, b) => b[1] - a[1]).map(([k, v]) => {
+            const pct = num((rates[k] || {}).commissionPct);
+            return h("div", { key: k || "none", className: "jh-sumrow" }, h("span", null, k ? nameOf(k) : "Not set"), h("b", null, peso(v), admin && pct > 0 && h("small", { className: "ps-muted" }, ` · ${pct}% = ${peso(v * pct / 100)}`)));
+          })),
+        h("div", { className: "ps-pay-person" }, h("h4", { className: "jh-h4" }, "Best sellers (pairs)"),
+          !bestList.length ? h("p", { className: "ps-muted" }, "Nothing sold yet.") : bestList.map(([k, n]) => h("div", { key: k, className: "jh-sumrow" }, h("span", null, k), h("b", null, n))))),
+      h("h3", { className: "ps-h3" }, "Sales"),
+      !sales.length ? h("p", { className: "ps-muted" }, "No sales in these dates.") : h("div", { className: "ps-pay-tablewrap" }, h("table", { className: "ps-pay-table jh-salestable" },
+        h("thead", null, h("tr", null, ["#", range === "today" || range === "yesterday" ? "Time" : "When", "Items", "Paid by", "Sold by", "Total", ""].map((t, i) => h("th", { key: i, className: i === 5 ? "n" : "" }, t)))),
+        h("tbody", null, sales.map((x) => h("tr", { key: x.id, className: "jh-salerow", onClick: () => setOpen(x.id) },
+          h("td", null, x.no), h("td", null, range === "today" || range === "yesterday" ? jhClock(x.at) : jhShort(x.day) + " " + jhClock(x.at)),
+          h("td", null, x.items.map((it) => it.qty + " × " + jhItemLabel(it)).join(", ")),
+          h("td", null, (x.payments || []).map((p) => jhPayLabel(p.method)).join(" + ")),
+          h("td", null, nameOf(x.seller_id)),
+          h("td", { className: "n" }, peso(x.total), num(x.returned) > 0 && h("small", { className: "jh-low" }, h("br"), "−" + peso(x.returned) + " returned")),
+          h("td", null, x.status !== "done" && h("span", { className: "ps-chip warn" }, x.status === "returned" ? "Returned" : "Part returned"))))))),
+      h("h3", { className: "ps-h3" }, "End-of-day cash count"),
+      h("div", { className: "ps-pay-person jh-count" },
+        h("div", { className: "jh-sumrow" }, h("span", null, "Cash that should be in the drawer now" + (num(settings.float) ? ` (incl. ${peso(settings.float)} starting cash)` : "")), h("b", null, expected == null ? "…" : peso(expected))),
+        todayCount && h("p", { className: "ps-muted" }, `Last count today: ${peso(todayCount.counted)} at ${jhClock(todayCount.at)} — `, (() => { const d = r2(num(todayCount.counted) - num(todayCount.expected)); return h("b", { className: d < 0 ? "jh-low" : "" }, d === 0 ? "exact" : d > 0 ? "over by " + peso(d) : "short by " + peso(-d)); })()),
+        h("div", { className: "ps-form jh-countform" },
+          h("input", { inputMode: "decimal", placeholder: "Cash counted (₱)", value: count.v, onChange: (e) => setCount({ ...count, v: e.target.value }) }),
+          h("input", { placeholder: "Note (optional)", value: count.note, onChange: (e) => setCount({ ...count, note: e.target.value }) }),
+          h("button", { className: "ps-btn", onClick: doCount }, "Save count")),
+        counts.length > 0 && h("div", { className: "jh-counts" }, counts.map((c) => { const d = r2(num(c.counted) - num(c.expected)); return h("div", { key: c.id, className: "jh-sumrow" },
+          h("span", null, jhShort(c.day) + " · " + jhClock(c.at) + (c.by_email ? " · " + c.by_email : "") + (c.note ? " · " + c.note : "")),
+          h("b", { className: d < 0 ? "jh-low" : "" }, peso(c.counted) + (d === 0 ? " · exact" : d > 0 ? " · over " + peso(d) : " · short " + peso(-d)))); }))),
+      s && h("div", { className: "ps-overlay", onClick: (e) => e.target === e.currentTarget && setOpen(null) },
+        h("div", { className: "ps-modal jh-salem", role: "dialog", "aria-modal": "true" },
+          h("h2", { className: "ps-h2" }, "Sale #" + s.no), h("p", { className: "ps-muted" }, jhWhen(s.at) + " · sold by " + nameOf(s.seller_id) + (s.cashier ? " · rung up by " + s.cashier : "")),
+          h("div", { className: "jh-salelines" },
+            s.items.map((it, i) => h("div", { key: i, className: "jh-sumrow" }, h("span", null, it.qty + " × " + jhItemLabel(it) + (num(it.disc) ? ` (less ${peso(it.disc)})` : "")), h("span", null, peso(it.price * it.qty - num(it.disc))))),
+            num(s.sale_disc) > 0 && h("div", { className: "jh-sumrow" }, h("span", null, "Discount"), h("span", null, "−" + peso(s.sale_disc))),
+            h("div", { className: "jh-sumrow jh-total" }, h("span", null, "Total"), h("b", null, peso(s.total))),
+            (s.payments || []).map((p, i) => h("div", { key: "p" + i, className: "jh-sumrow" }, h("span", null, jhPayLabel(p.method) + (p.ref ? " · " + p.ref : "")), h("span", null, peso(p.amount)))),
+            num(s.change) > 0 && h("div", { className: "jh-sumrow" }, h("span", null, "Change"), h("span", null, peso(s.change))),
+            (s.returns || []).map((r, i) => h("div", { key: "r" + i, className: "jh-sumrow jh-low" }, h("span", null, "Returned " + jhWhen(r.at) + " · " + r.lines.map((l) => l.qty + " × " + s.items[l.i].name).join(", ") + (r.method === "exchange" ? " · exchange" : " · refund by " + jhPayLabel(r.method)) + (r.note ? " · " + r.note : "")), h("span", null, "−" + peso(r.amount))))),
+          h("div", { className: "ps-btnrow" },
+            h("button", { className: "ps-btn ghost", onClick: () => { const w = window.open("", "_blank"); if (!w) return; w.document.open(); w.document.write(jhSlipPrint(s, nameOf(s.seller_id), settings.company || JH_DEFAULTS.company)); w.document.close(); } }, "Print slip"),
+            h("span", { className: "jh-btns" },
+              admin && s.status !== "returned" && h("button", { className: "ps-btn ghost", onClick: () => setRet(s) }, "Return / exchange"),
+              h("button", { className: "ps-btn", onClick: () => setOpen(null) }, "Close"))))),
+      ret && h(JhReturnModal, { sale: ret, close: () => setRet(null), done: (ns) => {
+        setRet(null); setOpen(null); setToast("Return recorded. Stock is back and the refund is " + peso(ns.returned) + " in total for this sale.");
+        setCat((c) => ({ ...c, variants: c.variants.map((v) => { const n = (ns.returns[ns.returns.length - 1] || { lines: [] }).lines.filter((l) => ns.items[l.i].variantId === v.id).reduce((a, l) => a + l.qty, 0); return n ? { ...v, stock: num(v.stock) + n } : v; }) }));
+        load();
+      } }));
+  }
+
+  function JhProductForm({ p, variants, save, close }) {
+    const h = React.createElement;
+    const live = variants.filter((v) => v.active !== false);
+    const [f, setF] = useState({ name: p.name || "", brand: p.brand || "", category: p.category || "", price: p.price != null ? String(p.price) : "",
+      colors: [...new Set(live.map((v) => v.color))].join(", "), sizes: [...new Set(live.map((v) => v.size))].join(", "), active: p.active !== false });
+    const [stock, setStock] = useState(() => { const o = {}; variants.forEach((v) => { o[v.color + "|" + v.size] = String(v.stock); }); return o; });
+    const [err, setErr] = useState("");
+    const list = (t) => [...new Set(String(t).split(",").map((x) => x.trim()).filter(Boolean))];
+    const colors = list(f.colors).length ? list(f.colors) : [""];
+    const sizes = list(f.sizes).length ? list(f.sizes) : [""];
+    const set = (k) => (e) => setF({ ...f, [k]: e.target.type === "checkbox" ? e.target.checked : e.target.value });
+    const go = () => {
+      if (!f.name.trim()) return setErr("Type the product name.");
+      if (!(num(f.price) > 0)) return setErr("Type the selling price.");
+      setErr("");
+      const pid = p.id || "pr" + jhNewId();
+      const out = [];
+      let k = 0;
+      colors.forEach((c) => sizes.forEach((sz) => {
+        const old = variants.find((v) => v.color === c && v.size === sz);
+        const typed = stock[c + "|" + sz];
+        const row = { id: old ? old.id : "v" + jhNewId(), product_id: pid, color: c, size: sz, active: true, sort: k++ };
+        /* Only send stock when it was typed or changed, so sales made meanwhile aren't overwritten. */
+        if (!old || String(old.stock) !== String(typed == null ? "" : typed)) row.stock = Math.floor(num(typed));
+        out.push(row);
+      }));
+      variants.forEach((v) => { if (!out.some((o) => o.id === v.id) && v.active !== false) out.push({ id: v.id, product_id: pid, color: v.color, size: v.size, active: false, sort: 999 }); });
+      save({ id: pid, name: f.name.trim(), brand: f.brand.trim() || null, category: f.category.trim() || null, price: r2(num(f.price)), active: f.active, sort: p.sort || 0 }, out);
+    };
+    return h("div", { className: "ps-pay-form jh-form" },
+      h("div", { className: "ps-fields" },
+        h("label", { className: "ps-field" }, h("span", null, "Product name"), h("input", { value: f.name, placeholder: "e.g. Air Runner 2", onChange: set("name"), autoFocus: !p.name })),
+        h("label", { className: "ps-field" }, h("span", null, "Selling price (₱)"), h("input", { inputMode: "decimal", value: f.price, onChange: set("price") })),
+        h("label", { className: "ps-field" }, h("span", null, "Brand (optional)"), h("input", { value: f.brand, onChange: set("brand") })),
+        h("label", { className: "ps-field" }, h("span", null, "Category (optional)"), h("input", { value: f.category, placeholder: "e.g. Running, Kids, Slides", onChange: set("category") })),
+        h("label", { className: "ps-field" }, h("span", null, "Colours (comma between)"), h("input", { value: f.colors, placeholder: "Black, White", onChange: set("colors") })),
+        h("label", { className: "ps-field" }, h("span", null, "Sizes (comma between)"), h("input", { value: f.sizes, placeholder: "6, 7, 8, 9, 10", onChange: set("sizes") }))),
+      h("p", { className: "ps-muted jh-hint" }, "Pairs in stock for each colour and size:"),
+      h("div", { className: "ps-pay-tablewrap" }, h("table", { className: "jh-stockgrid" },
+        h("thead", null, h("tr", null, h("th", null, ""), sizes.map((sz) => h("th", { key: sz }, sz || "One size")))),
+        h("tbody", null, colors.map((c) => h("tr", { key: c }, h("th", null, c || "—"), sizes.map((sz) => h("td", { key: sz },
+          h("input", { className: "ps-pay-num tiny", inputMode: "numeric", value: stock[c + "|" + sz] == null ? "" : stock[c + "|" + sz], placeholder: "0", onChange: (e) => setStock({ ...stock, [c + "|" + sz]: e.target.value }) })))))))),
+      h("label", { className: "ps-check jh-check" }, h("input", { type: "checkbox", checked: f.active, onChange: set("active") }), h("span", null, "Show on the Sell screen")),
+      err && h("p", { className: "ps-pay-warn" }, err),
+      h("div", { className: "ps-btnrow end" }, h("button", { className: "ps-btn ghost", onClick: close }, "Cancel"), h("button", { className: "ps-btn", onClick: go }, p.name ? "Save" : "Add product")));
+  }
+
+  function JhProducts({ cat, setCat, settings, setToast }) {
+    const h = React.createElement;
+    const [editing, setEditing] = useState(null);
+    const [q, setQ] = useState("");
+    const [showOff, setShowOff] = useState(false);
+    const lowAt = num(settings.lowStock || 2);
+    const save = async (p, vs) => {
+      try {
+        await jhPos().saveProduct(p, vs);
+        setCat((c) => ({ products: [...c.products.filter((x) => x.id !== p.id), p], variants: [...c.variants.filter((v) => !vs.some((x) => x.id === v.id)), ...vs.map((v) => ({ ...c.variants.find((x) => x.id === v.id) || { stock: 0 }, ...v }))] }));
+        setEditing(null); setToast(p.name + " saved.");
+      } catch (e) { setToast("That didn't save: " + jhErrText(e)); }
+    };
+    const list = cat.products.filter((p) => (showOff || p.active !== false) && (!q.trim() || [p.name, p.brand, p.category].join(" ").toLowerCase().includes(q.trim().toLowerCase()))).sort((a, b) => String(a.name).localeCompare(String(b.name)));
+    const vOf = (pid) => cat.variants.filter((v) => v.product_id === pid && v.active !== false);
+    const lows = cat.variants.filter((v) => v.active !== false && num(v.stock) <= lowAt && (cat.products.find((p) => p.id === v.product_id) || {}).active !== false);
+    return h(React.Fragment, null,
+      h("div", { className: "ps-btnrow jh-top" },
+        h("input", { className: "jh-search", placeholder: "Search products…", value: q, onChange: (e) => setQ(e.target.value) }),
+        editing !== "new" && h("button", { className: "ps-btn", onClick: () => setEditing("new") }, "+ Add product")),
+      lows.length > 0 && h("p", { className: "ps-muted jh-hint" }, h("b", { className: "jh-low" }, `${lows.length} size${lows.length === 1 ? "" : "s"} at ${lowAt} pair${lowAt === 1 ? "" : "s"} or fewer.`), " They're marked in the list below."),
+      editing === "new" && h("div", { className: "ps-pay-person" }, h(JhProductForm, { p: {}, variants: [], save, close: () => setEditing(null) })),
+      !cat.products.length && editing !== "new" ? h("div", { className: "ps-pay-locked" }, h("b", null, "No products yet."), h("p", null, "Add each shoe model once with its colours and sizes, then type how many pairs you have of each."))
+        : h("div", { className: "ps-pay-list" }, list.map((p) => {
+          const vs = vOf(p.id); const st = vs.reduce((a, v) => a + num(v.stock), 0); const low = vs.filter((v) => num(v.stock) <= lowAt);
+          return h("div", { key: p.id, className: "ps-pay-person" },
+            h("div", { className: "ps-pay-row" },
+              h("span", { className: "ps-pay-who" }, h("b", null, p.name, p.active === false && h("span", { className: "ps-chip jh-chip" }, "Hidden")),
+                h("span", { className: "ps-muted" }, [p.brand, p.category, peso(p.price), `${st} pairs in ${vs.length} size${vs.length === 1 ? "" : "s"}/colour${vs.length === 1 ? "" : "s"}`].filter(Boolean).join(" · ")),
+                low.length > 0 && h("span", { className: "jh-low" }, "Low: " + low.map((v) => [v.color, v.size].filter(Boolean).join(" ") + " (" + v.stock + ")").join(", "))),
+              h("button", { className: "ps-btn ghost small", onClick: () => setEditing(editing === p.id ? null : p.id) }, editing === p.id ? "Close" : "Edit / stock")),
+            editing === p.id && h(JhProductForm, { key: p.id, p, variants: cat.variants.filter((v) => v.product_id === p.id), save, close: () => setEditing(null) }));
+        })),
+      cat.products.some((p) => p.active === false) && h("button", { className: "ps-btn ghost small jh-former", onClick: () => setShowOff(!showOff) }, showOff ? "Hide hidden products" : "Show hidden products"));
+  }
   function JumphighPage({ setToast, confirm, standalone }) {
     const h = React.createElement;
     const api = jhApi();
@@ -13109,6 +13603,7 @@ html.ps-theming .ps-theme-knob,html.ps-theming .ps-theme-ic{transition:transform
     const [data, setData] = useState([]);
     const [pay, setPay] = useState([]);
     const [members, setMembers] = useState([]);
+    const [cat, setCat] = useState({ products: [], variants: [] });
     const [tab, setTab] = useState(() => { try { return sessionStorage.getItem("ps-jh-tab") || "schedule"; } catch (e) { return "schedule"; } });
     useEffect(() => { try { sessionStorage.setItem("ps-jh-tab", tab); } catch (e) {} }, [tab]);
     const load = async () => {
@@ -13116,8 +13611,9 @@ html.ps-theming .ps-theme-knob,html.ps-theming .ps-theme-ic{transition:transform
         const me = await api.me();
         if (!me || !me.role) { setSt({ loading: false, ok: false, setup: me && me.setup || "" }); return; }
         const admin = me.role === "admin";
-        const [d, p, m] = await Promise.all([api.data.list(), admin ? api.pay.list() : [], admin ? api.members.list() : []]);
+        const [d, p, m, c] = await Promise.all([api.data.list(), admin ? api.pay.list() : [], admin ? api.members.list() : [], jhPos().catalog().catch((e) => { console.warn("POS catalog:", e); return null; })]);
         setData(d || []); setPay(p || []); setMembers(m || []);
+        if (c) setCat({ products: c.products || [], variants: c.variants || [] });
         setSt({ loading: false, ok: true, me });
       } catch (e) {
         console.error(e);
@@ -13127,7 +13623,11 @@ html.ps-theming .ps-theme-knob,html.ps-theming .ps-theme-ic{transition:transform
     useEffect(() => { load(); }, []);
     /* Coming back to the tab picks up schedule changes made elsewhere. */
     useEffect(() => {
-      const f = () => { if (document.visibilityState === "visible") api.data.list().then((d) => setData(d || [])).catch(() => {}); };
+      const f = () => {
+        if (document.visibilityState !== "visible") return;
+        api.data.list().then((d) => setData(d || [])).catch(() => {});
+        jhPos().catalog().then((c) => c && setCat({ products: c.products || [], variants: c.variants || [] })).catch(() => {});
+      };
       document.addEventListener("visibilitychange", f);
       return () => document.removeEventListener("visibilitychange", f);
     }, []);
@@ -13157,7 +13657,7 @@ html.ps-theming .ps-theme-knob,html.ps-theming .ps-theme-ic{transition:transform
       try { await api.members.remove(email); } catch (e) { fail(e); load(); }
     };
 
-    const lede = st.ok && st.me.role !== "admin" ? "Your store schedule." : standalone ? "Store schedule and staff payroll." : "Store schedule and staff payroll. Kept separate from Projeclab.";
+    const lede = st.ok && st.me.role !== "admin" ? "Store schedule and sales." : standalone ? "Store schedule, sales and staff payroll." : "Store schedule, sales and staff payroll. Kept separate from Projeclab.";
     const head = h("div", { className: "jh-head" }, h("h1", { className: "jh-h1" }, h(JhLogo, { height: standalone ? 92 : 110 })), h("p", { className: "ps-lede" }, lede));
     if (st.loading) return h("div", { className: "jh" }, h("style", null, JH_CSS), h("p", { className: "ps-loading" }, "Opening Jumphigh…"));
     if (!st.ok) return h("div", { className: "jh" }, h("style", null, JH_CSS), head,
@@ -13173,12 +13673,15 @@ html.ps-theming .ps-theme-knob,html.ps-theming .ps-theme-ic{transition:transform
     const rates = {};
     pay.filter((r) => r.kind === "rate").forEach((r) => { rates[r.data.staffId] = r.data; });
     const runs = pay.filter((r) => r.kind === "run").map((r) => r.data).sort((a, b) => b.from.localeCompare(a.from) || b.to.localeCompare(a.to));
-    const tabs = admin ? [["schedule", "Schedule"], ["payroll", "Payroll"], ["staff", "Staff"]] : [["schedule", "Schedule"]];
+    const tabs = admin ? [["schedule", "Schedule"], ["sell", "Sell"], ["sales", "Sales"], ["products", "Products"], ["payroll", "Payroll"], ["staff", "Staff"]] : [["schedule", "Schedule"], ["sell", "Sell"], ["sales", "Sales"]];
     const cur = tabs.some((t) => t[0] === tab) ? tab : "schedule";
     const shared = { staff, shifts, rates, settings, putData, dropData, putPay, dropPay, setToast, confirm };
     return h("div", { className: "jh" }, h("style", null, JH_CSS), head,
       tabs.length > 1 && h("div", { className: "ps-tabs ps-subtabs" }, tabs.map(([k, l]) => h("button", { key: k, className: `ps-tab ${cur === k ? "on" : ""}`, onClick: () => setTab(k) }, l))),
       cur === "schedule" ? h(JhSchedule, { ...shared, admin, myStaffId: st.me.staffId })
+        : cur === "sell" ? h(JhSell, { cat, setCat, staff, me: st.me, admin, settings, setToast })
+        : cur === "sales" ? h(JhSales, { admin, staff, rates, settings, setToast, setCat })
+        : cur === "products" ? h(JhProducts, { cat, setCat, settings, setToast })
         : cur === "payroll" ? h(JhPayroll, { ...shared, runs, me: st.me })
         : h(JhStaff, { ...shared, members, myEmail: st.me.email, saveMember, dropMember }));
   }
@@ -13236,6 +13739,95 @@ html.ps-theming .ps-theme-knob,html.ps-theming .ps-theme-ic{transition:transform
 .jh-sa .jh-h1{display:none}
 .jh-sa .jh-head{padding-bottom:12px}
 .jh-hint{margin:8px 0}
+.jh-pill{border:1px solid var(--line);background:none;color:var(--ink);border-radius:999px;padding:4px 11px;font:inherit;font-size:13px;font-weight:600;cursor:pointer}
+.jh-pill.on{background:var(--accent);color:#111;border-color:var(--accent)}
+.jh-search{border:1px solid var(--line);border-radius:10px;padding:9px 12px;min-width:240px;flex:1;max-width:420px}
+.jh-sell{display:grid;grid-template-columns:minmax(0,1fr) 380px;gap:18px;align-items:start}
+.jh-prodside{display:flex;flex-direction:column;gap:12px;min-width:0}
+.jh-prods{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px}
+.jh-prod{display:flex;flex-direction:column;align-items:flex-start;gap:2px;text-align:left;border:1px solid var(--line);background:var(--card);color:var(--ink);border-radius:12px;padding:12px;cursor:pointer;font:inherit;min-height:110px}
+.jh-prod:hover{border-color:var(--accent)}
+.jh-prod b{font-size:15px;line-height:1.2}
+.jh-prod small{color:var(--muted);font-size:12px}
+.jh-prodprice{margin-top:auto;font-weight:800;color:var(--accent);font-size:16px}
+.jh-low{color:#F59E0B!important}
+.jh-cart{position:sticky;top:76px;border:1px solid var(--line);background:var(--card);border-radius:14px;padding:4px 14px 14px}
+.jh-cart .ps-h3{margin:12px 0 8px}
+.jh-lines2{display:flex;flex-direction:column;gap:8px;max-height:46vh;overflow:auto}
+.jh-cl{border-bottom:1px solid var(--line);padding-bottom:8px}
+.jh-cl-top{display:flex;justify-content:space-between;gap:8px}
+.jh-cl-top small{display:block;color:var(--muted);font-size:12px}
+.jh-cl-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:6px;font-size:13.5px}
+.jh-qty{display:inline-flex;align-items:center;border:1px solid var(--line);border-radius:8px}
+.jh-qty button{border:0;background:none;color:var(--ink);width:28px;height:28px;cursor:pointer;font-size:16px}
+.jh-qty b{min-width:20px;text-align:center}
+.jh-disc{display:inline-flex;align-items:center;gap:3px;color:var(--muted);font-size:12px}
+.jh-disc input{width:62px;padding:3px 6px;border:1px solid var(--line);border-radius:6px}
+.jh-cl-amt{margin-left:auto;font-variant-numeric:tabular-nums}
+.jh-cartfoot{margin-top:10px;display:flex;flex-direction:column;gap:6px}
+.jh-sumrow{display:flex;justify-content:space-between;align-items:center;gap:10px;font-size:14px;padding:2px 0;font-variant-numeric:tabular-nums}
+.jh-sumrow.jh-total{font-size:18px;border-top:1px solid var(--line);padding-top:8px;margin-top:4px}
+.jh-sumrow.jh-total b{color:var(--accent);font-size:22px}
+.jh-sdisc{display:inline-flex;align-items:center;gap:6px}
+.jh-sdisc input{width:70px;padding:3px 6px;border:1px solid var(--line);border-radius:6px}
+.jh-seller select{border:1px solid var(--line);border-radius:8px;padding:8px}
+.jh-paybtn{font-size:16px;padding:11px 20px}
+.jh-pick{max-width:520px}
+.jh-pick-colors{display:flex;gap:6px;flex-wrap:wrap;margin:12px 0}
+.jh-pick-sizes{display:grid;grid-template-columns:repeat(auto-fill,minmax(78px,1fr));gap:8px;margin-top:10px}
+.jh-size{display:flex;flex-direction:column;align-items:center;gap:2px;border:1px solid var(--line);background:#0F0F0F;color:var(--ink);border-radius:10px;padding:10px 4px;cursor:pointer;font:inherit}
+.jh-size b{font-size:18px}
+.jh-size small{color:var(--muted);font-size:11px}
+.jh-size:hover{border-color:var(--accent)}
+.jh-size.out{opacity:.5}
+.jh-paym{max-width:520px}
+.jh-paytotal{font-size:36px;font-weight:800;color:var(--accent);letter-spacing:-.02em;margin-bottom:8px}
+.jh-payline{border:1px solid var(--line);border-radius:12px;padding:10px;margin-bottom:8px}
+.jh-paymethods{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px}
+.jh-payfields{display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap}
+.jh-payfields .ps-field{min-width:150px}
+.jh-payfields .ps-field input{width:100%}
+.jh-payfields .ps-field{flex:1}
+.jh-payfields input{border:1px solid var(--line);border-radius:8px;padding:8px 10px;font-size:16px}
+.jh-quick{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
+.jh-addpay{margin:2px 0 8px}
+.jh-change{display:flex;justify-content:space-between;align-items:center;background:var(--okbg);border:1px solid var(--accent);border-radius:10px;padding:10px 14px;font-size:15px}
+.jh-change b{font-size:24px;color:var(--accent)}
+.jh-change.big{margin:8px 0}
+.jh-donem{max-width:420px;text-align:center}
+.jh-donem .ps-btnrow{justify-content:center}
+.jh-donecheck{width:54px;height:54px;border-radius:50%;background:var(--accent);color:#111;display:grid;place-items:center;font-size:30px;font-weight:800;margin:0 auto 8px}
+.jh-rangebar{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:4px 0 12px}
+.jh-custom{display:inline-flex;gap:6px;align-items:center;color:var(--muted)}
+.jh-custom input{border:1px solid var(--line);border-radius:8px;padding:5px 8px}
+.jh-stats{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+.jh-stat{border:1px solid var(--line);background:var(--card);border-radius:12px;padding:12px 14px;display:flex;flex-direction:column;gap:2px}
+.jh-stat b{font-size:24px;letter-spacing:-.02em;font-variant-numeric:tabular-nums}
+.jh-stat:first-child b{color:var(--accent)}
+.jh-stat small{color:var(--muted);font-size:12px}
+.jh-cols{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-top:10px}
+.jh-h4{margin:0 0 6px;font-size:14px}
+.jh-salestable{min-width:760px}
+.jh-salestable td.n,.jh-salestable th.n{text-align:right}
+.jh-salerow{cursor:pointer}
+.jh-salerow:hover td{background:color-mix(in srgb,var(--accent) 6%,transparent)}
+.jh-salem,.jh-retm{max-width:560px}
+.jh-salelines{margin:10px 0;display:flex;flex-direction:column;gap:2px}
+.jh-retlines{display:flex;flex-direction:column;gap:8px;margin:10px 0}
+.jh-retline{display:flex;justify-content:space-between;align-items:center;gap:10px;border-bottom:1px solid var(--line);padding-bottom:6px}
+.jh-retline small{display:block;color:var(--muted)}
+.jh-count .ps-muted{margin:6px 0}
+.jh-countform{margin-top:8px}
+.jh-countform input{min-width:180px!important;border:1px solid var(--line);border-radius:8px;padding:8px 10px}
+.jh-counts{margin-top:10px;border-top:1px solid var(--line);padding-top:8px}
+.jh-stockgrid{border-collapse:collapse;font-size:13px}
+.jh-stockgrid th,.jh-stockgrid td{padding:5px 6px;border-bottom:1px solid var(--line);text-align:center}
+.jh-stockgrid th:first-child{text-align:left;color:var(--muted)}
+@media (max-width:900px){
+  .jh-sell{grid-template-columns:1fr}
+  .jh-cart{position:static}
+  .jh-stats,.jh-cols{grid-template-columns:1fr}
+}
 .jh-viewbar{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin:4px 0 2px}
 .jh-viewtog{display:inline-flex;border:1px solid var(--line);border-radius:999px;padding:2px;gap:2px}
 .jh-viewtog button{border:0;background:none;color:var(--muted);font-weight:600;font-size:13px;padding:4px 14px;border-radius:999px;cursor:pointer}
@@ -13723,6 +14315,54 @@ if (sb) {
       remove: async (email) => {
         const { error } = await sb.from("jh_members").delete().eq("email", String(email).toLowerCase());
         if (error) throw error;
+      }
+    },
+    /* POS: products/stock are read by every Jumphigh login; sales, returns and cash
+       counts only go through the jh_* database functions (they check who you are). */
+    pos: {
+      catalog: async () => {
+        const [p, v] = await Promise.all([sb.from("jh_products").select("*").order("sort"), sb.from("jh_variants").select("*").order("sort")]);
+        if (p.error) throw p.error;
+        if (v.error) throw v.error;
+        return { products: p.data || [], variants: v.data || [] };
+      },
+      saveProduct: async (prod, variants) => {
+        const { error } = await sb.from("jh_products").upsert({ ...prod, updated_at: new Date().toISOString() });
+        if (error) throw error;
+        /* Rows with and without a stock value go separately, so stock is only changed where it was typed. */
+        const withStock = variants.filter((v) => v.stock !== undefined), noStock = variants.filter((v) => v.stock === undefined);
+        if (withStock.length) { const r = await sb.from("jh_variants").upsert(withStock); if (r.error) throw r.error; }
+        if (noStock.length) { const r = await sb.from("jh_variants").upsert(noStock); if (r.error) throw r.error; }
+      },
+      sell: async (p) => {
+        const { data, error } = await sb.rpc("jh_record_sale", { p });
+        if (error) throw new Error(error.message);
+        return data;
+      },
+      sales: async (from, to) => {
+        const { data, error } = await sb.from("jh_sales").select("*").gte("day", from).lte("day", to).order("no", { ascending: false }).limit(3000);
+        if (error) throw error;
+        return data || [];
+      },
+      ret: async (id, lines, method, note) => {
+        const { data, error } = await sb.rpc("jh_return_sale", { p_sale: id, p_lines: lines, p_method: method, p_note: note || "" });
+        if (error) throw new Error(error.message);
+        return data;
+      },
+      expected: async (day) => {
+        const { data, error } = await sb.rpc("jh_cash_expected", { p_day: day });
+        if (error) throw error;
+        return Number(data) || 0;
+      },
+      closeDay: async (day, counted, note) => {
+        const { data, error } = await sb.rpc("jh_close_day", { p_day: day, p_counted: counted, p_note: note || "" });
+        if (error) throw new Error(error.message);
+        return data;
+      },
+      counts: async (from, to) => {
+        const { data, error } = await sb.from("jh_cash_counts").select("*").gte("day", from).lte("day", to).order("at", { ascending: false });
+        if (error) throw error;
+        return data || [];
       }
     }
   };

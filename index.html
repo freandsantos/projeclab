@@ -9753,6 +9753,10 @@ ${lines.join("\n")}`);
       const signedIn = typeof window !== "undefined" && window.cutlineAuth;
       if (!signedIn || authLock === me.id) mutate((n) => { const p = n.people.find((x) => x.id === me.id); if (p) p.seenBoard = boardKey; });
     };
+    /* Jumphigh tab: shown to logins in Supabase jh_members (the gate puts the role in
+       window.psJhRole). In the preview without Supabase, the Lead sees it. Hidden while
+       the Lead is "viewing as" someone else. */
+    const jhNav = (typeof window !== "undefined" && window.psJumphigh ? !!window.psJhRole : me.role === "lead") && (!authLock || authLock === me.id);
     const nav = [
       ["queue", me.role === "client" ? "Your videos" : "My tasks", mine.length + (canApproveTimeoff(db, me) ? pendingTimeoff(db).filter((r) => r.personId !== me.id && ((approverFor(db, r.personId) || {}).id === me.id || (!approverFor(db, r.personId) && me.role === "lead"))).length : 0)],
       ...FEED_FOR(me) ? [["feed", "Feed", ""]] : [],
@@ -9771,6 +9775,7 @@ ${lines.join("\n")}`);
       ...me.role !== "client" ? [["archive", "Archive", ""]] : [],
       ...me.role === "lead" || me.role === "hr" ? [["hris", "HRIS", ""]] : [],
       ...me.role === "lead" ? [["invoices", "Invoices", ""]] : [],
+      ...jhNav ? [["jumphigh", "Jumphigh", ""]] : [],
       ...me.role !== "client" && !isLead ? [["timeoff", "Time off", leaveStats(db, me.id).left]] : [],
       ...isLead ? [["settings", "Settings", ""]] : []
     ];
@@ -9801,6 +9806,8 @@ ${lines.join("\n")}`);
       body = c ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("h1", { className: "ps-h1" }, c.name), /* @__PURE__ */ React.createElement("div", { className: "ps-meta" }, /* @__PURE__ */ React.createElement("span", { className: `ps-chip ${clientKindOf(c).id === "personal" ? "warn" : "ok"}` }, clientKindOf(c).label)), /* @__PURE__ */ React.createElement(EditorTools, { db, me, client: c, canEdit: lead, mutate }), lead && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Invoices"), /* @__PURE__ */ React.createElement("p", { className: "ps-muted" }, billingOf(c).label, " \xB7 ", billingOf(c).note, unpaidFor(db, c).length > 0 ? ` \u2014 ${unpaidFor(db, c).length} unpaid` : billingOf(c).id === "none" ? "" : " \u2014 all settled", billingOf(c).id !== "none" ? ". Click a line to mark it paid or unpaid." : ""), /* @__PURE__ */ React.createElement(InvoiceList, { db, client: c, canEdit: lead, toggle: (k) => toggleInvoice(c.id, k), addJob: (label) => addJobInvoice(c.id, label), removeJob: (k) => removeJobInvoice(c.id, k), openVideo: setOpenId })), /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Pipeline"), /* @__PURE__ */ React.createElement(FilmStrip, { videos: [...rows, ...clientTasks], filter, setFilter }), /* @__PURE__ */ rows.some((v) => !v.archived && v.stage !== "ready") ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "In production"), /* @__PURE__ */ React.createElement(VideoTable, { rows: rows.filter((v) => !v.archived && v.stage !== "ready" && (!filter || v.stage === filter)), db, me, open: setOpenId, showClient: false })) : null, /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, filter ? `Tasks \u00b7 ${stageOf(filter).name}` : "Tasks"), /* @__PURE__ */ React.createElement(ClientTasks, { db, me, client: c, openTask: setTaskId, filter }), /* @__PURE__ */ React.createElement(SentToClient, { db, me, client: c, openTask: setTaskId, openVideo: setOpenId }), /* @__PURE__ */ React.createElement(ClientBrief, { db, client: c, canEdit: lead, mutate, setToast })) : /* @__PURE__ */ React.createElement("p", { className: "ps-empty" }, "That client no longer exists.");
     } else if (page.tab === "timeoff") {
       body = /* @__PURE__ */ React.createElement(TimeOffPage, { db, me, mutate, setToast });
+    } else if (page.tab === "jumphigh" && jhNav) {
+      body = /* @__PURE__ */ React.createElement(JumphighPage, { setToast, confirm: setConfirming });
     } else if (page.tab === "invoices" && me.role === "lead") {
       body = /* @__PURE__ */ React.createElement(InvoicesPage, { me, setToast, confirm: setConfirming });
     } else if ((page.tab === "hris" || page.tab === "payroll") && (me.role === "lead" || me.role === "hr")) {
@@ -12575,6 +12582,1370 @@ html.ps-theming .ps-theme-knob,html.ps-theming .ps-theme-ic{transition:transform
   .ps-fd-quote p{font-size:18px}
 }
 `;
+  /* ---- Jumphigh (Frean's other company, added 14 Nov 2026) ------------------
+     A separate company inside the app: a shift schedule and daily-rate payroll.
+     Nothing here touches app_state. Data lives in its own Supabase tables:
+       jh_data    staff names + shifts + store settings (every Jumphigh member reads, admins write)
+       jh_pay     daily rates, pay details, payroll runs (Jumphigh admins only)
+       jh_members which logins can open Jumphigh, as "admin" or "staff"
+     Jumphigh-only logins never pass is_team_member(), so they can't read any
+     Projeclab data; the login gate shows them JumphighStandalone instead. */
+  var JH_DEMO = "ps-jumphigh-demo";
+  var jhDemoRows = (t) => { try { return JSON.parse(localStorage.getItem(JH_DEMO + "-" + t) || "[]"); } catch (e) { return []; } };
+  var jhDemoWrite = (t, rows) => { try { localStorage.setItem(JH_DEMO + "-" + t, JSON.stringify(rows)); } catch (e) {} };
+  var jhDemoTable = (t) => ({
+    list: async () => jhDemoRows(t),
+    save: async (id, kind, data) => { jhDemoWrite(t, [...jhDemoRows(t).filter((r) => r.id !== id), { id, kind, data, updated_at: (/* @__PURE__ */ new Date()).toISOString() }]); },
+    remove: async (id) => { jhDemoWrite(t, jhDemoRows(t).filter((r) => r.id !== id)); }
+  });
+  var jhDemo = {
+    live: false,
+    me: async () => {
+      let q = null; try { q = new URLSearchParams(location.search); } catch (e) {}
+      if (q && q.get("jh") === "staff") {
+        const first = jhDemoRows("data").filter((r) => r.kind === "staff").map((r) => r.data).sort((a, b) => (a.order || 0) - (b.order || 0))[0];
+        return { email: "staff@demo", role: "staff", staffId: q.get("jhstaff") || (first ? first.id : null) };
+      }
+      return { email: "you@demo", role: "admin", staffId: null };
+    },
+    data: jhDemoTable("data"),
+    pay: jhDemoTable("pay"),
+    members: {
+      list: async () => jhDemoRows("members"),
+      save: async (m) => { jhDemoWrite("members", [...jhDemoRows("members").filter((r) => r.email !== m.email), m]); },
+      remove: async (email) => { jhDemoWrite("members", jhDemoRows("members").filter((r) => r.email !== email)); }
+    }
+  };
+  var jhApi = () => (typeof window !== "undefined" && window.psJumphigh) || jhDemo;
+  /* Jumphigh logo, traced from Frean's logo file (the tilt is part of the logo). Shown in gold. */
+  var JH_LOGO_VB = "0 0 1588 1382";
+  var JH_LOGO_D = "M 1311 7.5 C 1286.7 11.7, 1178.7 32.9, 1163.2 36.5 C 1159.0 37.4, 1160.1 30.9, 1142.4 163 C 1123.1 307.5, 1085.6 586.3, 1077.0 650 C 1072.1 686.0, 1065.5 734.8, 1062.5 758.5 C 1050.6 849.9, 1044.4 897.4, 1025.6 1039.5 C 1014.9 1120.3, 1005.7 1189.7, 1005.2 1193.8 C 1004.3 1200.9, 1004.4 1201.1, 1006.4 1200.6 C 1007.5 1200.3, 1035.9 1194.6, 1069.3 1187.8 C 1107.4 1180.1, 1130.9 1175.0, 1132.0 1174.0 C 1133.4 1172.8, 1134.4 1168.1, 1136.4 1151.5 C 1140.5 1119.2, 1163.0 950.6, 1163.2 950.4 C 1163.7 950.0, 1223.3 938.0, 1223.5 938.2 C 1223.7 938.4, 1195.9 1150.3, 1194.6 1158.7 C 1194.2 1161.1, 1194.5 1162, 1195.5 1162 C 1197.6 1162, 1315.0 1138.0, 1318.7 1136.8 C 1325.3 1134.7, 1323.1 1146.5, 1340.4 1016.5 C 1347.7 960.9, 1363.8 840.2, 1376.0 748.2 C 1388.3 656.2, 1398.0 580.7, 1397.6 580.3 C 1396.7 579.4, 1275.8 603.5, 1272.0 605.3 C 1270.6 605.9, 1269.0 607.6, 1268.3 609.0 C 1267.7 610.3, 1261.7 654.4, 1255.0 707 C 1247.6 764.3, 1242.2 803.3, 1241.4 804.5 C 1240.3 806.3, 1235.8 807.5, 1211.0 812.4 C 1195.0 815.6, 1181.7 818.0, 1181.4 817.7 C 1181.1 817.4, 1183.6 797.0, 1186.9 772.3 C 1190.2 747.6, 1196.7 697.1, 1201.4 660 C 1210.8 585.9, 1211.3 581.9, 1226.5 470.7 C 1232.2 428.5, 1237 393.3, 1237 392.5 C 1237 388.5, 1240.4 386.9, 1256.5 383.3 C 1345.0 363.6, 1403.6 314.1, 1432.3 234.8 C 1448.3 190.7, 1455.9 131.2, 1450.0 96.8 C 1441.5 47.2, 1416.2 20.0, 1368.0 8.8 C 1356.4 6.1, 1323.5 5.3, 1311 7.5 M 1025 63.5 C 944.9 79.7, 943.6 80.0, 941.4 83.4 C 937.0 90.2, 896.1 237.0, 872.6 330.6 L 860.5 378.8 860.8 291.1 C 861.1 210.2, 859.8 99.5, 858.5 98.2 C 857.9 97.5, 707.9 127.5, 703.8 129.1 C 700.1 130.5, 699.5 132.1, 694.0 157 C 691.3 169.3, 663.4 293.3, 632.1 432.5 C 569.8 709.4, 572.7 696.1, 573.3 696.7 C 573.8 697.1, 600.0 691.9, 670.5 677.5 C 697.6 671.9, 707.9 669.4, 709.3 668.0 C 710.3 667.0, 711.8 663.1, 712.6 659.3 C 713.9 653.3, 759.2 381.2, 765.1 344 L 767.5 329.5 768.1 439 C 769.4 642.4, 769.5 655.8, 770.1 656.5 C 771.5 657.8, 872.2 636.6, 874.7 634.5 C 876.6 632.8, 878.9 625.7, 887.1 596 C 892.6 575.9, 913.7 499.2, 934.0 425.5 C 954.3 351.9, 971 291.0, 971 290.1 C 971 289.3, 971.2 288.8, 971.5 289.1 C 971.9 289.5, 963.3 386.8, 945.5 583.4 C 943.6 604.3, 942.2 621.5, 942.4 621.8 C 942.8 622.1, 1077.1 595.1, 1077.6 594.6 C 1077.7 594.5, 1079.6 553.5, 1081.9 503.5 C 1084.2 453.4, 1089.8 330.8, 1094.4 231 C 1098.9 131.1, 1102.4 49.2, 1102.1 48.8 C 1101.7 48.4, 1067.0 55.1, 1025 63.5 M 1282 131.0 C 1279.5 131.6, 1276.5 132.2, 1275.3 132.5 C 1274.1 132.7, 1272.8 133.7, 1272.5 134.7 C 1272.1 136.2, 1264.8 190.3, 1257.4 247.7 C 1256.5 255.0, 1256.0 261.3, 1256.4 261.7 C 1257.3 262.7, 1268.7 258.6, 1279 253.6 C 1317.3 235.1, 1334.8 168.1, 1309.0 138.6 C 1302.7 131.5, 1292.7 128.7, 1282 131.0 M 582.2 151.9 C 547.9 158.9, 519.7 164.9, 519.4 165.2 C 519.1 165.4, 512.4 214.9, 504.5 275.0 C 463.5 585.7, 467.4 559.6, 460.6 572.4 C 452.8 587.2, 436.2 599.5, 424.0 599.4 C 414.4 599.3, 408.8 594.7, 404.8 583.3 C 401.3 573.4, 401.9 565.6, 412.4 488 C 417.7 448.6, 429.0 364.5, 437.5 301 C 445.9 237.4, 453.1 184.0, 453.3 182.2 C 453.7 179.6, 453.5 178.9, 452.1 178.9 C 449.7 178.9, 330.0 203.0, 326.8 204.1 C 323.1 205.5, 322.3 208.1, 319.9 227 C 318.8 236.0, 308.0 318.4, 296.0 410 C 273.3 582.8, 272 593.9, 272 614.4 C 272 708.4, 319.8 754.8, 403.0 741.4 C 487.0 727.9, 545.8 678.3, 578.7 593 C 590.4 562.9, 594.6 543.9, 603.4 483.5 C 610.0 437.8, 649 144.4, 649 140.4 C 649 138.2, 648.9 138.2, 582.2 151.9 M 235 225.0 C 169.3 238.2, 169.5 238.2, 167.5 241.2 C 166.6 242.7, 162.9 267.9, 157.0 313 C 117.4 618.3, 117.7 616.3, 112.8 631.1 C 106.4 650.9, 97.5 661.9, 82 669.3 C 75.8 672.3, 74.8 672.5, 64 672.5 C 49.4 672.5, 42.3 669.6, 32.8 659.9 C 29.5 656.5, 26.6 654.0, 26.2 654.3 C 25.6 655.0, 5.9 804.3, 6.4 804.8 C 8.2 806.5, 29.1 808.3, 47.5 808.3 C 133.1 808.3, 196.6 762.6, 225.5 679.8 C 232.9 658.6, 237.3 635.9, 246.4 571.5 C 254.2 517.1, 294.0 216.5, 293.7 214.8 C 293.5 213.4, 285.8 214.7, 235 225.0 M 1521.0 534.1 C 1488.8 540.6, 1461.9 546.6, 1461.3 547.2 C 1460.2 548.4, 1449.1 629.6, 1421.0 843 C 1414.9 888.9, 1409.7 928.7, 1409.4 931.3 C 1408.8 935.8, 1408.9 936.2, 1410.6 935.8 C 1411.6 935.5, 1438.9 930.0, 1471.3 923.4 C 1519.6 913.7, 1530.3 911.2, 1531.1 909.7 C 1531.6 908.7, 1540.1 847.1, 1550.0 772.7 C 1571.7 608.8, 1581.7 533.0, 1582.5 526.7 C 1583.1 522.5, 1582.9 522.0, 1581.3 522.0 C 1580.3 522.1, 1553.1 527.5, 1521.0 534.1 M 886.4 670.5 C 788.0 684.9, 707.8 777.4, 671.1 919 C 649.6 1001.6, 645.9 1097.3, 662.0 1154.4 C 676.8 1207.3, 703.4 1236.8, 746.4 1248.3 C 758.7 1251.5, 791.6 1251.4, 808 1248.1 C 899.8 1229.2, 964.3 1149.5, 998.0 1013.5 C 1005.1 984.7, 1021.5 885.2, 1019.5 883.2 C 1019.1 882.8, 1000.5 886.2, 978.1 890.8 C 955.8 895.3, 916.3 903.3, 890.5 908.5 C 856.2 915.4, 843.0 918.5, 841.7 919.8 C 840.3 921.2, 838.6 931.4, 833.0 972.5 C 824.7 1033.9, 824.6 1035, 825.3 1035 C 825.6 1035, 835.9 1032.9, 848.1 1030.5 C 860.2 1028.0, 870.5 1026, 870.9 1026 C 872.1 1026, 869.1 1045.6, 866.4 1055.7 C 857.2 1090.9, 828.5 1119.9, 807.9 1114.9 C 784.4 1109.3, 777.7 1069.0, 787.0 989.6 C 799.4 883.5, 820.4 826.2, 852.8 810.2 C 873.5 799.9, 884.7 807.8, 891.4 837.5 C 892.9 844.1, 894.4 850.5, 894.8 851.7 C 895.4 853.8, 899.6 851.4, 957.5 816.4 C 991.6 795.7, 1020.5 778.2, 1021.7 777.4 L 1023.9 775.9 1018.4 759.7 C 1002.1 712.1, 980.8 686.1, 948.9 674.8 C 932.4 669.0, 908.3 667.3, 886.4 670.5 M 627 722.4 C 615.7 724.8, 588.1 730.5, 565.6 735.0 C 540.7 740.1, 524.0 743.9, 522.9 744.9 C 520.6 746.8, 522.3 735.4, 502.5 881.5 C 493.4 948.6, 478.2 1061.5, 468.5 1132.5 C 446.4 1295.5, 445.8 1300.1, 446.3 1300.6 C 446.5 1300.8, 452.2 1299.8, 459.0 1298.4 C 465.9 1297.0, 493.7 1291.3, 521 1285.8 C 548.2 1280.3, 571.4 1275.2, 572.6 1274.4 C 575.3 1272.7, 575.2 1273.2, 579.5 1241 C 581.4 1226.4, 589.1 1170.1, 596.5 1116 C 615.7 976.1, 650.0 723.9, 650.2 721.0 C 650.5 717.5, 650.0 717.6, 627 722.4 M 450 760.0 C 439.8 762.1, 412.4 767.7, 389.1 772.4 C 345.5 781.2, 343.5 781.8, 342.5 784.7 C 342.2 785.7, 336.3 830.1, 329.5 883.4 C 321.6 944.2, 316.5 980.8, 315.7 981.6 C 314.8 982.5, 255.9 995.2, 255.3 994.6 C 255.2 994.4, 280.5 804.5, 281.4 798.7 C 281.9 795.4, 281.7 795, 280.0 795 C 277.5 795, 161.5 818.6, 157.4 820.0 C 154.4 821.0, 152.7 823.1, 151.5 827.5 C 151.1 829.3, 142.8 891.6, 109.5 1144 C 103.1 1192.1, 93.6 1264.0, 88.4 1303.8 C 83.1 1343.6, 79.0 1376.4, 79.3 1376.6 C 80.0 1377.4, 205.2 1351.9, 206.7 1350.7 C 208.2 1349.5, 207.6 1353.6, 217.0 1282 C 221.4 1248.1, 227.7 1200.1, 231.0 1175.1 C 234.3 1150.2, 237.4 1129.0, 238.0 1127.9 C 238.5 1126.9, 240.6 1125.7, 242.7 1125.4 C 244.8 1125.0, 258.0 1122.3, 272.2 1119.5 C 289.5 1116.0, 298 1114.6, 298 1115.4 C 298 1116.0, 291.4 1166.0, 283.4 1226.4 C 275.4 1286.9, 269.0 1336.8, 269.2 1337.5 C 269.4 1338.3, 289.6 1334.5, 333.9 1325.5 L 398.4 1312.4 399.2 1308.9 C 399.6 1307.0, 406.3 1257.8, 414.0 1199.5 C 440.6 998.6, 471.9 763.4, 472.5 759.7 C 473.3 755.0, 474.1 755.0, 450 760.0 M 1462.5 966.6 C 1419.8 975.7, 1385.9 1016.8, 1380.9 1065.5 C 1375.5 1118.8, 1412.7 1144.5, 1461.8 1121.4 C 1493.0 1106.7, 1515.4 1076.7, 1522.6 1040.2 C 1524.9 1028.5, 1524.9 1008.7, 1522.7 1000.2 C 1515.5 973.3, 1492.2 960.3, 1462.5 966.6";
+  var JH_GOLD = ["#E9C46A", "#D4AF37", "#B8892E"];
+  var jhLogoSvg = (height) => `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${JH_LOGO_VB}" height="${height}" role="img" aria-label="Jumphigh"><defs><linearGradient id="jhg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${JH_GOLD[0]}"/><stop offset=".55" stop-color="${JH_GOLD[1]}"/><stop offset="1" stop-color="${JH_GOLD[2]}"/></linearGradient></defs><path fill="url(#jhg)" fill-rule="evenodd" d="${JH_LOGO_D}"/></svg>`;
+  function JhLogo({ height }) {
+    return React.createElement("span", { className: "jh-logo", role: "img", "aria-label": "Jumphigh", dangerouslySetInnerHTML: { __html: jhLogoSvg(height || 60) } });
+  }
+  var JH_STATUS = [["work", "Working"], ["half", "Half day"], ["absent", "Absent"]];
+  var JH_COLORS = ["#D4AF37", "#0F766E", "#2563EB", "#DB2777", "#D97706", "#7C3AED", "#059669", "#DC2626", "#0891B2"];
+  var JH_DEFAULTS = { start: "10:00", end: "19:00", company: "Jumphigh" };
+  var jhAdd = (iso, n) => { const d = fromIso(iso); d.setDate(d.getDate() + n); return isoDay(d); };
+  var jhMonday = (iso) => { const d = fromIso(iso); d.setDate(d.getDate() - (d.getDay() + 6) % 7); return isoDay(d); };
+  var jhTime = (t) => {
+    if (!t) return "";
+    const [H, M] = String(t).split(":").map(Number);
+    return (H % 12 || 12) + (M ? ":" + String(M).padStart(2, "0") : "") + " " + (H >= 12 ? "PM" : "AM");
+  };
+  var jhShort = (iso) => fromIso(iso).toLocaleDateString("en-US", { month: "short", day: "numeric" });
+  var jhPeriodLabel = (from, to) => {
+    const a = fromIso(from), b = fromIso(to);
+    if (from.slice(0, 7) === to.slice(0, 7)) return a.toLocaleDateString("en-US", { month: "short" }) + " " + a.getDate() + "–" + b.getDate() + ", " + b.getFullYear();
+    return jhShort(from) + " – " + jhShort(to) + ", " + b.getFullYear();
+  };
+  var jhDayValue = (s) => !s ? 0 : s.status === "absent" ? 0 : s.status === "half" ? 0.5 : 1;
+  var jhNewId = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+  var jhLineMath = (l) => {
+    const gross = r2(num(l.rate) * num(l.days));
+    const adj = r2((l.adjustments || []).reduce((s, a) => s + num(a.amount), 0));
+    return { gross, adj, net: r2(gross + adj) };
+  };
+  var jhCsv = (rows) => rows.map((r) => r.map((c) => { const s = String(c == null ? "" : c); return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; }).join(",")).join("\n");
+  var jhDownload = (name, text) => {
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([text], { type: "text/csv" }));
+    a.download = name; document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+  };
+  var jhEsc = (s) => String(s == null ? "" : s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+  var jhDaysText = (n) => { const v = r2(n); return v + " day" + (v === 1 ? "" : "s"); };
+  var jhSlipHtml = (run, lines, company) => {
+    const slips = lines.map((l) => {
+      const m = jhLineMath(l);
+      const adj = (l.adjustments || []).filter((a) => num(a.amount) !== 0).map((a) =>
+        `<tr><td>${jhEsc(a.label || (num(a.amount) < 0 ? "Deduction" : "Additional pay"))}</td><td class="n">${num(a.amount) < 0 ? "−" : ""}${peso(Math.abs(num(a.amount)))}</td></tr>`).join("");
+      const pt = l.payTo || {};
+      return `<section class="slip">${l.paidAt ? '<div class="stamp">PAID</div>' : ""}
+        ${/^jump\s*high$/i.test(String(company).trim()) ? `<div class="logo">${jhLogoSvg(72)}</div>` : `<h1>${jhEsc(company)}</h1>`}<h2>Payslip</h2>
+        <p><b>${jhEsc(l.name)}</b>${l.position ? " · " + jhEsc(l.position) : ""}<br>Period: ${jhEsc(jhPeriodLabel(run.from, run.to))}${run.payDate ? "<br>Pay date: " + jhEsc(longDay(run.payDate)) : ""}</p>
+        <table><tr><td>Days worked</td><td class="n">${r2(l.days)}</td></tr>
+        <tr><td>Daily rate</td><td class="n">${peso(l.rate)}</td></tr>
+        <tr class="sub"><td>Gross pay (${r2(l.days)} × ${peso(l.rate)})</td><td class="n">${peso(m.gross)}</td></tr>
+        ${adj}
+        <tr class="net"><td>Net pay</td><td class="n">${peso(m.net)}</td></tr></table>
+        <p class="pay">Paid by ${jhEsc(methodLabel(pt.method))}${pt.accountNo ? " · " + jhEsc(pt.method === "gcash" ? gcashPretty(pt.accountNo) : pt.accountNo) : ""}${l.paidAt ? " · paid " + jhEsc(longDay(l.paidAt)) : ""}${l.paidRef ? " · ref " + jhEsc(l.paidRef) : ""}</p></section>`;
+    }).join("");
+    return `<!doctype html><html><head><meta charset="utf-8"><title>${jhEsc(lines.length === 1 ? lines[0].name + " - " : "")}${jhEsc(company)} Payslip ${jhEsc(jhPeriodLabel(run.from, run.to))}</title>
+      <style>body{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;color:#1A2230;margin:0;padding:24px}
+      .slip{position:relative;max-width:520px;margin:0 auto 28px;border:1px solid #D5DBE3;border-radius:10px;padding:22px 24px;page-break-inside:avoid}
+      h1{margin:0;font-size:22px;letter-spacing:-.02em}.logo{line-height:0;margin-bottom:6px}h2{margin:2px 0 14px;font-size:14px;color:#5B6676;font-weight:600;text-transform:uppercase;letter-spacing:.06em}
+      table{width:100%;border-collapse:collapse;margin:10px 0}td{padding:6px 0;border-bottom:1px solid #EDF0F3;font-size:14px}.n{text-align:right;font-variant-numeric:tabular-nums}
+      tr.sub td{font-weight:600}tr.net td{font-weight:800;font-size:17px;border-bottom:0;padding-top:10px}.pay{color:#5B6676;font-size:13px}
+      .stamp{position:absolute;right:22px;top:20px;border:3px solid #2FB344;color:#2FB344;font-weight:800;padding:2px 10px;border-radius:6px;transform:rotate(8deg);letter-spacing:.1em}
+      @media print{body{padding:0}.slip{border:0;page-break-after:always}}</style></head><body>${slips}<script>setTimeout(function(){window.print()},300)<\/script></body></html>`;
+  };
+
+  /* Shift editor pop-up: one shift per person per day. */
+  function JhShiftEditor({ staff, date, shift, defaults, save, remove, close }) {
+    const h = React.createElement;
+    const [f, setF] = useState(() => shift ? { start: shift.start || "", end: shift.end || "", status: shift.status || "work", note: shift.note || "" } : { start: defaults.start, end: defaults.end, status: "work", note: "" });
+    const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
+    return h("div", { className: "ps-overlay", onClick: (e) => e.target === e.currentTarget && close() },
+      h("div", { className: "ps-modal jh-edit", role: "dialog", "aria-modal": "true" },
+        h("h2", { className: "ps-h2" }, staff.name),
+        h("p", { className: "ps-muted" }, longDay(date) + " · " + fromIso(date).toLocaleDateString("en-US", { weekday: "long" })),
+        h("div", { className: "ps-fields" },
+          h("label", { className: "ps-field" }, h("span", null, "Starts"), h("input", { type: "time", value: f.start, onChange: set("start") })),
+          h("label", { className: "ps-field" }, h("span", null, "Ends"), h("input", { type: "time", value: f.end, onChange: set("end") })),
+          h("label", { className: "ps-field" }, h("span", null, "Status"), h("select", { value: f.status, onChange: set("status") }, JH_STATUS.map(([k, l]) => h("option", { key: k, value: k }, l)))),
+          h("label", { className: "ps-field" }, h("span", null, "Note (optional)"), h("input", { value: f.note, placeholder: "e.g. inventory day", onChange: set("note") }))),
+        h("p", { className: "ps-muted jh-hint" }, "Absent = no pay for the day. Half day = half the daily rate."),
+        h("div", { className: "ps-btnrow" },
+          shift ? h("button", { className: "ps-btn ghost", onClick: () => { remove(); close(); } }, "Make it a day off") : h("span"),
+          h("span", { className: "jh-btns" },
+            h("button", { className: "ps-btn ghost", onClick: close }, "Cancel"),
+            h("button", { className: "ps-btn", onClick: () => { save(f); close(); } }, shift ? "Save" : "Add shift")))));
+  }
+
+  function JhSchedule({ staff, shifts, admin, myStaffId, settings, putData, dropData, setToast }) {
+    const h = React.createElement;
+    const today = manilaDay();
+    const [week, setWeek] = useState(() => jhMonday(today));
+    const [edit, setEdit] = useState(null);
+    /* Week or Month view (remembered for this browser tab). */
+    const [view, setView] = useState(() => { try { return sessionStorage.getItem("ps-jh-view") || "week"; } catch (e) { return "week"; } });
+    useEffect(() => { try { sessionStorage.setItem("ps-jh-view", view); } catch (e) {} }, [view]);
+    const [month, setMonth] = useState(() => today.slice(0, 7));
+    const [addFor, setAddFor] = useState(null);
+    const [onlyMine, setOnlyMine] = useState(false);
+    const days = [0, 1, 2, 3, 4, 5, 6].map((i) => jhAdd(week, i));
+    const crew = staff.filter((s) => s.active !== false || shifts.some((x) => x.staffId === s.id && x.date >= week && x.date <= days[6]));
+    const shiftOf = (sid, d) => shifts.find((x) => x.staffId === sid && x.date === d);
+    const defaults = { ...JH_DEFAULTS, ...settings };
+    const saveShift = (sid, d, f) => {
+      const id = "shift:" + d + ":" + sid;
+      putData(id, "shift", { id, staffId: sid, date: d, start: f.start, end: f.end, status: f.status, note: f.note.trim() });
+    };
+    const copyLastWeek = () => {
+      let n = 0;
+      days.forEach((d) => {
+        const prev = jhAdd(d, -7);
+        crew.forEach((s) => {
+          const p = shiftOf(s.id, prev);
+          if (p && !shiftOf(s.id, d)) { n++; saveShift(s.id, d, { start: p.start, end: p.end, status: "work", note: "" }); }
+        });
+      });
+      setToast(n ? `Copied ${n} shift${n === 1 ? "" : "s"} from last week. Days that already had a shift were left alone.` : "Nothing to copy: last week had no shifts on the empty days.");
+    };
+    const range = jhShort(days[0]) + " – " + jhShort(days[6]) + ", " + fromIso(days[6]).getFullYear();
+    const me = myStaffId ? staff.find((s) => s.id === myStaffId) : null;
+    const mine = myStaffId ? shifts.filter((x) => x.staffId === myStaffId && x.date >= today).sort((a, b) => a.date.localeCompare(b.date)).slice(0, 7) : [];
+    const cell = (s, d) => {
+      const x = shiftOf(s.id, d);
+      const open = () => admin && setEdit({ staffId: s.id, date: d });
+      if (!x) return admin ? h("button", { className: "jh-empty", onClick: open, "aria-label": `Add a shift for ${s.name} on ${jhShort(d)}` }, "+") : h("span", { className: "jh-off" }, "Off");
+      const body = [
+        h("span", { key: "t", className: "jh-t" }, jhTime(x.start) + "–" + jhTime(x.end)),
+        x.status !== "work" && h("span", { key: "s", className: "jh-st " + x.status }, x.status === "half" ? "Half day" : "Absent"),
+        x.note && h("span", { key: "n", className: "jh-note" }, x.note)
+      ];
+      return admin
+        ? h("button", { className: "jh-shift " + x.status, style: { borderLeftColor: s.color || JH_COLORS[0] }, onClick: open }, body)
+        : h("div", { className: "jh-shift " + x.status, style: { borderLeftColor: s.color || JH_COLORS[0] } }, body);
+    };
+    /* ---- Month view: a calendar with everyone's shifts as small chips ---- */
+    const jhTimeS = (t) => { if (!t) return ""; const [H, M] = String(t).split(":").map(Number); return (H % 12 || 12) + (M ? ":" + String(M).padStart(2, "0") : "") + (H >= 12 ? "p" : "a"); };
+    const monthView = () => {
+      const [yy, mm] = month.split("-").map(Number);
+      const first = month + "-01";
+      const last = month + "-" + String(new Date(yy, mm, 0).getDate()).padStart(2, "0");
+      const gStart = jhMonday(first), gEnd = jhAdd(jhMonday(last), 6);
+      const cells = [];
+      for (let d = gStart; d <= gEnd; d = jhAdd(d, 1)) cells.push(d);
+      const go = (n) => { const x = new Date(yy, mm - 1 + n, 1); setMonth(isoDay(x).slice(0, 7)); setAddFor(null); };
+      const inMonth = (d) => d >= first && d <= last;
+      const mCrew = staff.filter((s) => s.active !== false || shifts.some((x) => x.staffId === s.id && x.date >= first && x.date <= last));
+      const order = (sid) => { const k = mCrew.findIndex((s) => s.id === sid); return k < 0 ? 999 : k; };
+      const label = fromIso(first).toLocaleDateString("en-US", { month: "long", year: "numeric" });
+      const dayShifts = (d) => shifts.filter((x) => x.date === d && (!onlyMine || x.staffId === myStaffId) && mCrew.some((s) => s.id === x.staffId)).sort((a, b) => order(a.staffId) - order(b.staffId));
+      const chip = (x) => {
+        const s = mCrew.find((p) => p.id === x.staffId) || { name: "?" };
+        const first = String(s.name).split(/\s+/)[0];
+        const text = [h("span", { key: "d", className: "jh-dot", style: { background: s.color || JH_COLORS[0] } }), h("span", { key: "t", className: "jh-mtext" }, first + " " + jhTimeS(x.start) + "–" + jhTimeS(x.end)),
+          x.status === "half" && h("span", { key: "s", className: "jh-st half" }, "½")];
+        const cls = "jh-mchip " + x.status + (x.staffId === myStaffId ? " me" : "");
+        const title = `${s.name}: ${jhTime(x.start)} – ${jhTime(x.end)}${x.status === "half" ? " (half day)" : x.status === "absent" ? " (absent)" : ""}${x.note ? " · " + x.note : ""}`;
+        return admin ? h("button", { key: x.id, className: cls, title, onClick: () => setEdit({ staffId: x.staffId, date: x.date }) }, text) : h("div", { key: x.id, className: cls, title }, text);
+      };
+      const totals = mCrew.map((s) => ({ s, n: r2(shifts.filter((x) => x.staffId === s.id && x.date >= first && x.date <= last).reduce((a, x) => a + jhDayValue(x), 0)) }));
+      return h(React.Fragment, null,
+        h("div", { className: "jh-weekbar" },
+          h("div", { className: "jh-weeknav" },
+            h("button", { className: "ps-btn ghost small", onClick: () => go(-1), "aria-label": "Previous month" }, "‹"),
+            h("b", null, label),
+            h("button", { className: "ps-btn ghost small", onClick: () => go(1), "aria-label": "Next month" }, "›"),
+            month !== today.slice(0, 7) && h("button", { className: "ps-btn ghost small", onClick: () => { setMonth(today.slice(0, 7)); setAddFor(null); } }, "This month"))),
+        !mCrew.length ? h("div", { className: "ps-pay-locked" }, h("b", null, "No staff yet."), h("p", null, admin ? "Add your Jumphigh staff in the Staff tab first, then come back to plan their shifts." : "Your manager hasn't added the team yet."))
+          : h(React.Fragment, null,
+            h("div", { className: "ps-pay-tablewrap" }, h("div", { className: "jh-month" },
+              h("div", { className: "jh-mhead" }, ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((w) => h("div", { key: w }, w))),
+              h("div", { className: "jh-mbody" }, cells.map((d) => {
+                const list = dayShifts(d);
+                const free = mCrew.filter((s) => s.active !== false && !shiftOf(s.id, d));
+                const working = list.filter((x) => x.status !== "absent").length;
+                return h("div", { key: d, className: "jh-mday" + (inMonth(d) ? "" : " other") + (d === today ? " today" : "") },
+                  h("div", { className: "jh-mtop" },
+                    h("span", { className: "jh-mnum" }, fromIso(d).getDate()),
+                    !onlyMine && working > 0 && h("span", { className: "jh-mcount", title: working + " working" }, working)),
+                  list.map(chip),
+                  admin && free.length > 0 && (addFor === d
+                    ? h("select", { className: "jh-madd-pick", autoFocus: true, value: "", onBlur: () => setAddFor(null), onChange: (e) => { if (e.target.value) { setEdit({ staffId: e.target.value, date: d }); } setAddFor(null); } },
+                        h("option", { value: "" }, "Who?"), free.map((s) => h("option", { key: s.id, value: s.id }, s.name)))
+                    : h("button", { className: "jh-madd", onClick: () => setAddFor(d), "aria-label": "Add a shift on " + jhShort(d) }, "+")));
+              })))),
+            h("div", { className: "jh-mtot" }, h("span", { className: "ps-muted" }, "Days on the schedule in " + fromIso(first).toLocaleDateString("en-US", { month: "long" }) + ":"),
+              totals.filter((t) => !onlyMine || t.s.id === myStaffId).map((t) => h("span", { key: t.s.id, className: "jh-mtotone" + (t.s.id === myStaffId ? " me" : "") }, h("span", { className: "jh-dot", style: { background: t.s.color || JH_COLORS[0] } }), t.s.name + " ", h("b", null, t.n)))),
+            admin && h("p", { className: "ps-muted jh-hint" }, "Click a name to change that shift, or + to add someone on that day. Half days count ½, absences 0.")));
+    };
+    return h(React.Fragment, null,
+      !admin && h("div", { className: "jh-mine" },
+        h("h3", { className: "ps-h3" }, "My next shifts"),
+        !me ? h("p", { className: "ps-muted" }, "Your login isn't linked to a name on the schedule yet. Ask your manager to link it.")
+          : !mine.length ? h("p", { className: "ps-muted" }, "No shifts scheduled for you yet.")
+          : h("div", { className: "jh-minelist" }, mine.map((x) => h("div", { key: x.id, className: "jh-mineday" + (x.date === today ? " today" : "") },
+              h("b", null, x.date === today ? "Today" : fromIso(x.date).toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" })),
+              h("span", null, jhTime(x.start) + " – " + jhTime(x.end)),
+              x.status !== "work" && h("span", { className: "jh-st " + x.status }, x.status === "half" ? "Half day" : "Absent"),
+              x.note && h("span", { className: "ps-muted" }, x.note))))),
+      h("div", { className: "jh-viewbar" },
+        h("div", { className: "jh-viewtog", role: "group", "aria-label": "Schedule view" },
+          [["week", "Week"], ["month", "Month"]].map(([k, l]) => h("button", { key: k, type: "button", className: view === k ? "on" : "", "aria-pressed": view === k, onClick: () => {
+            if (k === "month" && view !== "month") setMonth(days[3].slice(0, 7));
+            if (k === "week" && view !== "week") setWeek(jhMonday(month === today.slice(0, 7) ? today : month + "-01"));
+            setView(k);
+          } }, l))),
+        !admin && me && view === "month" && h("label", { className: "ps-check jh-check jh-onlyme" }, h("input", { type: "checkbox", checked: onlyMine, onChange: (e) => setOnlyMine(e.target.checked) }), h("span", null, "Only my shifts"))),
+      view === "month" ? monthView() : h(React.Fragment, null,
+      h("div", { className: "jh-weekbar" },
+        h("div", { className: "jh-weeknav" },
+          h("button", { className: "ps-btn ghost small", onClick: () => setWeek(jhAdd(week, -7)), "aria-label": "Previous week" }, "‹"),
+          h("b", null, range),
+          h("button", { className: "ps-btn ghost small", onClick: () => setWeek(jhAdd(week, 7)), "aria-label": "Next week" }, "›"),
+          week !== jhMonday(today) && h("button", { className: "ps-btn ghost small", onClick: () => setWeek(jhMonday(today)) }, "This week")),
+        admin && crew.length > 0 && h("button", { className: "ps-btn ghost small", onClick: copyLastWeek }, "Copy last week's shifts")),
+      !crew.length ? h("div", { className: "ps-pay-locked" }, h("b", null, "No staff yet."), h("p", null, admin ? "Add your Jumphigh staff in the Staff tab first, then come back to plan their shifts." : "Your manager hasn't added the team yet."))
+        : h("div", { className: "ps-pay-tablewrap" }, h("table", { className: "jh-grid" },
+          h("thead", null, h("tr", null,
+            h("th", null, "Staff"),
+            days.map((d) => h("th", { key: d, className: d === today ? "today" : "" }, h("span", null, fromIso(d).toLocaleDateString("en-US", { weekday: "short" })), h("small", null, jhShort(d)))),
+            h("th", { className: "n" }, "Days"))),
+          h("tbody", null, crew.map((s) => h("tr", { key: s.id, className: s.id === myStaffId ? "me" : "" },
+            h("td", null, h("div", { className: "jh-who" }, h("span", { className: "jh-dot", style: { background: s.color || JH_COLORS[0] } }), h("span", null, h("b", null, s.name), s.position && h("small", null, s.position)))),
+            days.map((d) => h("td", { key: d, className: d === today ? "today" : "" }, cell(s, d))),
+            h("td", { className: "n" }, r2(days.reduce((a, d) => a + jhDayValue(shiftOf(s.id, d)), 0)))))),
+          h("tfoot", null, h("tr", null,
+            h("td", null, "Working"),
+            days.map((d) => h("td", { key: d, className: d === today ? "today" : "" }, crew.filter((s) => { const x = shiftOf(s.id, d); return x && x.status !== "absent"; }).length)),
+            h("td"))))),
+      admin && crew.length > 0 && h("p", { className: "ps-muted jh-hint" }, "Click a day to add or change a shift. Staff see this schedule when they sign in, but they can't change it.")),
+      edit && h(JhShiftEditor, {
+        staff: staff.find((s) => s.id === edit.staffId) || { name: "" }, date: edit.date, shift: shiftOf(edit.staffId, edit.date), defaults,
+        save: (f) => saveShift(edit.staffId, edit.date, f),
+        remove: () => dropData("shift:" + edit.date + ":" + edit.staffId),
+        close: () => setEdit(null)
+      }));
+  }
+
+  function JhStaffForm({ s, rate, login, settingsOk, save, close }) {
+    const h = React.createElement;
+    const pt = (rate && rate.payTo) || {};
+    const [f, setF] = useState({
+      name: s.name || "", position: s.position || "", color: s.color || JH_COLORS[0],
+      dailyRate: rate && rate.dailyRate ? String(rate.dailyRate) : "", method: pt.method || "cash", accountNo: pt.accountNo || "", accountName: pt.accountName || "",
+      mobile: (rate && rate.mobile) || "", email: login ? login.email : "", admin: !!(login && login.role === "admin"),
+      commissionPct: rate && rate.commissionPct ? String(rate.commissionPct) : ""
+    });
+    const [err, setErr] = useState("");
+    const set = (k) => (e) => setF({ ...f, [k]: e.target.type === "checkbox" ? e.target.checked : e.target.value });
+    const go = () => {
+      if (!f.name.trim()) return setErr("Type their name.");
+      if (f.email.trim() && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(f.email.trim())) return setErr("That login email doesn't look right.");
+      if (f.method === "gcash" && f.accountNo && !gcashOk(f.accountNo)) return setErr("Check the GCash number: 11 digits starting with 09.");
+      setErr(""); save(f);
+    };
+    return h("div", { className: "ps-pay-form jh-form" },
+      h("div", { className: "ps-fields" },
+        h("label", { className: "ps-field" }, h("span", null, "Name"), h("input", { value: f.name, onChange: set("name"), autoFocus: !s.name })),
+        h("label", { className: "ps-field" }, h("span", null, "Position"), h("input", { value: f.position, placeholder: "e.g. Sales staff, Cashier", onChange: set("position") })),
+        h("label", { className: "ps-field" }, h("span", null, "Daily rate (₱)"), h("input", { inputMode: "decimal", value: f.dailyRate, placeholder: "e.g. 610", onChange: set("dailyRate") })),
+        h("label", { className: "ps-field" }, h("span", null, "Sales commission (%)"), h("input", { inputMode: "decimal", value: f.commissionPct, placeholder: "0 = none", onChange: set("commissionPct") })),
+        h("label", { className: "ps-field" }, h("span", null, "Mobile number"), h("input", { inputMode: "tel", value: f.mobile, onChange: set("mobile") })),
+        h("label", { className: "ps-field" }, h("span", null, "Paid by"), h("select", { value: f.method, onChange: set("method") }, PAY_METHODS.map(([k, l]) => h("option", { key: k, value: k }, l)))),
+        f.method !== "cash" && h("label", { className: "ps-field" }, h("span", null, f.method === "gcash" ? "GCash number" : "Account number"), h("input", { value: f.accountNo, onChange: set("accountNo") })),
+        f.method !== "cash" && h("label", { className: "ps-field" }, h("span", null, "Account name"), h("input", { value: f.accountName, onChange: set("accountName") })),
+        h("label", { className: "ps-field" }, h("span", null, "Login email (so they can see the schedule)"), h("input", { type: "email", value: f.email, placeholder: "Leave blank if they don't need to sign in", onChange: set("email") }))),
+      h("div", { className: "jh-colors" }, h("span", { className: "ps-muted" }, "Colour on the schedule"),
+        JH_COLORS.map((c) => h("button", { key: c, type: "button", className: "jh-swatch" + (f.color === c ? " on" : ""), style: { background: c }, "aria-label": "Colour " + c, onClick: () => setF({ ...f, color: c }) }))),
+      f.email.trim() && h("label", { className: "ps-check jh-check" }, h("input", { type: "checkbox", checked: f.admin, onChange: set("admin") }), h("span", null, "Can manage Jumphigh too (edit the schedule, staff and payroll)")),
+      f.email.trim() && (!login || login.email !== f.email.trim().toLowerCase()) && h("p", { className: "ps-muted jh-hint" },
+        "After saving, make their sign-in once in Supabase: Authentication → Users → Add user → Create new user. Type this same email and a password, tick “Auto Confirm User”, then Create. Send them the app link and the password. They will only see Jumphigh."),
+      err && h("p", { className: "ps-pay-warn" }, err),
+      h("div", { className: "ps-btnrow end" },
+        h("button", { className: "ps-btn ghost", onClick: close }, "Cancel"),
+        h("button", { className: "ps-btn", onClick: go }, s.name ? "Save" : "Add to staff")));
+  }
+
+  function JhStaff({ staff, rates, members, myEmail, settings, putData, putPay, saveMember, dropMember, setToast, confirm }) {
+    const h = React.createElement;
+    const [editing, setEditing] = useState(null);
+    const [showFormer, setShowFormer] = useState(false);
+    const [hours, setHours] = useState(() => ({ ...JH_DEFAULTS, ...settings }));
+    const [newAdmin, setNewAdmin] = useState("");
+    useEffect(() => { setHours({ ...JH_DEFAULTS, ...settings }); }, [settings.start, settings.end, settings.company, settings.float, settings.lowStock]);
+    const loginOf = (sid) => members.find((m) => m.staff_id === sid);
+    const save = (s, f) => {
+      const id = s.id || "st" + jhNewId();
+      const row = { ...s, id, name: f.name.trim(), position: f.position.trim(), color: f.color, active: s.active !== false, order: s.order != null ? s.order : staff.length };
+      putData("staff:" + id, "staff", row, s.id ? `${row.name} saved.` : `${row.name} added to Jumphigh.`);
+      putPay("rate:" + id, "rate", { staffId: id, dailyRate: r2(num(f.dailyRate)), commissionPct: r2(num(f.commissionPct)), mobile: f.mobile.trim(), payTo: { method: f.method, accountNo: f.method === "cash" ? "" : f.accountNo.trim(), accountName: f.method === "cash" ? "" : f.accountName.trim() } });
+      const old = loginOf(id);
+      const email = f.email.trim().toLowerCase();
+      if (old && old.email !== email && old.email !== myEmail) dropMember(old.email);
+      if (email) saveMember({ email, role: f.admin ? "admin" : "staff", staff_id: id });
+      setEditing(null);
+    };
+    const retire = (s) => confirm({
+      title: `Move ${s.name} to former staff?`,
+      lines: ["They come off the schedule and new payroll runs, and their login stops working. Past shifts and payslips stay."],
+      confirmLabel: "Move to former staff",
+      onYes: () => {
+        putData("staff:" + s.id, "staff", { ...s, active: false }, `${s.name} moved to former staff.`);
+        const m = loginOf(s.id);
+        if (m && m.email !== myEmail) dropMember(m.email);
+      }
+    });
+    const current = staff.filter((s) => s.active !== false);
+    const former = staff.filter((s) => s.active === false);
+    const otherAdmins = members.filter((m) => m.role === "admin" && !m.staff_id);
+    const row = (s) => {
+      const r = rates[s.id], pt = (r && r.payTo) || {}, m = loginOf(s.id);
+      return h("div", { key: s.id, className: "ps-pay-person" },
+        h("div", { className: "ps-pay-row" },
+          h("span", { className: "jh-dot big", style: { background: s.color || JH_COLORS[0] } }),
+          h("span", { className: "ps-pay-who" }, h("b", null, s.name, s.active === false && h("span", { className: "ps-chip jh-chip" }, "Former")),
+            h("span", { className: "ps-muted" }, [s.position, r && num(r.dailyRate) ? peso(r.dailyRate) + " / day" : "No daily rate yet", r && num(r.commissionPct) ? r.commissionPct + "% commission" : "", methodLabel(pt.method) + (pt.accountNo ? " " + (pt.method === "gcash" ? gcashPretty(pt.accountNo) : pt.accountNo) : "")].filter(Boolean).join(" · ")),
+            h("span", { className: "ps-muted" }, m ? `Signs in as ${m.email}${m.role === "admin" ? " · can manage Jumphigh" : ""}` : "No login")),
+          s.active === false
+            ? h("button", { className: "ps-btn ghost small", onClick: () => putData("staff:" + s.id, "staff", { ...s, active: true }, `${s.name} is back on the team. Add their login again if they need it.`) }, "Bring back")
+            : h(React.Fragment, null,
+              h("button", { className: "ps-btn ghost small", onClick: () => setEditing(editing === s.id ? null : s.id) }, editing === s.id ? "Close" : "Edit"),
+              h("button", { className: "ps-btn ghost small", onClick: () => retire(s) }, "Remove"))),
+        editing === s.id && h(JhStaffForm, { key: s.id, s, rate: r, login: m, save: (f) => save(s, f), close: () => setEditing(null) }));
+    };
+    return h(React.Fragment, null,
+      h("div", { className: "ps-btnrow jh-top" }, h("p", { className: "ps-muted" }, `${current.length} on the team. Rates and pay details are only visible to people who can manage Jumphigh.`),
+        editing !== "new" && h("button", { className: "ps-btn", onClick: () => setEditing("new") }, "+ Add staff")),
+      editing === "new" && h("div", { className: "ps-pay-person" }, h(JhStaffForm, { s: {}, rate: null, login: null, save: (f) => save({}, f), close: () => setEditing(null) })),
+      h("div", { className: "ps-pay-list" }, current.map(row)),
+      former.length > 0 && h("button", { className: "ps-btn ghost small jh-former", onClick: () => setShowFormer(!showFormer) }, showFormer ? "Hide former staff" : `Show former staff (${former.length})`),
+      showFormer && h("div", { className: "ps-pay-list" }, former.map(row)),
+      h("h3", { className: "ps-h3" }, "Store settings"),
+      h("div", { className: "ps-pay-person jh-settings" },
+        h("div", { className: "ps-fields" },
+          h("label", { className: "ps-field" }, h("span", null, "Usual shift starts"), h("input", { type: "time", value: hours.start, onChange: (e) => setHours({ ...hours, start: e.target.value }) })),
+          h("label", { className: "ps-field" }, h("span", null, "Usual shift ends"), h("input", { type: "time", value: hours.end, onChange: (e) => setHours({ ...hours, end: e.target.value }) })),
+          h("label", { className: "ps-field" }, h("span", null, "Company name on payslips and sales slips"), h("input", { value: hours.company, onChange: (e) => setHours({ ...hours, company: e.target.value }) })),
+          h("label", { className: "ps-field" }, h("span", null, "Starting cash in the drawer each day (₱)"), h("input", { inputMode: "decimal", value: hours.float == null ? "" : hours.float, placeholder: "e.g. 1000", onChange: (e) => setHours({ ...hours, float: e.target.value }) })),
+          h("label", { className: "ps-field" }, h("span", null, "Warn when a size has this many pairs or fewer"), h("input", { inputMode: "numeric", value: hours.lowStock == null ? "" : hours.lowStock, placeholder: "2", onChange: (e) => setHours({ ...hours, lowStock: e.target.value }) }))),
+        h("div", { className: "ps-btnrow end" }, h("button", { className: "ps-btn", onClick: () => putData("settings", "settings", { start: hours.start, end: hours.end, company: hours.company.trim() || JH_DEFAULTS.company, float: r2(num(hours.float)), lowStock: hours.lowStock === "" || hours.lowStock == null ? 2 : Math.max(0, Math.floor(num(hours.lowStock))) }, "Store settings saved.") }, "Save settings"))),
+      h("h3", { className: "ps-h3" }, "Other managers"),
+      h("div", { className: "ps-pay-person" },
+        h("p", { className: "ps-muted" }, "Logins that can manage Jumphigh but aren't on the staff list (like you)."),
+        h("div", { className: "jh-admins" }, otherAdmins.map((m) => h("span", { key: m.email, className: "jh-admin" }, m.email, m.email === myEmail ? h("span", { className: "ps-muted" }, " (you)")
+          : h("button", { className: "ps-x-small", "aria-label": "Remove " + m.email, onClick: () => confirm({ title: "Remove this manager?", lines: [m.email + " won't be able to open Jumphigh any more."], confirmLabel: "Remove", onYes: () => dropMember(m.email) }) }, "×")))),
+        h("div", { className: "ps-form jh-addadmin" },
+          h("input", { type: "email", placeholder: "manager@email.com", value: newAdmin, onChange: (e) => setNewAdmin(e.target.value) }),
+          h("button", { className: "ps-btn ghost", onClick: () => {
+            const e = newAdmin.trim().toLowerCase();
+            if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(e)) return setToast("Type a full email address.");
+            saveMember({ email: e, role: "admin", staff_id: null }); setNewAdmin("");
+            setToast(`${e} can now manage Jumphigh. Make their sign-in in Supabase if they don't have one yet.`);
+          } }, "Add manager"))));
+  }
+
+  function JhPayroll({ staff, shifts, rates, runs, settings, me, putPay, dropPay, setToast, confirm }) {
+    const h = React.createElement;
+    const today = manilaDay();
+    const [openId, setOpenId] = useState(null);
+    const [newRun, setNewRun] = useState(null);
+    const suggest = () => {
+      const d = fromIso(today);
+      if (d.getDate() <= 15) { const p = new Date(d.getFullYear(), d.getMonth() - 1, 1); return { month: isoDay(p).slice(0, 7), half: "second", from: "", to: "", payDate: "" }; }
+      return { month: today.slice(0, 7), half: "first", from: "", to: "", payDate: "" };
+    };
+    const perOf = (n) => {
+      if (n.half === "custom") return { from: n.from, to: n.to };
+      const [y, mo] = n.month.split("-").map(Number);
+      const last = new Date(y, mo, 0).getDate();
+      const pad = (x) => String(x).padStart(2, "0");
+      const base = n.month + "-";
+      return n.half === "first" ? { from: base + "01", to: base + "15" } : n.half === "second" ? { from: base + "16", to: base + pad(last) } : { from: base + "01", to: base + pad(last) };
+    };
+    const countDays = (sid, from, to) => r2(shifts.filter((x) => x.staffId === sid && x.date >= from && x.date <= to).reduce((a, x) => a + jhDayValue(x), 0));
+    /* Commission: the person's % of their net sales (after returns) in the payroll dates,
+       kept as an extra line with id "commission" so a recount replaces it. */
+    const salesFor = async (from, to) => { try { return await jhPos().sales(from, to); } catch (e) { setToast("Sales didn't load, so commission wasn't added: " + jhErrText(e)); return null; } };
+    const lineFor = (s, from, to, prev, sales) => {
+      const r = rates[s.id] || {};
+      let adjustments = prev ? (prev.adjustments || []).filter((a) => !sales || a.id !== "commission") : [];
+      const pct = num(r.commissionPct);
+      if (sales && pct > 0) {
+        const sold = r2(sales.filter((x) => x.seller_id === s.id).reduce((a, x) => a + jhSaleNet(x), 0));
+        if (sold > 0) adjustments = [{ id: "commission", label: `Commission ${pct}% of ${peso(sold)} sales`, amount: r2(sold * pct / 100) }, ...adjustments];
+      }
+      return { ...prev || {}, staffId: s.id, name: s.name, position: s.position || "", rate: r2(num(r.dailyRate)), days: countDays(s.id, from, to),
+        payTo: { ...r.payTo || {} }, adjustments, paidAt: prev ? prev.paidAt || null : null, paidRef: prev ? prev.paidRef || "" : "" };
+    };
+    const note = (run, text) => ({ ...run, history: [...run.history || [], { at: (/* @__PURE__ */ new Date()).toISOString(), by: me.email, text }] });
+    const create = async () => {
+      const per = perOf(newRun);
+      if (!per.from || !per.to || per.to < per.from) return setToast("Pick a start and end date for this payroll.");
+      const id = "run:" + per.from + "_" + per.to;
+      if (runs.some((r) => r.id === id)) { setNewRun(null); setOpenId(id); return setToast("There's already a payroll for those dates, so it's open now."); }
+      const sales = await salesFor(per.from, per.to);
+      const soldBy = (sid) => !!sales && sales.some((x) => x.seller_id === sid && jhSaleNet(x) > 0) && num((rates[sid] || {}).commissionPct) > 0;
+      const people = staff.filter((s) => (s.active !== false && (num((rates[s.id] || {}).dailyRate) > 0 || countDays(s.id, per.from, per.to) > 0 || soldBy(s.id))) || (s.active === false && (countDays(s.id, per.from, per.to) > 0 || soldBy(s.id))));
+      const run = note({ id, from: per.from, to: per.to, payDate: newRun.payDate || "", status: "draft", createdAt: (/* @__PURE__ */ new Date()).toISOString(), lines: people.map((s) => lineFor(s, per.from, per.to, null, sales)) }, "Payroll made");
+      putPay(id, "run", run, "Payroll made from the schedule. Check the days, then approve.");
+      setNewRun(null); setOpenId(id);
+    };
+    const run = runs.find((r) => r.id === openId);
+    if (run) {
+      const draft = run.status !== "approved";
+      const upd = (patch, msg, hist) => { const nr = { ...run, ...patch }; putPay(run.id, "run", hist ? note(nr, hist) : nr, msg); };
+      const updLine = (sid, patch, msg) => upd({ lines: run.lines.map((l) => l.staffId === sid ? { ...l, ...patch } : l) }, msg);
+      const totals = run.lines.reduce((a, l) => { const m = jhLineMath(l); return { gross: a.gross + m.gross, adj: a.adj + m.adj, net: a.net + m.net, paid: a.paid + (l.paidAt ? m.net : 0) }; }, { gross: 0, adj: 0, net: 0, paid: 0 });
+      const missing = staff.filter((s) => s.active !== false && !run.lines.some((l) => l.staffId === s.id));
+      const recount = async () => { const sales = await salesFor(run.from, run.to); upd({ lines: run.lines.map((l) => { const s = staff.find((x) => x.id === l.staffId) || { id: l.staffId, name: l.name, position: l.position }; return lineFor(s, run.from, run.to, l, sales); }) },
+        "Days, daily rates and commission updated from the schedule, staff list and sales.", "Recounted from the schedule and sales"); };
+      const slip = (lines) => { const w = window.open("", "_blank"); if (!w) return setToast("Your browser blocked the payslip window. Allow pop-ups for this site and try again."); w.document.open(); w.document.write(jhSlipHtml(run, lines, settings.company || JH_DEFAULTS.company)); w.document.close(); };
+      const csv = () => jhDownload(`Jumphigh payroll ${run.from} to ${run.to}.csv`, jhCsv([
+        ["Name", "Position", "Days worked", "Daily rate", "Gross", "Additions / deductions", "Net pay", "Paid by", "Account", "Paid on", "Reference"],
+        ...run.lines.map((l) => { const m = jhLineMath(l); const pt = l.payTo || {}; return [l.name, l.position, r2(l.days), r2(l.rate), m.gross, m.adj, m.net, methodLabel(pt.method), pt.accountNo || "", l.paidAt || "", l.paidRef || ""]; }),
+        ["Total", "", "", "", r2(totals.gross), r2(totals.adj), r2(totals.net), "", "", "", ""]]));
+      return h(React.Fragment, null,
+        h("button", { className: "ps-btn ghost small", onClick: () => setOpenId(null) }, "← All payrolls"),
+        h("div", { className: "jh-runhead" },
+          h("div", null, h("h3", { className: "ps-h3 jh-runtitle" }, "Payroll · " + jhPeriodLabel(run.from, run.to), h("span", { className: "ps-chip " + (draft ? "warn" : "ok") }, draft ? "Draft" : "Approved")),
+            h("label", { className: "jh-paydate" }, h("span", { className: "ps-muted" }, "Pay date "), h("input", { type: "date", value: run.payDate || "", onChange: (e) => upd({ payDate: e.target.value }, "Pay date saved.") }))),
+          h("div", { className: "jh-totbox" }, h("span", { className: "ps-muted" }, "Total to pay out"), h("b", null, peso(totals.net)), h("span", { className: "ps-muted" }, `Paid ${peso(totals.paid)} · still to pay ${peso(r2(totals.net - totals.paid))}`))),
+        draft && h("p", { className: "ps-muted jh-hint" }, "Days worked come from the schedule: each shift counts 1 day, a half day counts ½, absent counts 0. You can type a different number. Commission comes from the POS sales each person made in these dates. Use “Add line” for overtime, bonuses, cash advances or deductions (type a minus for deductions)."),
+        draft && missing.length > 0 && h("p", { className: "ps-muted jh-hint" }, "Not in this payroll: " + missing.map((s) => s.name).join(", ") + " (no daily rate, shifts or commission in these dates). ",
+          h("button", { className: "ps-linkbtn", onClick: () => upd({ lines: [...run.lines, ...missing.map((s) => lineFor(s, run.from, run.to, null, null))] }, "Added.") }, "Add them anyway")),
+        h("div", { className: "jh-lines" }, run.lines.map((l) => {
+          const m = jhLineMath(l), pt = l.payTo || {};
+          return h("div", { key: l.staffId, className: "ps-pay-card jh-line " + (l.paidAt ? "paid" : "") },
+            h("div", { className: "jh-linehead" },
+              h("span", null, h("b", null, l.name), h("span", { className: "ps-muted" }, " " + (l.position || ""))),
+              h("span", { className: "jh-net" }, peso(m.net))),
+            h("div", { className: "jh-calc" },
+              draft ? h("label", null, h("input", { className: "ps-pay-num small", inputMode: "decimal", value: l.days, onChange: (e) => updLine(l.staffId, { days: e.target.value }), onBlur: (e) => updLine(l.staffId, { days: r2(num(e.target.value)) }, "Saved.") }), " days") : h("span", null, jhDaysText(l.days)),
+              h("span", null, " × "),
+              draft ? h("label", null, "₱", h("input", { className: "ps-pay-num", inputMode: "decimal", value: l.rate, onChange: (e) => updLine(l.staffId, { rate: e.target.value }), onBlur: (e) => updLine(l.staffId, { rate: r2(num(e.target.value)) }, "Saved.") }), " / day") : h("span", null, peso(l.rate) + " / day"),
+              h("span", null, " = "), h("b", null, peso(m.gross)),
+              !num(l.rate) && h("span", { className: "ps-pay-warn" }, " No daily rate yet: set it in Staff, then “Recount”.")),
+            (l.adjustments || []).map((a) => h("div", { key: a.id, className: "jh-adj" },
+              draft ? h(React.Fragment, null,
+                h("input", { className: "ps-pay-adjl", placeholder: "e.g. Overtime, Cash advance", value: a.label, onChange: (e) => updLine(l.staffId, { adjustments: l.adjustments.map((x) => x.id === a.id ? { ...x, label: e.target.value } : x) }) }),
+                h("input", { className: "ps-pay-num", inputMode: "decimal", placeholder: "-500", value: a.amount, onChange: (e) => updLine(l.staffId, { adjustments: l.adjustments.map((x) => x.id === a.id ? { ...x, amount: e.target.value } : x) }), onBlur: () => updLine(l.staffId, {}, "Saved.") }),
+                h("button", { className: "ps-x-small", "aria-label": "Remove line", onClick: () => updLine(l.staffId, { adjustments: l.adjustments.filter((x) => x.id !== a.id) }, "Line removed.") }, "×"))
+                : h(React.Fragment, null, h("span", null, a.label || (num(a.amount) < 0 ? "Deduction" : "Additional pay")), h("span", { className: num(a.amount) < 0 ? "jh-minus" : "" }, (num(a.amount) < 0 ? "−" : "+") + peso(Math.abs(num(a.amount))))))),
+            draft && h("button", { className: "ps-linkbtn jh-addline", onClick: () => updLine(l.staffId, { adjustments: [...l.adjustments || [], { id: jhNewId(), label: "", amount: "" }] }) }, "+ Add line"),
+            h("div", { className: "jh-payrow" },
+              h("span", { className: "ps-muted" }, "Pay to: " + methodLabel(pt.method) + (pt.accountNo ? " " + (pt.method === "gcash" ? gcashPretty(pt.accountNo) : pt.accountNo) : "") + (pt.accountName ? " (" + pt.accountName + ")" : "")),
+              h("span", { className: "jh-paybtns" },
+                h("button", { className: "ps-btn ghost small", onClick: () => slip([l]) }, "Payslip"),
+                l.paidAt
+                  ? h(React.Fragment, null, h("span", { className: "ps-chip ok" }, "Paid " + jhShort(l.paidAt) + (l.paidRef ? " · " + l.paidRef : "")), h("button", { className: "ps-linkbtn", onClick: () => updLine(l.staffId, { paidAt: null, paidRef: "" }, "Marked not paid.") }, "Undo"))
+                  : !draft && h(JhPaidButton, { onPaid: (ref) => updLine(l.staffId, { paidAt: today, paidRef: ref }, `${l.name} marked paid.`) }))));
+        })),
+        h("div", { className: "ps-pay-tablewrap jh-sum" }, h("table", { className: "ps-pay-table jh-sumtable" },
+          h("tbody", null,
+            h("tr", null, h("td", null, "Gross pay"), h("td", { className: "n" }, peso(totals.gross))),
+            h("tr", null, h("td", null, "Additions and deductions"), h("td", { className: "n" }, (totals.adj < 0 ? "−" : "") + peso(Math.abs(totals.adj)))),
+            h("tr", null, h("td", null, h("b", null, "Total net pay")), h("td", { className: "n" }, h("b", null, peso(totals.net))))))),
+        h("div", { className: "ps-btnrow ps-pay-actions" },
+          draft && h("button", { className: "ps-btn ghost", onClick: recount }, "Recount from schedule"),
+          draft && h("button", { className: "ps-btn", onClick: () => confirm({ title: "Approve this payroll?", lines: [`${run.lines.length} people · ${peso(totals.net)} total.`, "The numbers lock. Then you can mark each person paid."], confirmLabel: "Approve", onYes: () => upd({ status: "approved", approvedAt: (/* @__PURE__ */ new Date()).toISOString() }, "Approved. Mark people paid as you send their pay.", "Approved") }) }, "Approve"),
+          !draft && !run.lines.some((l) => l.paidAt) && h("button", { className: "ps-btn ghost", onClick: () => upd({ status: "draft" }, "Back to draft. You can change the numbers again.", "Reopened") }, "Reopen to edit"),
+          h("button", { className: "ps-btn ghost", onClick: () => slip(run.lines) }, "Print all payslips"),
+          h("button", { className: "ps-btn ghost", onClick: csv }, "Download CSV"),
+          draft && h("button", { className: "ps-btn ghost jh-del", onClick: () => confirm({ title: "Delete this payroll draft?", lines: ["The schedule isn't touched. You can make the payroll again."], confirmLabel: "Delete", onYes: () => { dropPay(run.id); setOpenId(null); setToast("Payroll draft deleted."); } }) }, "Delete draft")),
+        (run.history || []).length > 0 && h("p", { className: "ps-muted jh-hist" }, run.history.map((x) => `${x.text} · ${new Date(x.at).toLocaleString("en-PH", { timeZone: "Asia/Manila", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}`).join("  ·  ")));
+    }
+    const per = newRun ? perOf(newRun) : null;
+    return h(React.Fragment, null,
+      h("div", { className: "ps-btnrow jh-top" }, h("p", { className: "ps-muted" }, "Pay = daily rate × days worked on the schedule, plus sales commission, plus or minus any extra lines."),
+        !newRun && h("button", { className: "ps-btn", onClick: () => setNewRun(suggest()) }, "+ New payroll")),
+      newRun && h("div", { className: "ps-pay-person jh-newrun" },
+        h("div", { className: "ps-fields" },
+          newRun.half !== "custom" && h("label", { className: "ps-field" }, h("span", null, "Month worked"), h("input", { type: "month", value: newRun.month, onChange: (e) => setNewRun({ ...newRun, month: e.target.value }) })),
+          h("label", { className: "ps-field" }, h("span", null, "Period"), h("select", { value: newRun.half, onChange: (e) => setNewRun({ ...newRun, half: e.target.value }) },
+            h("option", { value: "first" }, "1st – 15th"), h("option", { value: "second" }, "16th – end of month"), h("option", { value: "whole" }, "Whole month"), h("option", { value: "custom" }, "Pick dates (e.g. weekly)"))),
+          newRun.half === "custom" && h("label", { className: "ps-field" }, h("span", null, "From"), h("input", { type: "date", value: newRun.from, onChange: (e) => setNewRun({ ...newRun, from: e.target.value }) })),
+          newRun.half === "custom" && h("label", { className: "ps-field" }, h("span", null, "To"), h("input", { type: "date", value: newRun.to, onChange: (e) => setNewRun({ ...newRun, to: e.target.value }) })),
+          h("label", { className: "ps-field" }, h("span", null, "Pay date (optional)"), h("input", { type: "date", value: newRun.payDate, onChange: (e) => setNewRun({ ...newRun, payDate: e.target.value }) }))),
+        per && per.from && per.to && per.to >= per.from && h("p", { className: "ps-muted jh-hint" }, "Covers " + jhPeriodLabel(per.from, per.to) + "."),
+        h("div", { className: "ps-btnrow end" }, h("button", { className: "ps-btn ghost", onClick: () => setNewRun(null) }, "Cancel"), h("button", { className: "ps-btn", onClick: create }, "Make payroll"))),
+      !runs.length && !newRun ? h("div", { className: "ps-pay-locked" }, h("b", null, "No payrolls yet."), h("p", null, "Add staff with their daily rate, plan shifts on the schedule, then make your first payroll here."))
+        : h("div", { className: "ps-pay-list" }, runs.map((r) => {
+          const net = r2(r.lines.reduce((a, l) => a + jhLineMath(l).net, 0));
+          const paid = r.lines.filter((l) => l.paidAt).length;
+          return h("button", { key: r.id, className: "ps-pay-person jh-runrow", onClick: () => setOpenId(r.id) },
+            h("span", { className: "ps-pay-who" }, h("b", null, jhPeriodLabel(r.from, r.to)), h("span", { className: "ps-muted" }, `${r.lines.length} people${r.payDate ? " · pay date " + jhShort(r.payDate) : ""}${r.status === "approved" ? ` · ${paid} of ${r.lines.length} paid` : ""}`)),
+            h("span", { className: "ps-chip " + (r.status === "approved" ? paid === r.lines.length && paid ? "ok" : "" : "warn") }, r.status === "approved" ? paid === r.lines.length && paid ? "All paid" : "Approved" : "Draft"),
+            h("b", { className: "jh-runnet" }, peso(net)));
+        })));
+  }
+
+  function JhPaidButton({ onPaid }) {
+    const h = React.createElement;
+    const [open, setOpen] = useState(false);
+    const [ref, setRef] = useState("");
+    if (!open) return h("button", { className: "ps-btn small", onClick: () => setOpen(true) }, "Mark paid");
+    return h("span", { className: "jh-paidform" },
+      h("input", { className: "ps-pay-ref", placeholder: "GCash / bank ref (optional)", value: ref, autoFocus: true, onChange: (e) => setRef(e.target.value), onKeyDown: (e) => { if (e.key === "Enter") onPaid(ref.trim()); if (e.key === "Escape") setOpen(false); } }),
+      h("button", { className: "ps-btn small", onClick: () => onPaid(ref.trim()) }, "Paid"),
+      h("button", { className: "ps-linkbtn", onClick: () => setOpen(false) }, "Cancel"));
+  }
+
+  /* ---- Jumphigh POS (added 14 Nov 2026) --------------------------------------
+     Sales tracking + stock per size/colour. NOT a BIR receipt: the slip says so.
+     Supabase: jh_products, jh_variants (members read, managers write), jh_sales and
+     jh_cash_counts (members read; written only through jh_record_sale / jh_return_sale
+     (managers) / jh_close_day, which work out prices, totals and stock on the server). */
+  var JH_PAY = [["cash", "Cash"], ["gcash", "GCash"], ["maya", "Maya"], ["card", "Card"], ["bank", "Bank transfer"]];
+  var jhPayLabel = (m) => (JH_PAY.find((x) => x[0] === m) || ["", m || "—"])[1];
+  var jhSaleNet = (s) => r2(num(s.total) - num(s.returned));
+  var jhClock = (iso) => new Date(iso).toLocaleTimeString("en-PH", { timeZone: "Asia/Manila", hour: "numeric", minute: "2-digit" });
+  var jhWhen = (iso) => new Date(iso).toLocaleString("en-PH", { timeZone: "Asia/Manila", month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" });
+  var jhItemLabel = (it) => [it.name, [it.color, it.size && "size " + it.size].filter(Boolean).join(", ")].filter(Boolean).join(" · ");
+  /* Server-side rules, copied for the preview/demo store only. */
+  var jhDemoPos = (() => {
+    const rd = (t) => jhDemoRows(t), wr = (t, r) => jhDemoWrite(t, r);
+    const today = () => manilaDay();
+    return {
+      catalog: async () => ({ products: rd("products"), variants: rd("variants") }),
+      saveProduct: async (p, vs) => {
+        wr("products", [...rd("products").filter((x) => x.id !== p.id), p]);
+        const cur = rd("variants");
+        wr("variants", [...cur.filter((x) => !vs.some((v) => v.id === x.id)), ...vs.map((v) => ({ ...cur.find((x) => x.id === v.id) || {}, ...v }))]);
+      },
+      sell: async (p) => {
+        const old = rd("sales").find((s) => s.id === p.id); if (old) return old;
+        const vars = rd("variants"), prods = rd("products");
+        if (!p.items || !p.items.length) throw new Error("The sale has no items.");
+        let sub = 0, idisc = 0; const items = [];
+        p.items.forEach((it) => {
+          const v = vars.find((x) => x.id === it.variantId); const pr = v && prods.find((x) => x.id === v.product_id);
+          if (!v || !pr) throw new Error("One of the items no longer exists. Refresh and try again.");
+          const q = Math.floor(num(it.qty)); if (q <= 0) throw new Error("Quantity must be at least 1.");
+          const price = v.price != null && v.price !== "" ? num(v.price) : num(pr.price);
+          const disc = Math.min(Math.max(num(it.disc), 0), price * q);
+          v.stock = num(v.stock) - q;
+          items.push({ variantId: v.id, productId: pr.id, name: pr.name, color: v.color, size: v.size, qty: q, price, disc: r2(disc) });
+          sub += price * q; idisc += disc;
+        });
+        const sdisc = Math.min(Math.max(num(p.saleDisc), 0), sub - idisc);
+        const tot = r2(sub - idisc - sdisc);
+        const paid = (p.payments || []).reduce((a, x) => a + num(x.amount), 0);
+        const cash = (p.payments || []).filter((x) => x.method === "cash").reduce((a, x) => a + num(x.amount), 0);
+        if (paid < tot) throw new Error("The payment is short by " + r2(tot - paid) + ".");
+        const chg = r2(paid - tot); if (chg > cash) throw new Error("Only cash can be overpaid (for change).");
+        wr("variants", vars);
+        const sales = rd("sales");
+        const s = { id: p.id, no: sales.reduce((a, x) => Math.max(a, x.no), 0) + 1, at: (/* @__PURE__ */ new Date()).toISOString(), day: today(), seller_id: p.sellerId || null, cashier: "you@preview",
+          items, subtotal: r2(sub), item_disc: r2(idisc), sale_disc: r2(sdisc), total: tot, payments: p.payments || [], change: chg, note: p.note || null, status: "done", returns: [], returned: 0 };
+        wr("sales", [...sales, s]); return s;
+      },
+      sales: async (from, to) => rd("sales").filter((s) => s.day >= from && s.day <= to).sort((a, b) => b.no - a.no),
+      ret: async (id, lines, method, note) => {
+        const sales = rd("sales"), s = sales.find((x) => x.id === id); if (!s) throw new Error("Sale not found.");
+        const vars = rd("variants"); const base = s.subtotal - s.item_disc; let amt = 0; const out = [];
+        lines.forEach((ln) => {
+          const q = Math.floor(num(ln.qty)); if (q <= 0) return;
+          const it = s.items[ln.i]; const done = s.returns.reduce((a, r) => a + r.lines.filter((l) => l.i === ln.i).reduce((b, l) => b + l.qty, 0), 0);
+          if (done + q > it.qty) throw new Error(`You can't return more ${it.name} than were sold.`);
+          let unit = it.price * it.qty - it.disc; if (base > 0) unit -= s.sale_disc * unit / base; unit /= it.qty;
+          const v = vars.find((x) => x.id === it.variantId); if (v) v.stock = num(v.stock) + q;
+          out.push({ i: ln.i, qty: q, amount: r2(unit * q) }); amt += r2(unit * q);
+        });
+        if (!out.length) throw new Error("Pick at least one item to return.");
+        s.returns = [...s.returns, { at: (/* @__PURE__ */ new Date()).toISOString(), by: "you@preview", lines: out, amount: r2(amt), method: method || "cash", note: note || null }];
+        s.returned = r2(num(s.returned) + amt);
+        const tq = s.items.reduce((a, x) => a + x.qty, 0), rq = s.returns.reduce((a, r) => a + r.lines.reduce((b, l) => b + l.qty, 0), 0);
+        s.status = rq >= tq ? "returned" : "partial";
+        wr("variants", vars); wr("sales", sales); return s;
+      },
+      expected: async (day) => {
+        const st = (rd("data").find((r) => r.id === "settings") || {}).data || {};
+        const all = rd("sales");
+        let e = num(st.float);
+        all.filter((s) => s.day === day).forEach((s) => { (s.payments || []).forEach((x) => { if (x.method === "cash") e += num(x.amount); }); e -= num(s.change); });
+        all.forEach((s) => (s.returns || []).forEach((r) => { if (r.method === "cash" && new Date(r.at).toLocaleDateString("en-CA", { timeZone: "Asia/Manila" }) === day) e -= num(r.amount); }));
+        return r2(e);
+      },
+      closeDay: async (day, counted, note) => {
+        const e = await jhDemoPos.expected(day); const c = rd("counts");
+        const row = { id: c.length + 1, day, counted: r2(num(counted)), expected: e, note: note || null, by_email: "you@preview", at: (/* @__PURE__ */ new Date()).toISOString() };
+        wr("counts", [...c, row]); return row;
+      },
+      counts: async (from, to) => rd("counts").filter((c) => c.day >= from && c.day <= to).sort((a, b) => String(b.at).localeCompare(String(a.at)))
+    };
+  })();
+  jhDemo.pos = jhDemoPos;
+  var jhPos = () => jhApi().pos || jhDemoPos;
+  var jhErrText = (e) => String((e && e.message) || "check your connection").replace(/^.*?ERROR:\s*/, "");
+
+  var jhSlipPrint = (s, sellerName, company) => {
+    const rows = (s.items || []).map((it) => `<tr><td>${it.qty} × ${jhEsc(jhItemLabel(it))}${num(it.disc) ? `<br><small>less ${peso(it.disc)}</small>` : ""}</td><td class="n">${peso(num(it.price) * it.qty - num(it.disc))}</td></tr>`).join("");
+    const pays = (s.payments || []).map((p) => `<tr><td>${jhEsc(jhPayLabel(p.method))}${p.ref ? " · " + jhEsc(p.ref) : ""}</td><td class="n">${peso(p.amount)}</td></tr>`).join("");
+    const logo = /^jump\s*high$/i.test(String(company).trim()) ? `<div class="logo">${jhLogoSvg(60)}</div>` : `<h1>${jhEsc(company)}</h1>`;
+    return `<!doctype html><html><head><meta charset="utf-8"><title>Sale #${s.no}</title><style>
+      body{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;color:#111;margin:0;padding:16px}.slip{max-width:300px;margin:0 auto}
+      h1{font-size:20px;margin:0}.logo{line-height:0;margin-bottom:6px}.c{text-align:center}.mut{color:#555;font-size:12px}
+      table{width:100%;border-collapse:collapse;font-size:13px;margin:8px 0}td{padding:3px 0;vertical-align:top}.n{text-align:right;white-space:nowrap}
+      tr.t td{border-top:1px dashed #999;font-weight:700;padding-top:6px}small{color:#555}.note{border:1px solid #999;border-radius:6px;padding:4px 6px;font-size:11px;text-align:center;margin-top:10px}
+      </style></head><body><div class="slip"><div class="c">${logo}<div class="mut">Sales slip #${s.no} · ${jhEsc(jhWhen(s.at))}</div>${sellerName ? `<div class="mut">Sold by ${jhEsc(sellerName)}</div>` : ""}</div>
+      <table>${rows}
+      ${num(s.sale_disc) ? `<tr><td>Discount</td><td class="n">−${peso(s.sale_disc)}</td></tr>` : ""}
+      <tr class="t"><td>Total</td><td class="n">${peso(s.total)}</td></tr>${pays}
+      ${num(s.change) ? `<tr><td>Change</td><td class="n">${peso(s.change)}</td></tr>` : ""}</table>
+      <div class="note">This is not an official receipt.</div></div><script>setTimeout(function(){window.print()},300)<\/script></body></html>`;
+  };
+
+  /* Pick colour + size for one product. */
+  function JhPickVariant({ product, variants, inCart, add, close }) {
+    const h = React.createElement;
+    const colors = [...new Set(variants.map((v) => v.color))];
+    const [color, setColor] = useState(colors[0] || "");
+    const sizes = variants.filter((v) => v.color === color);
+    return h("div", { className: "ps-overlay", onClick: (e) => e.target === e.currentTarget && close() },
+      h("div", { className: "ps-modal jh-pick", role: "dialog", "aria-modal": "true" },
+        h("h2", { className: "ps-h2" }, product.name),
+        h("p", { className: "ps-muted" }, [product.brand, peso(product.price)].filter(Boolean).join(" · ")),
+        colors.length > 1 && h("div", { className: "jh-pick-colors" }, colors.map((c) => h("button", { key: c, className: "jh-pill" + (c === color ? " on" : ""), onClick: () => setColor(c) }, c || "No colour"))),
+        h("div", { className: "jh-pick-sizes" }, sizes.map((v) => {
+          const left = num(v.stock) - (inCart[v.id] || 0);
+          return h("button", { key: v.id, className: "jh-size" + (left <= 0 ? " out" : ""), onClick: () => { add(v); close(); } },
+            h("b", null, v.size || "One size"), h("small", null, left <= 0 ? "0 left" : left + " left"));
+        })),
+        h("p", { className: "ps-muted jh-hint" }, "Tap a size to add it. Sizes showing 0 can still be sold if the pair is really there; fix the stock in Products later."),
+        h("div", { className: "ps-btnrow end" }, h("button", { className: "ps-btn ghost", onClick: close }, "Close"))));
+  }
+
+  function JhPayModal({ total, onDone, close, busy }) {
+    const h = React.createElement;
+    const [pays, setPays] = useState([{ id: jhNewId(), method: "cash", amount: String(total), ref: "" }]);
+    const paid = r2(pays.reduce((a, p) => a + num(p.amount), 0));
+    const cash = r2(pays.filter((p) => p.method === "cash").reduce((a, p) => a + num(p.amount), 0));
+    const left = r2(total - paid), change = r2(paid - total);
+    const bad = left > 0 ? "Still to pay: " + peso(left) : change > cash ? "Only cash can be more than the total (for change)." : "";
+    const set = (id, patch) => setPays(pays.map((p) => p.id === id ? { ...p, ...patch } : p));
+    const cashQuick = [total, ...[100, 200, 500, 1000].map((b) => Math.ceil(total / b) * b)].filter((v, i, a) => v > 0 && a.indexOf(v) === i).slice(0, 5);
+    return h("div", { className: "ps-overlay", onClick: (e) => e.target === e.currentTarget && !busy && close() },
+      h("div", { className: "ps-modal jh-paym", role: "dialog", "aria-modal": "true" },
+        h("p", { className: "ps-muted" }, "Total to pay"), h("div", { className: "jh-paytotal" }, peso(total)),
+        pays.map((p, i) => h("div", { key: p.id, className: "jh-payline" },
+          h("div", { className: "jh-paymethods" }, JH_PAY.map(([k, l]) => h("button", { key: k, className: "jh-pill" + (p.method === k ? " on" : ""), onClick: () => set(p.id, { method: k }) }, l))),
+          h("div", { className: "jh-payfields" },
+            h("label", { className: "ps-field" }, h("span", null, p.method === "cash" ? "Cash received" : "Amount"), h("input", { inputMode: "decimal", value: p.amount, onChange: (e) => set(p.id, { amount: e.target.value }), onFocus: (e) => e.target.select() })),
+            p.method !== "cash" && h("label", { className: "ps-field" }, h("span", null, "Reference no. (optional)"), h("input", { value: p.ref, onChange: (e) => set(p.id, { ref: e.target.value }) })),
+            pays.length > 1 && h("button", { className: "ps-x-small", "aria-label": "Remove payment", onClick: () => setPays(pays.filter((x) => x.id !== p.id)) }, "×")),
+          p.method === "cash" && i === pays.length - 1 && h("div", { className: "jh-quick" }, cashQuick.map((v) => h("button", { key: v, className: "jh-pill", onClick: () => set(p.id, { amount: String(r2(v - (paid - num(p.amount)))) }) }, peso(v - (paid - num(p.amount))).replace(".00", "")))))),
+        h("button", { className: "ps-linkbtn jh-addpay", onClick: () => setPays([...pays, { id: jhNewId(), method: "gcash", amount: left > 0 ? String(left) : "", ref: "" }]) }, "+ Split: add another payment"),
+        h("div", { className: "jh-paysum" },
+          change > 0 && !bad ? h("div", { className: "jh-change" }, h("span", null, "Change"), h("b", null, peso(change))) : null,
+          bad && h("p", { className: "ps-pay-warn" }, bad)),
+        h("div", { className: "ps-btnrow" },
+          h("button", { className: "ps-btn ghost", onClick: close, disabled: busy }, "Back"),
+          h("button", { className: "ps-btn", disabled: !!bad || busy, onClick: () => onDone(pays.filter((p) => num(p.amount) > 0).map((p) => ({ method: p.method, amount: r2(num(p.amount)), ref: p.ref.trim() || undefined }))) }, busy ? "Saving…" : "Complete sale"))));
+  }
+
+  function JhSell({ cat, setCat, staff, me, admin, settings, setToast }) {
+    const h = React.createElement;
+    const pos = jhPos();
+    const [cart, setCart] = useState(() => { try { return JSON.parse(sessionStorage.getItem("ps-jh-cart") || "[]"); } catch (e) { return []; } });
+    useEffect(() => { try { sessionStorage.setItem("ps-jh-cart", JSON.stringify(cart)); } catch (e) {} }, [cart]);
+    const [q, setQ] = useState("");
+    const [pick, setPick] = useState(null);
+    const [saleDisc, setSaleDisc] = useState({ v: "", pct: false });
+    const [seller, setSeller] = useState(me.staffId || "");
+    const [paying, setPaying] = useState(false);
+    const [busy, setBusy] = useState(false);
+    const [done, setDone] = useState(null);
+    const [saleId, setSaleId] = useState(() => "sale-" + jhNewId());
+    const products = cat.products.filter((p) => p.active !== false);
+    const vOf = (pid) => cat.variants.filter((v) => v.product_id === pid && v.active !== false).sort((a, b) => (a.sort || 0) - (b.sort || 0));
+    const shown = products.filter((p) => !q.trim() || [p.name, p.brand, p.category].join(" ").toLowerCase().includes(q.trim().toLowerCase()));
+    const inCart = {}; cart.forEach((l) => { inCart[l.variantId] = (inCart[l.variantId] || 0) + num(l.qty); });
+    const add = (p, v) => setCart((c) => {
+      const ex = c.find((l) => l.variantId === v.id);
+      if (ex) return c.map((l) => l.variantId === v.id ? { ...l, qty: num(l.qty) + 1 } : l);
+      return [...c, { variantId: v.id, name: p.name, color: v.color, size: v.size, price: v.price != null && v.price !== "" ? num(v.price) : num(p.price), qty: 1, disc: "" }];
+    });
+    const sub = r2(cart.reduce((a, l) => a + l.price * num(l.qty), 0));
+    const idisc = r2(cart.reduce((a, l) => a + Math.min(num(l.disc), l.price * num(l.qty)), 0));
+    const sdisc = r2(Math.min(saleDisc.pct ? (sub - idisc) * num(saleDisc.v) / 100 : num(saleDisc.v), sub - idisc));
+    const total = r2(sub - idisc - sdisc);
+    const crew = staff.filter((s) => s.active !== false);
+    const finish = async (payments) => {
+      setBusy(true);
+      try {
+        const s = await pos.sell({ id: saleId, sellerId: seller || null, items: cart.map((l) => ({ variantId: l.variantId, qty: Math.max(1, Math.floor(num(l.qty))), disc: r2(num(l.disc)) })), saleDisc: sdisc, payments });
+        /* Stock went down on the server; mirror it here so the next sale sees it. */
+        setCat((c) => ({ ...c, variants: c.variants.map((v) => { const n = s.items.filter((it) => it.variantId === v.id).reduce((a, it) => a + it.qty, 0); return n ? { ...v, stock: num(v.stock) - n } : v; }) }));
+        setDone(s); setPaying(false); setCart([]); setSaleDisc({ v: "", pct: false }); setSaleId("sale-" + jhNewId());
+      } catch (e) { setToast("The sale didn't save: " + jhErrText(e)); }
+      setBusy(false);
+    };
+    const sellerName = (id) => (staff.find((s) => s.id === id) || {}).name || "";
+    const lowAt = num(settings.lowStock || 2);
+    return h("div", { className: "jh-sell" },
+      h("div", { className: "jh-prodside" },
+        h("input", { className: "jh-search", placeholder: "Search shoes…", value: q, onChange: (e) => setQ(e.target.value) }),
+        !products.length ? h("div", { className: "ps-pay-locked" }, h("b", null, "No products yet."), h("p", null, admin ? "Add your shoes in the Products tab (sizes, colours and stock), then sell them here." : "Your manager hasn't added products yet."))
+          : h("div", { className: "jh-prods" }, shown.map((p) => {
+            const vs = vOf(p.id); const st = vs.reduce((a, v) => a + num(v.stock), 0);
+            return h("button", { key: p.id, className: "jh-prod", onClick: () => vs.length === 1 ? add(p, vs[0]) : setPick(p.id), disabled: !vs.length },
+              h("b", null, p.name), p.brand && h("small", null, p.brand), h("span", { className: "jh-prodprice" }, peso(p.price)),
+              h("small", { className: st <= lowAt ? "jh-low" : "" }, vs.length ? st + " in stock" : "No sizes yet"));
+          }), !shown.length && h("p", { className: "ps-muted" }, "Nothing matches “" + q + "”."))),
+      h("div", { className: "jh-cart" },
+        h("h3", { className: "ps-h3" }, "Current sale"),
+        !cart.length ? h("p", { className: "ps-muted" }, "Tap a shoe to add it.") : h("div", { className: "jh-lines2" }, cart.map((l) => {
+          const v = cat.variants.find((x) => x.id === l.variantId);
+          const over = v && num(l.qty) > num(v.stock);
+          return h("div", { key: l.variantId, className: "jh-cl" },
+            h("div", { className: "jh-cl-top" }, h("span", null, h("b", null, l.name), h("small", null, [l.color, l.size && "size " + l.size].filter(Boolean).join(" · "))),
+              h("button", { className: "ps-x-small", "aria-label": "Remove", onClick: () => setCart(cart.filter((x) => x.variantId !== l.variantId)) }, "×")),
+            h("div", { className: "jh-cl-row" },
+              h("span", { className: "jh-qty" },
+                h("button", { onClick: () => setCart(cart.map((x) => x.variantId === l.variantId ? { ...x, qty: Math.max(1, num(x.qty) - 1) } : x)), "aria-label": "One less" }, "−"),
+                h("b", null, l.qty),
+                h("button", { onClick: () => setCart(cart.map((x) => x.variantId === l.variantId ? { ...x, qty: num(x.qty) + 1 } : x)), "aria-label": "One more" }, "+")),
+              h("span", { className: "ps-muted" }, "× " + peso(l.price)),
+              h("label", { className: "jh-disc" }, "less ₱", h("input", { inputMode: "decimal", value: l.disc, placeholder: "0", onChange: (e) => setCart(cart.map((x) => x.variantId === l.variantId ? { ...x, disc: e.target.value } : x)) })),
+              h("b", { className: "jh-cl-amt" }, peso(l.price * num(l.qty) - Math.min(num(l.disc), l.price * num(l.qty))))),
+            over && h("small", { className: "jh-low" }, `Only ${Math.max(0, num(v.stock))} in stock.`));
+        })),
+        cart.length > 0 && h("div", { className: "jh-cartfoot" },
+          h("div", { className: "jh-sumrow" }, h("span", null, "Subtotal"), h("span", null, peso(sub))),
+          idisc > 0 && h("div", { className: "jh-sumrow" }, h("span", null, "Item discounts"), h("span", null, "−" + peso(idisc))),
+          h("div", { className: "jh-sumrow" }, h("span", null, "Discount on the sale"),
+            h("span", { className: "jh-sdisc" },
+              h("input", { inputMode: "decimal", value: saleDisc.v, placeholder: "0", onChange: (e) => setSaleDisc({ ...saleDisc, v: e.target.value }) }),
+              h("button", { className: "jh-pill on", onClick: () => setSaleDisc({ ...saleDisc, pct: !saleDisc.pct }), title: "Switch between pesos and percent" }, saleDisc.pct ? "%" : "₱"),
+              sdisc > 0 && h("span", null, "−" + peso(sdisc)))),
+          h("div", { className: "jh-sumrow jh-total" }, h("span", null, "Total"), h("b", null, peso(total))),
+          h("label", { className: "ps-field jh-seller" }, h("span", null, "Sold by (for commission)"),
+            h("select", { value: seller, onChange: (e) => setSeller(e.target.value) }, h("option", { value: "" }, "— Nobody / not sure —"), crew.map((s) => h("option", { key: s.id, value: s.id }, s.name)))),
+          h("div", { className: "ps-btnrow" },
+            h("button", { className: "ps-btn ghost", onClick: () => { setCart([]); setSaleDisc({ v: "", pct: false }); } }, "Clear"),
+            h("button", { className: "ps-btn jh-paybtn", onClick: () => setPaying(true) }, "Pay " + peso(total))))),
+      pick && h(JhPickVariant, { product: products.find((p) => p.id === pick), variants: vOf(pick), inCart, add: (v) => add(products.find((p) => p.id === pick), v), close: () => setPick(null) }),
+      paying && h(JhPayModal, { total, busy, onDone: finish, close: () => setPaying(false) }),
+      done && h("div", { className: "ps-overlay", onClick: (e) => e.target === e.currentTarget && setDone(null) },
+        h("div", { className: "ps-modal jh-donem", role: "dialog", "aria-modal": "true" },
+          h("div", { className: "jh-donecheck", "aria-hidden": "true" }, "✓"),
+          h("h2", { className: "ps-h2" }, "Sale #" + done.no + " saved"),
+          num(done.change) > 0 ? h("div", { className: "jh-change big" }, h("span", null, "Give change"), h("b", null, peso(done.change))) : h("p", { className: "ps-muted" }, "Paid " + peso(done.total) + " by " + done.payments.map((p) => jhPayLabel(p.method)).join(" + ") + "."),
+          h("p", { className: "ps-muted" }, "Write the official receipt from your BIR booklet as usual. This slip is for your records only."),
+          h("div", { className: "ps-btnrow" },
+            h("button", { className: "ps-btn ghost", onClick: () => { const w = window.open("", "_blank"); if (!w) return setToast("Allow pop-ups for this site to print the slip."); w.document.open(); w.document.write(jhSlipPrint(done, sellerName(done.seller_id), settings.company || JH_DEFAULTS.company)); w.document.close(); } }, "Print slip"),
+            h("button", { className: "ps-btn", autoFocus: true, onClick: () => setDone(null) }, "New sale")))));
+  }
+
+  function JhReturnModal({ sale, done, close }) {
+    const h = React.createElement;
+    const returnedOf = (i) => (sale.returns || []).reduce((a, r) => a + r.lines.filter((l) => l.i === i).reduce((b, l) => b + l.qty, 0), 0);
+    const [qty, setQty] = useState({});
+    const [method, setMethod] = useState("cash");
+    const [note, setNote] = useState("");
+    const [busy, setBusy] = useState(false);
+    const [err, setErr] = useState("");
+    const go = async () => {
+      setBusy(true); setErr("");
+      try { const s = await jhPos().ret(sale.id, Object.entries(qty).map(([i, q]) => ({ i: Number(i), qty: Math.floor(num(q)) })).filter((x) => x.qty > 0), method, note.trim()); done(s); }
+      catch (e) { setErr(jhErrText(e)); }
+      setBusy(false);
+    };
+    return h("div", { className: "ps-overlay", onClick: (e) => e.target === e.currentTarget && !busy && close() },
+      h("div", { className: "ps-modal jh-retm", role: "dialog", "aria-modal": "true" },
+        h("h2", { className: "ps-h2" }, "Return from sale #" + sale.no),
+        h("p", { className: "ps-muted" }, "The pairs go back into stock and the refund is recorded. For an exchange, do the return here, then ring up the new pair on Sell."),
+        h("div", { className: "jh-retlines" }, sale.items.map((it, i) => {
+          const left = it.qty - returnedOf(i);
+          return h("div", { key: i, className: "jh-retline" }, h("span", null, h("b", null, jhItemLabel(it)), h("small", null, `${it.qty} sold${returnedOf(i) ? `, ${returnedOf(i)} already returned` : ""}`)),
+            left > 0 ? h("label", null, "Return ", h("input", { className: "ps-pay-num small", inputMode: "numeric", value: qty[i] || "", placeholder: "0", onChange: (e) => setQty({ ...qty, [i]: String(Math.min(left, Math.max(0, Math.floor(num(e.target.value))))) }) }), ` of ${left}`) : h("span", { className: "ps-muted" }, "All returned"));
+        })),
+        h("div", { className: "ps-fields" },
+          h("label", { className: "ps-field" }, h("span", null, "Refund by"), h("select", { value: method, onChange: (e) => setMethod(e.target.value) }, JH_PAY.map(([k, l]) => h("option", { key: k, value: k }, l)), h("option", { value: "exchange" }, "No refund (exchange)"))),
+          h("label", { className: "ps-field" }, h("span", null, "Reason (optional)"), h("input", { value: note, placeholder: "e.g. wrong size", onChange: (e) => setNote(e.target.value) }))),
+        err && h("p", { className: "ps-pay-warn" }, err),
+        h("div", { className: "ps-btnrow" }, h("button", { className: "ps-btn ghost", onClick: close, disabled: busy }, "Cancel"), h("button", { className: "ps-btn", onClick: go, disabled: busy }, busy ? "Saving…" : "Record return"))));
+  }
+
+  function JhSales({ admin, staff, rates, settings, setToast, setCat }) {
+    const h = React.createElement;
+    const pos = jhPos();
+    const today = manilaDay();
+    const [range, setRange] = useState("today");
+    const [cust, setCust] = useState({ from: today, to: today });
+    const [sales, setSales] = useState(null);
+    const [counts, setCounts] = useState([]);
+    const [expected, setExpected] = useState(null);
+    const [open, setOpen] = useState(null);
+    const [ret, setRet] = useState(null);
+    const [count, setCount] = useState({ v: "", note: "" });
+    const per = (() => {
+      const d = fromIso(today);
+      if (range === "yesterday") { const y = jhAdd(today, -1); return { from: y, to: y }; }
+      if (range === "week") return { from: jhMonday(today), to: today };
+      if (range === "month") return { from: today.slice(0, 8) + "01", to: today };
+      if (range === "custom") return cust;
+      return { from: today, to: today };
+    })();
+    const load = async () => {
+      try {
+        const [s, c, e] = await Promise.all([pos.sales(per.from, per.to), pos.counts(per.from, per.to), pos.expected(today)]);
+        setSales(s || []); setCounts(c || []); setExpected(e);
+      } catch (e) { setToast("Sales didn't load: " + jhErrText(e)); setSales([]); }
+    };
+    useEffect(() => { load(); }, [per.from, per.to]);
+    const nameOf = (id) => (staff.find((s) => s.id === id) || {}).name || "—";
+    if (!sales) return h("p", { className: "ps-loading" }, "Loading sales…");
+    const gross = r2(sales.reduce((a, s) => a + num(s.subtotal), 0));
+    const disc = r2(sales.reduce((a, s) => a + num(s.item_disc) + num(s.sale_disc), 0));
+    const returned = r2(sales.reduce((a, s) => a + num(s.returned), 0));
+    const net = r2(sales.reduce((a, s) => a + jhSaleNet(s), 0));
+    const pairs = sales.reduce((a, s) => a + s.items.reduce((b, it) => b + it.qty, 0), 0);
+    const byMethod = {};
+    sales.forEach((s) => { (s.payments || []).forEach((p) => { byMethod[p.method] = r2((byMethod[p.method] || 0) + num(p.amount)); }); if (num(s.change)) byMethod.cash = r2((byMethod.cash || 0) - num(s.change)); });
+    const refundsBy = {};
+    sales.forEach((s) => (s.returns || []).forEach((r) => { if (r.method !== "exchange") refundsBy[r.method] = r2((refundsBy[r.method] || 0) + num(r.amount)); }));
+    const bySeller = {};
+    sales.forEach((s) => { const k = s.seller_id || ""; bySeller[k] = r2((bySeller[k] || 0) + jhSaleNet(s)); });
+    const best = {};
+    sales.forEach((s) => s.items.forEach((it, i) => {
+      const back = (s.returns || []).reduce((a, r) => a + r.lines.filter((l) => l.i === i).reduce((b, l) => b + l.qty, 0), 0);
+      const k = it.name + (it.color ? " · " + it.color : "");
+      best[k] = (best[k] || 0) + it.qty - back;
+    }));
+    const bestList = Object.entries(best).filter(([, n]) => n > 0).sort((a, b) => b[1] - a[1]).slice(0, 8);
+    const todayCount = counts.find((c) => c.day === today);
+    const csv = () => jhDownload(`Jumphigh sales ${per.from} to ${per.to}.csv`, jhCsv([
+      ["Sale no.", "Date", "Time", "Items", "Pairs", "Subtotal", "Discounts", "Total", "Returned", "Net", "Paid by", "Sold by", "Rung up by", "Status"],
+      ...sales.slice().reverse().map((s) => [s.no, s.day, jhClock(s.at), s.items.map((it) => it.qty + " × " + jhItemLabel(it)).join("; "), s.items.reduce((a, it) => a + it.qty, 0), s.subtotal, r2(num(s.item_disc) + num(s.sale_disc)), s.total, s.returned, jhSaleNet(s),
+        (s.payments || []).map((p) => jhPayLabel(p.method) + " " + r2(p.amount) + (p.ref ? " (" + p.ref + ")" : "")).join("; "), nameOf(s.seller_id), s.cashier || "", s.status])]));
+    const doCount = async () => {
+      if (count.v === "" || num(count.v) < 0) return setToast("Type the cash you counted in the drawer.");
+      try { await pos.closeDay(today, r2(num(count.v)), count.note.trim()); setCount({ v: "", note: "" }); setToast("Cash count saved."); load(); }
+      catch (e) { setToast("The count didn't save: " + jhErrText(e)); }
+    };
+    const s = open && sales.find((x) => x.id === open);
+    return h(React.Fragment, null,
+      h("div", { className: "jh-rangebar" },
+        h("div", { className: "jh-viewtog" }, [["today", "Today"], ["yesterday", "Yesterday"], ...admin ? [["week", "This week"], ["month", "This month"], ["custom", "Pick dates"]] : []].map(([k, l]) =>
+          h("button", { key: k, className: range === k ? "on" : "", onClick: () => setRange(k) }, l))),
+        range === "custom" && h("span", { className: "jh-custom" }, h("input", { type: "date", value: cust.from, onChange: (e) => setCust({ ...cust, from: e.target.value }) }), "to", h("input", { type: "date", value: cust.to, onChange: (e) => setCust({ ...cust, to: e.target.value }) })),
+        admin && sales.length > 0 && h("button", { className: "ps-btn ghost small", onClick: csv }, "Download CSV")),
+      h("div", { className: "jh-stats" },
+        [["Net sales", peso(net), `${sales.length} sale${sales.length === 1 ? "" : "s"} · ${pairs} pair${pairs === 1 ? "" : "s"}`], ["Before discounts", peso(gross), "Discounts −" + peso(disc)], ["Returns", (returned ? "−" : "") + peso(returned), Object.keys(refundsBy).length ? Object.entries(refundsBy).map(([m, a]) => jhPayLabel(m) + " " + peso(a)).join(" · ") : "None"]]
+          .map(([l, v, sub]) => h("div", { key: l, className: "jh-stat" }, h("span", { className: "ps-muted" }, l), h("b", null, v), h("small", null, sub)))),
+      h("div", { className: "jh-cols" },
+        h("div", { className: "ps-pay-person" }, h("h4", { className: "jh-h4" }, "Money in, by payment"),
+          !Object.keys(byMethod).length ? h("p", { className: "ps-muted" }, "No payments yet.") : JH_PAY.filter(([k]) => byMethod[k] != null).map(([k, l]) => h("div", { key: k, className: "jh-sumrow" }, h("span", null, l + (k === "cash" ? " (after change)" : "")), h("b", null, peso(byMethod[k]))))),
+        h("div", { className: "ps-pay-person" }, h("h4", { className: "jh-h4" }, "By staff"),
+          !Object.keys(bySeller).length ? h("p", { className: "ps-muted" }, "No sales yet.") : Object.entries(bySeller).sort((a, b) => b[1] - a[1]).map(([k, v]) => {
+            const pct = num((rates[k] || {}).commissionPct);
+            return h("div", { key: k || "none", className: "jh-sumrow" }, h("span", null, k ? nameOf(k) : "Not set"), h("b", null, peso(v), admin && pct > 0 && h("small", { className: "ps-muted" }, ` · ${pct}% = ${peso(v * pct / 100)}`)));
+          })),
+        h("div", { className: "ps-pay-person" }, h("h4", { className: "jh-h4" }, "Best sellers (pairs)"),
+          !bestList.length ? h("p", { className: "ps-muted" }, "Nothing sold yet.") : bestList.map(([k, n]) => h("div", { key: k, className: "jh-sumrow" }, h("span", null, k), h("b", null, n))))),
+      h("h3", { className: "ps-h3" }, "Sales"),
+      !sales.length ? h("p", { className: "ps-muted" }, "No sales in these dates.") : h("div", { className: "ps-pay-tablewrap" }, h("table", { className: "ps-pay-table jh-salestable" },
+        h("thead", null, h("tr", null, ["#", range === "today" || range === "yesterday" ? "Time" : "When", "Items", "Paid by", "Sold by", "Total", ""].map((t, i) => h("th", { key: i, className: i === 5 ? "n" : "" }, t)))),
+        h("tbody", null, sales.map((x) => h("tr", { key: x.id, className: "jh-salerow", onClick: () => setOpen(x.id) },
+          h("td", null, x.no), h("td", null, range === "today" || range === "yesterday" ? jhClock(x.at) : jhShort(x.day) + " " + jhClock(x.at)),
+          h("td", null, x.items.map((it) => it.qty + " × " + jhItemLabel(it)).join(", ")),
+          h("td", null, (x.payments || []).map((p) => jhPayLabel(p.method)).join(" + ")),
+          h("td", null, nameOf(x.seller_id)),
+          h("td", { className: "n" }, peso(x.total), num(x.returned) > 0 && h("small", { className: "jh-low" }, h("br"), "−" + peso(x.returned) + " returned")),
+          h("td", null, x.status !== "done" && h("span", { className: "ps-chip warn" }, x.status === "returned" ? "Returned" : "Part returned"))))))),
+      h("h3", { className: "ps-h3" }, "End-of-day cash count"),
+      h("div", { className: "ps-pay-person jh-count" },
+        h("div", { className: "jh-sumrow" }, h("span", null, "Cash that should be in the drawer now" + (num(settings.float) ? ` (incl. ${peso(settings.float)} starting cash)` : "")), h("b", null, expected == null ? "…" : peso(expected))),
+        todayCount && h("p", { className: "ps-muted" }, `Last count today: ${peso(todayCount.counted)} at ${jhClock(todayCount.at)} — `, (() => { const d = r2(num(todayCount.counted) - num(todayCount.expected)); return h("b", { className: d < 0 ? "jh-low" : "" }, d === 0 ? "exact" : d > 0 ? "over by " + peso(d) : "short by " + peso(-d)); })()),
+        h("div", { className: "ps-form jh-countform" },
+          h("input", { inputMode: "decimal", placeholder: "Cash counted (₱)", value: count.v, onChange: (e) => setCount({ ...count, v: e.target.value }) }),
+          h("input", { placeholder: "Note (optional)", value: count.note, onChange: (e) => setCount({ ...count, note: e.target.value }) }),
+          h("button", { className: "ps-btn", onClick: doCount }, "Save count")),
+        counts.length > 0 && h("div", { className: "jh-counts" }, counts.map((c) => { const d = r2(num(c.counted) - num(c.expected)); return h("div", { key: c.id, className: "jh-sumrow" },
+          h("span", null, jhShort(c.day) + " · " + jhClock(c.at) + (c.by_email ? " · " + c.by_email : "") + (c.note ? " · " + c.note : "")),
+          h("b", { className: d < 0 ? "jh-low" : "" }, peso(c.counted) + (d === 0 ? " · exact" : d > 0 ? " · over " + peso(d) : " · short " + peso(-d)))); }))),
+      s && h("div", { className: "ps-overlay", onClick: (e) => e.target === e.currentTarget && setOpen(null) },
+        h("div", { className: "ps-modal jh-salem", role: "dialog", "aria-modal": "true" },
+          h("h2", { className: "ps-h2" }, "Sale #" + s.no), h("p", { className: "ps-muted" }, jhWhen(s.at) + " · sold by " + nameOf(s.seller_id) + (s.cashier ? " · rung up by " + s.cashier : "")),
+          h("div", { className: "jh-salelines" },
+            s.items.map((it, i) => h("div", { key: i, className: "jh-sumrow" }, h("span", null, it.qty + " × " + jhItemLabel(it) + (num(it.disc) ? ` (less ${peso(it.disc)})` : "")), h("span", null, peso(it.price * it.qty - num(it.disc))))),
+            num(s.sale_disc) > 0 && h("div", { className: "jh-sumrow" }, h("span", null, "Discount"), h("span", null, "−" + peso(s.sale_disc))),
+            h("div", { className: "jh-sumrow jh-total" }, h("span", null, "Total"), h("b", null, peso(s.total))),
+            (s.payments || []).map((p, i) => h("div", { key: "p" + i, className: "jh-sumrow" }, h("span", null, jhPayLabel(p.method) + (p.ref ? " · " + p.ref : "")), h("span", null, peso(p.amount)))),
+            num(s.change) > 0 && h("div", { className: "jh-sumrow" }, h("span", null, "Change"), h("span", null, peso(s.change))),
+            (s.returns || []).map((r, i) => h("div", { key: "r" + i, className: "jh-sumrow jh-low" }, h("span", null, "Returned " + jhWhen(r.at) + " · " + r.lines.map((l) => l.qty + " × " + s.items[l.i].name).join(", ") + (r.method === "exchange" ? " · exchange" : " · refund by " + jhPayLabel(r.method)) + (r.note ? " · " + r.note : "")), h("span", null, "−" + peso(r.amount))))),
+          h("div", { className: "ps-btnrow" },
+            h("button", { className: "ps-btn ghost", onClick: () => { const w = window.open("", "_blank"); if (!w) return; w.document.open(); w.document.write(jhSlipPrint(s, nameOf(s.seller_id), settings.company || JH_DEFAULTS.company)); w.document.close(); } }, "Print slip"),
+            h("span", { className: "jh-btns" },
+              admin && s.status !== "returned" && h("button", { className: "ps-btn ghost", onClick: () => setRet(s) }, "Return / exchange"),
+              h("button", { className: "ps-btn", onClick: () => setOpen(null) }, "Close"))))),
+      ret && h(JhReturnModal, { sale: ret, close: () => setRet(null), done: (ns) => {
+        setRet(null); setOpen(null); setToast("Return recorded. Stock is back and the refund is " + peso(ns.returned) + " in total for this sale.");
+        setCat((c) => ({ ...c, variants: c.variants.map((v) => { const n = (ns.returns[ns.returns.length - 1] || { lines: [] }).lines.filter((l) => ns.items[l.i].variantId === v.id).reduce((a, l) => a + l.qty, 0); return n ? { ...v, stock: num(v.stock) + n } : v; }) }));
+        load();
+      } }));
+  }
+
+  function JhProductForm({ p, variants, save, close }) {
+    const h = React.createElement;
+    const live = variants.filter((v) => v.active !== false);
+    const [f, setF] = useState({ name: p.name || "", brand: p.brand || "", category: p.category || "", price: p.price != null ? String(p.price) : "",
+      colors: [...new Set(live.map((v) => v.color))].join(", "), sizes: [...new Set(live.map((v) => v.size))].join(", "), active: p.active !== false });
+    const [stock, setStock] = useState(() => { const o = {}; variants.forEach((v) => { o[v.color + "|" + v.size] = String(v.stock); }); return o; });
+    const [err, setErr] = useState("");
+    const list = (t) => [...new Set(String(t).split(",").map((x) => x.trim()).filter(Boolean))];
+    const colors = list(f.colors).length ? list(f.colors) : [""];
+    const sizes = list(f.sizes).length ? list(f.sizes) : [""];
+    const set = (k) => (e) => setF({ ...f, [k]: e.target.type === "checkbox" ? e.target.checked : e.target.value });
+    const go = () => {
+      if (!f.name.trim()) return setErr("Type the product name.");
+      if (!(num(f.price) > 0)) return setErr("Type the selling price.");
+      setErr("");
+      const pid = p.id || "pr" + jhNewId();
+      const out = [];
+      let k = 0;
+      colors.forEach((c) => sizes.forEach((sz) => {
+        const old = variants.find((v) => v.color === c && v.size === sz);
+        const typed = stock[c + "|" + sz];
+        const row = { id: old ? old.id : "v" + jhNewId(), product_id: pid, color: c, size: sz, active: true, sort: k++ };
+        /* Only send stock when it was typed or changed, so sales made meanwhile aren't overwritten. */
+        if (!old || String(old.stock) !== String(typed == null ? "" : typed)) row.stock = Math.floor(num(typed));
+        out.push(row);
+      }));
+      variants.forEach((v) => { if (!out.some((o) => o.id === v.id) && v.active !== false) out.push({ id: v.id, product_id: pid, color: v.color, size: v.size, active: false, sort: 999 }); });
+      save({ id: pid, name: f.name.trim(), brand: f.brand.trim() || null, category: f.category.trim() || null, price: r2(num(f.price)), active: f.active, sort: p.sort || 0 }, out);
+    };
+    return h("div", { className: "ps-pay-form jh-form" },
+      h("div", { className: "ps-fields" },
+        h("label", { className: "ps-field" }, h("span", null, "Product name"), h("input", { value: f.name, placeholder: "e.g. Air Runner 2", onChange: set("name"), autoFocus: !p.name })),
+        h("label", { className: "ps-field" }, h("span", null, "Selling price (₱)"), h("input", { inputMode: "decimal", value: f.price, onChange: set("price") })),
+        h("label", { className: "ps-field" }, h("span", null, "Brand (optional)"), h("input", { value: f.brand, onChange: set("brand") })),
+        h("label", { className: "ps-field" }, h("span", null, "Category (optional)"), h("input", { value: f.category, placeholder: "e.g. Running, Kids, Slides", onChange: set("category") })),
+        h("label", { className: "ps-field" }, h("span", null, "Colours (comma between)"), h("input", { value: f.colors, placeholder: "Black, White", onChange: set("colors") })),
+        h("label", { className: "ps-field" }, h("span", null, "Sizes (comma between)"), h("input", { value: f.sizes, placeholder: "6, 7, 8, 9, 10", onChange: set("sizes") }))),
+      h("p", { className: "ps-muted jh-hint" }, "Pairs in stock for each colour and size:"),
+      h("div", { className: "ps-pay-tablewrap" }, h("table", { className: "jh-stockgrid" },
+        h("thead", null, h("tr", null, h("th", null, ""), sizes.map((sz) => h("th", { key: sz }, sz || "One size")))),
+        h("tbody", null, colors.map((c) => h("tr", { key: c }, h("th", null, c || "—"), sizes.map((sz) => h("td", { key: sz },
+          h("input", { className: "ps-pay-num tiny", inputMode: "numeric", value: stock[c + "|" + sz] == null ? "" : stock[c + "|" + sz], placeholder: "0", onChange: (e) => setStock({ ...stock, [c + "|" + sz]: e.target.value }) })))))))),
+      h("label", { className: "ps-check jh-check" }, h("input", { type: "checkbox", checked: f.active, onChange: set("active") }), h("span", null, "Show on the Sell screen")),
+      err && h("p", { className: "ps-pay-warn" }, err),
+      h("div", { className: "ps-btnrow end" }, h("button", { className: "ps-btn ghost", onClick: close }, "Cancel"), h("button", { className: "ps-btn", onClick: go }, p.name ? "Save" : "Add product")));
+  }
+
+  function JhProducts({ cat, setCat, settings, setToast }) {
+    const h = React.createElement;
+    const [editing, setEditing] = useState(null);
+    const [q, setQ] = useState("");
+    const [showOff, setShowOff] = useState(false);
+    const lowAt = num(settings.lowStock || 2);
+    const save = async (p, vs) => {
+      try {
+        await jhPos().saveProduct(p, vs);
+        setCat((c) => ({ products: [...c.products.filter((x) => x.id !== p.id), p], variants: [...c.variants.filter((v) => !vs.some((x) => x.id === v.id)), ...vs.map((v) => ({ ...c.variants.find((x) => x.id === v.id) || { stock: 0 }, ...v }))] }));
+        setEditing(null); setToast(p.name + " saved.");
+      } catch (e) { setToast("That didn't save: " + jhErrText(e)); }
+    };
+    const list = cat.products.filter((p) => (showOff || p.active !== false) && (!q.trim() || [p.name, p.brand, p.category].join(" ").toLowerCase().includes(q.trim().toLowerCase()))).sort((a, b) => String(a.name).localeCompare(String(b.name)));
+    const vOf = (pid) => cat.variants.filter((v) => v.product_id === pid && v.active !== false);
+    const lows = cat.variants.filter((v) => v.active !== false && num(v.stock) <= lowAt && (cat.products.find((p) => p.id === v.product_id) || {}).active !== false);
+    return h(React.Fragment, null,
+      h("div", { className: "ps-btnrow jh-top" },
+        h("input", { className: "jh-search", placeholder: "Search products…", value: q, onChange: (e) => setQ(e.target.value) }),
+        editing !== "new" && h("button", { className: "ps-btn", onClick: () => setEditing("new") }, "+ Add product")),
+      lows.length > 0 && h("p", { className: "ps-muted jh-hint" }, h("b", { className: "jh-low" }, `${lows.length} size${lows.length === 1 ? "" : "s"} at ${lowAt} pair${lowAt === 1 ? "" : "s"} or fewer.`), " They're marked in the list below."),
+      editing === "new" && h("div", { className: "ps-pay-person" }, h(JhProductForm, { p: {}, variants: [], save, close: () => setEditing(null) })),
+      !cat.products.length && editing !== "new" ? h("div", { className: "ps-pay-locked" }, h("b", null, "No products yet."), h("p", null, "Add each shoe model once with its colours and sizes, then type how many pairs you have of each."))
+        : h("div", { className: "ps-pay-list" }, list.map((p) => {
+          const vs = vOf(p.id); const st = vs.reduce((a, v) => a + num(v.stock), 0); const low = vs.filter((v) => num(v.stock) <= lowAt);
+          return h("div", { key: p.id, className: "ps-pay-person" },
+            h("div", { className: "ps-pay-row" },
+              h("span", { className: "ps-pay-who" }, h("b", null, p.name, p.active === false && h("span", { className: "ps-chip jh-chip" }, "Hidden")),
+                h("span", { className: "ps-muted" }, [p.brand, p.category, peso(p.price), `${st} pairs in ${vs.length} size${vs.length === 1 ? "" : "s"}/colour${vs.length === 1 ? "" : "s"}`].filter(Boolean).join(" · ")),
+                low.length > 0 && h("span", { className: "jh-low" }, "Low: " + low.map((v) => [v.color, v.size].filter(Boolean).join(" ") + " (" + v.stock + ")").join(", "))),
+              h("button", { className: "ps-btn ghost small", onClick: () => setEditing(editing === p.id ? null : p.id) }, editing === p.id ? "Close" : "Edit / stock")),
+            editing === p.id && h(JhProductForm, { key: p.id, p, variants: cat.variants.filter((v) => v.product_id === p.id), save, close: () => setEditing(null) }));
+        })),
+      cat.products.some((p) => p.active === false) && h("button", { className: "ps-btn ghost small jh-former", onClick: () => setShowOff(!showOff) }, showOff ? "Hide hidden products" : "Show hidden products"));
+  }
+  function JumphighPage({ setToast, confirm, standalone }) {
+    const h = React.createElement;
+    const api = jhApi();
+    const [st, setSt] = useState({ loading: true, ok: false });
+    const [data, setData] = useState([]);
+    const [pay, setPay] = useState([]);
+    const [members, setMembers] = useState([]);
+    const [cat, setCat] = useState({ products: [], variants: [] });
+    const [tab, setTab] = useState(() => { try { return sessionStorage.getItem("ps-jh-tab") || "schedule"; } catch (e) { return "schedule"; } });
+    useEffect(() => { try { sessionStorage.setItem("ps-jh-tab", tab); } catch (e) {} }, [tab]);
+    const load = async () => {
+      try {
+        const me = await api.me();
+        if (!me || !me.role) { setSt({ loading: false, ok: false, setup: me && me.setup || "" }); return; }
+        const admin = me.role === "admin";
+        const [d, p, m, c] = await Promise.all([api.data.list(), admin ? api.pay.list() : [], admin ? api.members.list() : [], jhPos().catalog().catch((e) => { console.warn("POS catalog:", e); return null; })]);
+        setData(d || []); setPay(p || []); setMembers(m || []);
+        if (c) setCat({ products: c.products || [], variants: c.variants || [] });
+        setSt({ loading: false, ok: true, me });
+      } catch (e) {
+        console.error(e);
+        setSt({ loading: false, ok: false, setup: "error" });
+      }
+    };
+    useEffect(() => { load(); }, []);
+    /* Coming back to the tab picks up schedule changes made elsewhere. */
+    useEffect(() => {
+      const f = () => {
+        if (document.visibilityState !== "visible") return;
+        api.data.list().then((d) => setData(d || [])).catch(() => {});
+        jhPos().catalog().then((c) => c && setCat({ products: c.products || [], variants: c.variants || [] })).catch(() => {});
+      };
+      document.addEventListener("visibilitychange", f);
+      return () => document.removeEventListener("visibilitychange", f);
+    }, []);
+    const fail = (e) => setToast("That didn't save: " + (e && e.message ? e.message : "check your connection") + ". Nothing was lost on the server; try again.");
+    const putData = async (id, kind, d, msg) => {
+      setData((cur) => [...cur.filter((r) => r.id !== id), { id, kind, data: d }]);
+      try { await api.data.save(id, kind, d); if (msg) setToast(msg); } catch (e) { fail(e); load(); }
+    };
+    const dropData = async (id, msg) => {
+      setData((cur) => cur.filter((r) => r.id !== id));
+      try { await api.data.remove(id); if (msg) setToast(msg); } catch (e) { fail(e); load(); }
+    };
+    const putPay = async (id, kind, d, msg) => {
+      setPay((cur) => [...cur.filter((r) => r.id !== id), { id, kind, data: d }]);
+      try { await api.pay.save(id, kind, d); if (msg) setToast(msg); } catch (e) { fail(e); load(); }
+    };
+    const dropPay = async (id) => {
+      setPay((cur) => cur.filter((r) => r.id !== id));
+      try { await api.pay.remove(id); } catch (e) { fail(e); load(); }
+    };
+    const saveMember = async (m) => {
+      setMembers((cur) => [...cur.filter((x) => x.email !== m.email), m]);
+      try { await api.members.save(m); } catch (e) { fail(e); load(); }
+    };
+    const dropMember = async (email) => {
+      setMembers((cur) => cur.filter((x) => x.email !== email));
+      try { await api.members.remove(email); } catch (e) { fail(e); load(); }
+    };
+
+    const lede = st.ok && st.me.role !== "admin" ? "Store schedule and sales." : standalone ? "Store schedule, sales and staff payroll." : "Store schedule, sales and staff payroll. Kept separate from Projeclab.";
+    const head = h("div", { className: "jh-head" }, h("h1", { className: "jh-h1" }, h(JhLogo, { height: standalone ? 92 : 110 })), h("p", { className: "ps-lede" }, lede));
+    if (st.loading) return h("div", { className: "jh" }, h("style", null, JH_CSS), h("p", { className: "ps-loading" }, "Opening Jumphigh…"));
+    if (!st.ok) return h("div", { className: "jh" }, h("style", null, JH_CSS), head,
+      h("div", { className: "ps-pay-locked" },
+        h("b", null, st.setup === "missing" ? "Jumphigh isn't set up in Supabase yet." : st.setup === "error" ? "Supabase didn't answer." : "Your login can't open Jumphigh."),
+        h("p", null, st.setup === "missing" ? "Run jumphigh_setup.sql once in Supabase (SQL Editor → New query → paste → Run)."
+          : st.setup === "error" ? "Check your connection and open this page again." : "Ask the Jumphigh manager to add your login email to the staff list.")));
+
+    const admin = st.me.role === "admin";
+    const staff = data.filter((r) => r.kind === "staff").map((r) => r.data).sort((a, b) => (a.order || 0) - (b.order || 0) || String(a.name).localeCompare(String(b.name)));
+    const shifts = data.filter((r) => r.kind === "shift").map((r) => r.data);
+    const settings = (data.find((r) => r.id === "settings") || {}).data || {};
+    const rates = {};
+    pay.filter((r) => r.kind === "rate").forEach((r) => { rates[r.data.staffId] = r.data; });
+    const runs = pay.filter((r) => r.kind === "run").map((r) => r.data).sort((a, b) => b.from.localeCompare(a.from) || b.to.localeCompare(a.to));
+    const tabs = admin ? [["schedule", "Schedule"], ["sell", "Sell"], ["sales", "Sales"], ["products", "Products"], ["payroll", "Payroll"], ["staff", "Staff"]] : [["schedule", "Schedule"], ["sell", "Sell"], ["sales", "Sales"]];
+    const cur = tabs.some((t) => t[0] === tab) ? tab : "schedule";
+    const shared = { staff, shifts, rates, settings, putData, dropData, putPay, dropPay, setToast, confirm };
+    return h("div", { className: "jh" }, h("style", null, JH_CSS), head,
+      tabs.length > 1 && h("div", { className: "ps-tabs ps-subtabs" }, tabs.map(([k, l]) => h("button", { key: k, className: `ps-tab ${cur === k ? "on" : ""}`, onClick: () => setTab(k) }, l))),
+      cur === "schedule" ? h(JhSchedule, { ...shared, admin, myStaffId: st.me.staffId })
+        : cur === "sell" ? h(JhSell, { cat, setCat, staff, me: st.me, admin, settings, setToast })
+        : cur === "sales" ? h(JhSales, { admin, staff, rates, settings, setToast, setCat })
+        : cur === "products" ? h(JhProducts, { cat, setCat, settings, setToast })
+        : cur === "payroll" ? h(JhPayroll, { ...shared, runs, me: st.me })
+        : h(JhStaff, { ...shared, members, myEmail: st.me.email, saveMember, dropMember }));
+  }
+
+  /* What a Jumphigh-only login sees: just Jumphigh, no Projeclab anything. */
+  function JumphighStandalone({ email, signOut }) {
+    const h = React.createElement;
+    const [toast, setToast] = useState("");
+    const [ask, setAsk] = useState(null);
+    /* Black and gold all the way: the page behind it goes black too. */
+    useEffect(() => { try { document.documentElement.setAttribute("data-theme", "dark"); document.body.style.background = "#0B0B0B"; } catch (e) {} }, []);
+    useEffect(() => { if (!toast) return; const t = setTimeout(() => setToast(""), 4500); return () => clearTimeout(t); }, [toast]);
+    useEffect(() => { try { document.title = "Jumphigh"; } catch (e) {} }, []);
+    return h("div", { className: "ps-root dark jh-sa" }, h("style", null, CSS),
+      h("header", { className: "ps-top jh-sa-top" },
+        h("span", { className: "jh-sa-name" }, h(JhLogo, { height: 40 })),
+        h("span", { className: "jh-sa-right" },
+          email && h("span", { className: "ps-muted" }, email),
+          signOut && h("button", { className: "ps-btn ghost small", onClick: signOut }, "Sign out"))),
+      h("main", { className: "ps-main jh-sa-main" }, h(JumphighPage, { setToast, confirm: setAsk, standalone: true })),
+      ask && h("div", { className: "ps-overlay", onClick: (e) => e.target === e.currentTarget && setAsk(null) },
+        h("div", { className: "ps-modal ps-confirm", role: "dialog", "aria-modal": "true" },
+          h("h2", { className: "ps-h2" }, ask.title),
+          (ask.lines || []).map((l, i) => h("p", { key: i, className: "ps-muted ps-confirm-line" }, l)),
+          h("div", { className: "ps-confirm-btns" },
+            h("button", { className: "ps-btn ghost", onClick: () => setAsk(null) }, "Cancel"),
+            h("button", { className: "ps-btn danger", onClick: () => { const f = ask.onYes; setAsk(null); f && f(); } }, ask.confirmLabel || "Confirm")))),
+      toast && h("div", { className: "ps-toast", role: "status" }, h("span", null, String(toast))));
+  }
+
+  var JH_CSS = `
+/* Jumphigh brand: black and gold. The tab redefines the app's colour variables inside .jh. */
+.jh{--paper:#0B0B0B;--card:#151515;--ink:#F3EEDF;--muted:#A9A089;--line:#2D2920;--accent:#D4AF37;--late:#F97066;--okbg:#2B2410;--warnbg:#3A2E10;--warn:#F2C766;
+  background:#0B0B0B;color:var(--ink);border-radius:18px;padding:26px 28px 34px;color-scheme:dark}
+.jh-head{display:flex;flex-direction:column;gap:8px;margin-bottom:16px;padding-bottom:16px;border-bottom:1px solid var(--line)}
+.jh-h1{margin:0;line-height:0}
+.jh-logo{display:inline-block;line-height:0}
+.jh-logo svg{display:block;width:auto;max-width:100%}
+.jh-head .ps-lede{margin:0;color:var(--muted)}
+.jh .ps-h3{color:var(--ink)}
+.jh .ps-btn{background:linear-gradient(180deg,#E9C46A,#C9A03A);color:#111!important;border:0}
+.jh .ps-btn.ghost{background:none;color:var(--ink)!important;border:1px solid var(--line)}
+.jh .ps-btn.ghost:hover{border-color:var(--accent)}
+.jh .ps-subtabs .ps-tab{color:var(--muted);border-color:var(--line);background:none}
+.jh .ps-subtabs .ps-tab.on{background:var(--accent);color:#111;border-color:var(--accent)}
+.jh input,.jh select,.jh textarea{background:#0F0F0F!important;color:var(--ink)!important;border-color:var(--line)!important}
+.jh input:focus,.jh select:focus{border-color:var(--accent)!important;outline:none}
+.jh .ps-chip.ok{background:var(--okbg);color:var(--accent)}
+.jh .ps-modal{background:var(--card);color:var(--ink);border:1px solid var(--line)}
+.jh .ps-pay-warn{color:var(--warn)}
+.jh-sa{--paper:#0B0B0B;background:#0B0B0B}
+.jh-sa .ps-top{background:#0B0B0B;border-bottom-color:#2D2920}
+.jh-sa .jh{padding:0;border-radius:0}
+.jh-sa-name{line-height:0}
+.jh-sa .jh-h1{display:none}
+.jh-sa .jh-head{padding-bottom:12px}
+.jh-hint{margin:8px 0}
+.jh-pill{border:1px solid var(--line);background:none;color:var(--ink);border-radius:999px;padding:4px 11px;font:inherit;font-size:13px;font-weight:600;cursor:pointer}
+.jh-pill.on{background:var(--accent);color:#111;border-color:var(--accent)}
+.jh-search{border:1px solid var(--line);border-radius:10px;padding:9px 12px;min-width:240px;flex:1;max-width:420px}
+.jh-sell{display:grid;grid-template-columns:minmax(0,1fr) 380px;gap:18px;align-items:start}
+.jh-prodside{display:flex;flex-direction:column;gap:12px;min-width:0}
+.jh-prods{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px}
+.jh-prod{display:flex;flex-direction:column;align-items:flex-start;gap:2px;text-align:left;border:1px solid var(--line);background:var(--card);color:var(--ink);border-radius:12px;padding:12px;cursor:pointer;font:inherit;min-height:110px}
+.jh-prod:hover{border-color:var(--accent)}
+.jh-prod b{font-size:15px;line-height:1.2}
+.jh-prod small{color:var(--muted);font-size:12px}
+.jh-prodprice{margin-top:auto;font-weight:800;color:var(--accent);font-size:16px}
+.jh-low{color:#F59E0B!important}
+.jh-cart{position:sticky;top:76px;border:1px solid var(--line);background:var(--card);border-radius:14px;padding:4px 14px 14px}
+.jh-cart .ps-h3{margin:12px 0 8px}
+.jh-lines2{display:flex;flex-direction:column;gap:8px;max-height:46vh;overflow:auto}
+.jh-cl{border-bottom:1px solid var(--line);padding-bottom:8px}
+.jh-cl-top{display:flex;justify-content:space-between;gap:8px}
+.jh-cl-top small{display:block;color:var(--muted);font-size:12px}
+.jh-cl-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:6px;font-size:13.5px}
+.jh-qty{display:inline-flex;align-items:center;border:1px solid var(--line);border-radius:8px}
+.jh-qty button{border:0;background:none;color:var(--ink);width:28px;height:28px;cursor:pointer;font-size:16px}
+.jh-qty b{min-width:20px;text-align:center}
+.jh-disc{display:inline-flex;align-items:center;gap:3px;color:var(--muted);font-size:12px}
+.jh-disc input{width:62px;padding:3px 6px;border:1px solid var(--line);border-radius:6px}
+.jh-cl-amt{margin-left:auto;font-variant-numeric:tabular-nums}
+.jh-cartfoot{margin-top:10px;display:flex;flex-direction:column;gap:6px}
+.jh-sumrow{display:flex;justify-content:space-between;align-items:center;gap:10px;font-size:14px;padding:2px 0;font-variant-numeric:tabular-nums}
+.jh-sumrow.jh-total{font-size:18px;border-top:1px solid var(--line);padding-top:8px;margin-top:4px}
+.jh-sumrow.jh-total b{color:var(--accent);font-size:22px}
+.jh-sdisc{display:inline-flex;align-items:center;gap:6px}
+.jh-sdisc input{width:70px;padding:3px 6px;border:1px solid var(--line);border-radius:6px}
+.jh-seller select{border:1px solid var(--line);border-radius:8px;padding:8px}
+.jh-paybtn{font-size:16px;padding:11px 20px}
+.jh-pick{max-width:520px}
+.jh-pick-colors{display:flex;gap:6px;flex-wrap:wrap;margin:12px 0}
+.jh-pick-sizes{display:grid;grid-template-columns:repeat(auto-fill,minmax(78px,1fr));gap:8px;margin-top:10px}
+.jh-size{display:flex;flex-direction:column;align-items:center;gap:2px;border:1px solid var(--line);background:#0F0F0F;color:var(--ink);border-radius:10px;padding:10px 4px;cursor:pointer;font:inherit}
+.jh-size b{font-size:18px}
+.jh-size small{color:var(--muted);font-size:11px}
+.jh-size:hover{border-color:var(--accent)}
+.jh-size.out{opacity:.5}
+.jh-paym{max-width:520px}
+.jh-paytotal{font-size:36px;font-weight:800;color:var(--accent);letter-spacing:-.02em;margin-bottom:8px}
+.jh-payline{border:1px solid var(--line);border-radius:12px;padding:10px;margin-bottom:8px}
+.jh-paymethods{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px}
+.jh-payfields{display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap}
+.jh-payfields .ps-field{min-width:150px}
+.jh-payfields .ps-field input{width:100%}
+.jh-payfields .ps-field{flex:1}
+.jh-payfields input{border:1px solid var(--line);border-radius:8px;padding:8px 10px;font-size:16px}
+.jh-quick{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
+.jh-addpay{margin:2px 0 8px}
+.jh-change{display:flex;justify-content:space-between;align-items:center;background:var(--okbg);border:1px solid var(--accent);border-radius:10px;padding:10px 14px;font-size:15px}
+.jh-change b{font-size:24px;color:var(--accent)}
+.jh-change.big{margin:8px 0}
+.jh-donem{max-width:420px;text-align:center}
+.jh-donem .ps-btnrow{justify-content:center}
+.jh-donecheck{width:54px;height:54px;border-radius:50%;background:var(--accent);color:#111;display:grid;place-items:center;font-size:30px;font-weight:800;margin:0 auto 8px}
+.jh-rangebar{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:4px 0 12px}
+.jh-custom{display:inline-flex;gap:6px;align-items:center;color:var(--muted)}
+.jh-custom input{border:1px solid var(--line);border-radius:8px;padding:5px 8px}
+.jh-stats{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+.jh-stat{border:1px solid var(--line);background:var(--card);border-radius:12px;padding:12px 14px;display:flex;flex-direction:column;gap:2px}
+.jh-stat b{font-size:24px;letter-spacing:-.02em;font-variant-numeric:tabular-nums}
+.jh-stat:first-child b{color:var(--accent)}
+.jh-stat small{color:var(--muted);font-size:12px}
+.jh-cols{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-top:10px}
+.jh-h4{margin:0 0 6px;font-size:14px}
+.jh-salestable{min-width:760px}
+.jh-salestable td.n,.jh-salestable th.n{text-align:right}
+.jh-salerow{cursor:pointer}
+.jh-salerow:hover td{background:color-mix(in srgb,var(--accent) 6%,transparent)}
+.jh-salem,.jh-retm{max-width:560px}
+.jh-salelines{margin:10px 0;display:flex;flex-direction:column;gap:2px}
+.jh-retlines{display:flex;flex-direction:column;gap:8px;margin:10px 0}
+.jh-retline{display:flex;justify-content:space-between;align-items:center;gap:10px;border-bottom:1px solid var(--line);padding-bottom:6px}
+.jh-retline small{display:block;color:var(--muted)}
+.jh-count .ps-muted{margin:6px 0}
+.jh-countform{margin-top:8px}
+.jh-countform input{min-width:180px!important;border:1px solid var(--line);border-radius:8px;padding:8px 10px}
+.jh-counts{margin-top:10px;border-top:1px solid var(--line);padding-top:8px}
+.jh-stockgrid{border-collapse:collapse;font-size:13px}
+.jh-stockgrid th,.jh-stockgrid td{padding:5px 6px;border-bottom:1px solid var(--line);text-align:center}
+.jh-stockgrid th:first-child{text-align:left;color:var(--muted)}
+@media (max-width:900px){
+  .jh-sell{grid-template-columns:1fr}
+  .jh-cart{position:static}
+  .jh-stats,.jh-cols{grid-template-columns:1fr}
+}
+.jh-viewbar{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin:4px 0 2px}
+.jh-viewtog{display:inline-flex;border:1px solid var(--line);border-radius:999px;padding:2px;gap:2px}
+.jh-viewtog button{border:0;background:none;color:var(--muted);font-weight:600;font-size:13px;padding:4px 14px;border-radius:999px;cursor:pointer}
+.jh-viewtog button.on{background:var(--accent);color:#111}
+.jh-onlyme{margin:0}
+.jh-month{min-width:760px}
+.jh-mhead,.jh-mbody{display:grid;grid-template-columns:repeat(7,minmax(0,1fr))}
+.jh-mhead div{font-size:12px;color:var(--muted);font-weight:600;padding:8px;border-bottom:1px solid var(--line)}
+.jh-mday{min-height:108px;padding:6px;display:flex;flex-direction:column;gap:3px;border-right:1px solid var(--line);border-bottom:1px solid var(--line);min-width:0}
+.jh-mday:nth-child(7n){border-right:0}
+.jh-mday.other{opacity:.38}
+.jh-mday.today{background:color-mix(in srgb,var(--accent) 8%,transparent)}
+.jh-mtop{display:flex;justify-content:space-between;align-items:center}
+.jh-mnum{font-size:12px;font-weight:700;padding:0 2px}
+.jh-mday.today .jh-mnum{background:var(--accent);color:#111;border-radius:999px;padding:0 7px}
+.jh-mcount{font-size:10.5px;color:var(--muted);border:1px solid var(--line);border-radius:999px;padding:0 6px}
+.jh-mchip{display:flex;align-items:center;gap:5px;width:100%;text-align:left;font:inherit;font-size:11.5px;line-height:1.3;border:1px solid var(--line);border-radius:6px;padding:2px 5px;background:var(--card);color:var(--ink);min-width:0}
+button.jh-mchip{cursor:pointer}
+button.jh-mchip:hover{border-color:var(--accent)}
+.jh-mchip .jh-dot{width:7px;height:7px;margin:0}
+.jh-mtext{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;flex:1}
+.jh-mchip.absent{opacity:.55}
+.jh-mchip.absent .jh-mtext{text-decoration:line-through}
+.jh-mchip.me{border-color:var(--accent);background:color-mix(in srgb,var(--accent) 12%,var(--card))}
+.jh-mchip .jh-st{font-size:9.5px;padding:0 4px;flex:0 0 auto}
+.jh-madd{margin-top:auto;align-self:flex-start;border:1px dashed var(--line);background:none;color:var(--muted);border-radius:6px;padding:0 8px;cursor:pointer;font-size:13px;line-height:1.5}
+.jh-madd:hover{border-color:var(--accent);color:var(--accent)}
+.jh-madd-pick{margin-top:auto;font-size:12px;padding:2px 4px!important;border-radius:6px;width:100%}
+.jh-mtot{display:flex;flex-wrap:wrap;gap:8px 14px;align-items:center;margin-top:10px;font-size:13px}
+.jh-mtotone{display:inline-flex;align-items:center;gap:6px}
+.jh-mtotone .jh-dot{margin:0}
+.jh-mtotone.me{color:var(--accent)}
+.jh-top{align-items:center;margin:0 0 12px}
+.jh-weekbar{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin:6px 0 10px}
+.jh-weeknav{display:flex;align-items:center;gap:8px}
+.jh-weeknav b{min-width:170px;text-align:center}
+.jh-grid{width:100%;border-collapse:collapse;font-size:13px;min-width:860px;table-layout:fixed}
+.jh-grid th{font-size:12px;color:var(--muted);font-weight:600;padding:8px 6px;border-bottom:1px solid var(--line);text-align:left}
+.jh-grid th:first-child{width:150px}
+.jh-grid th.n,.jh-grid td.n{width:56px;text-align:right}
+.jh-grid th span{display:block;color:var(--ink)}
+.jh-grid th small{font-weight:400}
+.jh-grid td{padding:5px;border-bottom:1px solid var(--line);vertical-align:top}
+.jh-grid tfoot td{color:var(--muted);font-size:12px;border-bottom:0}
+.jh-grid .today{background:color-mix(in srgb,var(--accent) 7%,transparent)}
+.jh-grid tr.me td{background:color-mix(in srgb,#D4AF37 12%,transparent)}
+.jh-who{display:flex;gap:8px;align-items:flex-start}
+.jh-who b{display:block;font-weight:600;line-height:1.25}
+.jh-who small{display:block;color:var(--muted);font-size:11.5px;line-height:1.2}
+.jh-dot{width:10px;height:10px;border-radius:50%;flex:0 0 auto;margin-top:4px}
+.jh-dot.big{width:14px;height:14px;margin:0}
+.jh-shift{display:flex;flex-direction:column;align-items:flex-start;gap:2px;width:100%;text-align:left;border:1px solid var(--line);border-left:4px solid;border-radius:8px;padding:5px 6px;background:var(--card);cursor:default;min-height:38px}
+button.jh-shift{cursor:pointer}
+button.jh-shift:hover{border-color:var(--accent)}
+.jh-shift.absent{opacity:.6;background:color-mix(in srgb,var(--late) 7%,var(--card))}
+.jh-shift.absent .jh-t{text-decoration:line-through}
+.jh-t{font-weight:600;font-size:12px;white-space:nowrap}
+.jh-note{font-size:11px;color:var(--muted);line-height:1.2}
+.jh-st{font-size:10.5px;font-weight:700;border-radius:999px;padding:0 6px;background:var(--warnbg);color:var(--warn)}
+.jh-st.absent{background:color-mix(in srgb,var(--late) 14%,var(--card));color:var(--late)}
+.jh-empty{width:100%;min-height:38px;border:1px dashed var(--line);border-radius:8px;background:none;color:var(--muted);cursor:pointer;font-size:16px}
+.jh-empty:hover{border-color:var(--accent);color:var(--accent)}
+.jh-off{display:block;color:var(--muted);font-size:12px;padding:10px 2px}
+.jh-mine{margin-bottom:6px}
+.jh-mine .ps-h3{margin-top:4px}
+.jh-minelist{display:flex;flex-direction:column;gap:6px;max-width:560px}
+.jh-mineday{display:flex;gap:12px;align-items:center;flex-wrap:wrap;border:1px solid var(--line);background:var(--card);border-radius:10px;padding:8px 12px}
+.jh-mineday b{min-width:110px}
+.jh-mineday.today{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent)}
+.jh-edit{max-width:520px}
+.jh-btns{display:flex;gap:8px}
+.jh-colors{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin:12px 0 4px}
+.jh-swatch{width:22px;height:22px;border-radius:50%;border:2px solid transparent;cursor:pointer;padding:0}
+.jh-swatch.on{border-color:var(--ink);box-shadow:0 0 0 2px var(--card) inset}
+.jh-check{display:flex;gap:8px;align-items:center;margin:8px 0;font-size:14px}
+.jh-form{margin-top:10px;border-top:1px solid var(--line);padding-top:12px}
+.jh-chip{margin-left:8px}
+.jh-former{margin:10px 0}
+.jh-admins{display:flex;gap:8px;flex-wrap:wrap;margin:8px 0}
+.jh-admin{display:inline-flex;gap:6px;align-items:center;border:1px solid var(--line);border-radius:999px;padding:3px 6px 3px 12px;font-size:13px}
+.jh-addadmin input{min-width:240px}
+.jh-addadmin input,.jh-settings input,.jh-newrun input,.jh-newrun select,.jh-form input,.jh-form select,.jh-edit input,.jh-edit select,.jh-paydate input{border:1px solid var(--line);border-radius:8px;padding:8px 10px;background:var(--card);color:var(--ink)}
+.jh-runrow{display:flex;align-items:center;gap:12px;width:100%;text-align:left;cursor:pointer;color:inherit;font:inherit}
+.jh-runrow:hover{border-color:var(--accent)}
+.jh-runnet{min-width:120px;text-align:right;font-variant-numeric:tabular-nums}
+.jh-runhead{display:flex;justify-content:space-between;gap:14px;flex-wrap:wrap;align-items:flex-end;margin:6px 0 4px}
+.jh-runtitle{margin:10px 0 6px}
+.jh-paydate{display:flex;align-items:center;gap:6px}
+.jh-paydate input{padding:4px 8px}
+.jh-totbox{display:flex;flex-direction:column;align-items:flex-end;border:1px solid var(--line);background:var(--card);border-radius:12px;padding:10px 14px}
+.jh-totbox b{font-size:24px;letter-spacing:-.02em;font-variant-numeric:tabular-nums}
+.jh-lines{margin-top:10px}
+.jh-linehead{display:flex;justify-content:space-between;align-items:baseline;gap:10px}
+.jh-net{font-weight:800;font-size:17px;font-variant-numeric:tabular-nums}
+.jh-calc{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin:8px 0 4px;font-variant-numeric:tabular-nums}
+.jh-calc label{display:inline-flex;align-items:center;gap:4px}
+.jh-adj{display:flex;gap:8px;align-items:center;margin:4px 0;font-size:14px}
+.jh-adj > span:last-child{font-variant-numeric:tabular-nums}
+.jh-minus{color:var(--late)}
+.jh-addline{margin:2px 0 4px}
+.jh-payrow{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-top:8px;padding-top:8px;border-top:1px solid var(--line)}
+.jh-paybtns,.jh-paidform{display:inline-flex;gap:8px;align-items:center;flex-wrap:wrap}
+.jh-sum{max-width:420px;margin-top:12px}
+.jh-sumtable{min-width:0}
+.jh-sumtable td.n{text-align:right}
+.jh-del{color:var(--late)!important}
+.jh-hist{margin-top:14px;font-size:12px}
+.jh-sa-top{justify-content:space-between}
+.jh-sa-right{display:flex;align-items:center;gap:10px}
+.jh-sa-main{margin:0 auto}
+.jh .ps-linkbtn{background:none;border:0;color:var(--accent);cursor:pointer;padding:0;font-weight:600}
+@media (max-width:640px){
+  .jh{padding:18px 14px 24px;border-radius:14px}
+  .jh-totbox{align-items:flex-start;width:100%}
+  .jh-sa-right .ps-muted{display:none}
+}
+`;
+  window.JumphighStandalone = JumphighStandalone;
   window.ProjeclabStudios = ProjeclabStudios;
 })();
 
@@ -12892,6 +14263,111 @@ if (sb) {
   };
 }
 
+/* Jumphigh (separate company): its own tables jh_data (staff + schedule), jh_pay
+   (rates + payroll runs, Jumphigh admins only) and jh_members (who can open it).
+   Row-level security decides who sees what. Nothing here touches app_state. */
+if (sb) {
+  const jhErr = (error) => /does not exist|schema cache|function/i.test((error && error.message) || "");
+  const jhTable = (t) => ({
+    list: async () => {
+      const { data, error } = await sb.from(t).select("id, kind, data, updated_at");
+      if (error) throw error;
+      return data || [];
+    },
+    save: async (id, kind, data) => {
+      const { data: u } = await sb.auth.getUser();
+      const { error } = await sb.from(t).upsert({ id, kind, data, updated_at: new Date().toISOString(), updated_by: (u && u.user && u.user.email) || null });
+      if (error) throw error;
+    },
+    remove: async (id) => {
+      const { error } = await sb.from(t).delete().eq("id", id);
+      if (error) throw error;
+    }
+  });
+  window.psJumphigh = {
+    live: true,
+    role: async () => {
+      const { data, error } = await sb.rpc("jh_role");
+      if (error) return null;
+      return data || null;
+    },
+    me: async () => {
+      const { data: u } = await sb.auth.getUser();
+      const email = ((u && u.user && u.user.email) || "").toLowerCase();
+      const { data: role, error } = await sb.rpc("jh_role");
+      if (error) return { setup: jhErr(error) ? "missing" : "error" };
+      if (!role) return { email, role: null };
+      const { data: row } = await sb.from("jh_members").select("staff_id").eq("email", email).maybeSingle();
+      return { email, role, staffId: (row && row.staff_id) || null };
+    },
+    data: jhTable("jh_data"),
+    pay: jhTable("jh_pay"),
+    members: {
+      list: async () => {
+        const { data, error } = await sb.from("jh_members").select("email, role, staff_id");
+        if (error) throw error;
+        return data || [];
+      },
+      save: async (m) => {
+        const { error } = await sb.from("jh_members").upsert({ email: String(m.email).toLowerCase(), role: m.role, staff_id: m.staff_id || null });
+        if (error) throw error;
+      },
+      remove: async (email) => {
+        const { error } = await sb.from("jh_members").delete().eq("email", String(email).toLowerCase());
+        if (error) throw error;
+      }
+    },
+    /* POS: products/stock are read by every Jumphigh login; sales, returns and cash
+       counts only go through the jh_* database functions (they check who you are). */
+    pos: {
+      catalog: async () => {
+        const [p, v] = await Promise.all([sb.from("jh_products").select("*").order("sort"), sb.from("jh_variants").select("*").order("sort")]);
+        if (p.error) throw p.error;
+        if (v.error) throw v.error;
+        return { products: p.data || [], variants: v.data || [] };
+      },
+      saveProduct: async (prod, variants) => {
+        const { error } = await sb.from("jh_products").upsert({ ...prod, updated_at: new Date().toISOString() });
+        if (error) throw error;
+        /* Rows with and without a stock value go separately, so stock is only changed where it was typed. */
+        const withStock = variants.filter((v) => v.stock !== undefined), noStock = variants.filter((v) => v.stock === undefined);
+        if (withStock.length) { const r = await sb.from("jh_variants").upsert(withStock); if (r.error) throw r.error; }
+        if (noStock.length) { const r = await sb.from("jh_variants").upsert(noStock); if (r.error) throw r.error; }
+      },
+      sell: async (p) => {
+        const { data, error } = await sb.rpc("jh_record_sale", { p });
+        if (error) throw new Error(error.message);
+        return data;
+      },
+      sales: async (from, to) => {
+        const { data, error } = await sb.from("jh_sales").select("*").gte("day", from).lte("day", to).order("no", { ascending: false }).limit(3000);
+        if (error) throw error;
+        return data || [];
+      },
+      ret: async (id, lines, method, note) => {
+        const { data, error } = await sb.rpc("jh_return_sale", { p_sale: id, p_lines: lines, p_method: method, p_note: note || "" });
+        if (error) throw new Error(error.message);
+        return data;
+      },
+      expected: async (day) => {
+        const { data, error } = await sb.rpc("jh_cash_expected", { p_day: day });
+        if (error) throw error;
+        return Number(data) || 0;
+      },
+      closeDay: async (day, counted, note) => {
+        const { data, error } = await sb.rpc("jh_close_day", { p_day: day, p_counted: counted, p_note: note || "" });
+        if (error) throw new Error(error.message);
+        return data;
+      },
+      counts: async (from, to) => {
+        const { data, error } = await sb.from("jh_cash_counts").select("*").gte("day", from).lte("day", to).order("at", { ascending: false });
+        if (error) throw error;
+        return data || [];
+      }
+    }
+  };
+}
+
 const GATE_CSS = `
 .gt{font-family:'Bricolage Grotesque',ui-sans-serif,system-ui,sans-serif;min-height:100vh;display:grid;place-items:center;background:#EDF0F3;color:#1A2230;padding:20px}
 .gt-box{background:#fff;border:1px solid #D5DBE3;border-radius:12px;padding:32px;max-width:420px;width:100%}
@@ -12929,9 +14405,15 @@ function Gate() {
      quietly renews the login (it does that when you come back to the tab).
      Re-checking then flashed "Loading..." and threw away anything half-typed. */
   const userId = session && session.user ? session.user.id : null;
+  /* Jumphigh role ("admin" / "staff" / null), checked alongside the team list.
+     A Jumphigh-only login isn't on the team list, so it gets just the Jumphigh screen. */
+  const [jhRole, setJhRole] = useState(null);
   useEffect(() => {
-    if (!sb || !userId) { setAllowed(null); return; }
-    sb.rpc("is_team_member").then(({ data, error }) => {
+    if (!sb || !userId) { setAllowed(null); setJhRole(null); return; }
+    const jh = window.psJumphigh ? window.psJumphigh.role().catch(() => null) : Promise.resolve(null);
+    Promise.all([sb.rpc("is_team_member"), jh]).then(([{ data, error }, role]) => {
+      window.psJhRole = role || null;
+      setJhRole(role || null);
       if (error) setAllowed((was) => was === true ? true : false);
       else setAllowed(data === true);
     });
@@ -12974,6 +14456,10 @@ function Gate() {
       {err && <p className="err" style={{ marginTop: 10 }}>{err}</p>}
       <p style={{ marginTop: 14, fontSize: 13 }}>Forgotten it? Ask your team lead to set a new one for you in Supabase.</p></>
   );
+  if (!allowed && jhRole && window.JumphighStandalone) {
+    window.cutlineAuth = { email: session.user.email, signOut };
+    return <window.JumphighStandalone email={session.user.email} signOut={signOut} />;
+  }
   if (!allowed) return box(<><h1>Not on the team list</h1><p><b>{session.user.email}</b> isn't allowed in yet. Ask your team lead to add this email in Supabase.</p>
     <button onClick={signOut}>Sign out</button></>);
 

@@ -9753,6 +9753,10 @@ ${lines.join("\n")}`);
       const signedIn = typeof window !== "undefined" && window.cutlineAuth;
       if (!signedIn || authLock === me.id) mutate((n) => { const p = n.people.find((x) => x.id === me.id); if (p) p.seenBoard = boardKey; });
     };
+    /* Jumphigh tab: shown to logins in Supabase jh_members (the gate puts the role in
+       window.psJhRole). In the preview without Supabase, the Lead sees it. Hidden while
+       the Lead is "viewing as" someone else. */
+    const jhNav = (typeof window !== "undefined" && window.psJumphigh ? !!window.psJhRole : me.role === "lead") && (!authLock || authLock === me.id);
     const nav = [
       ["queue", me.role === "client" ? "Your videos" : "My tasks", mine.length + (canApproveTimeoff(db, me) ? pendingTimeoff(db).filter((r) => r.personId !== me.id && ((approverFor(db, r.personId) || {}).id === me.id || (!approverFor(db, r.personId) && me.role === "lead"))).length : 0)],
       ...FEED_FOR(me) ? [["feed", "Feed", ""]] : [],
@@ -9771,6 +9775,7 @@ ${lines.join("\n")}`);
       ...me.role !== "client" ? [["archive", "Archive", ""]] : [],
       ...me.role === "lead" || me.role === "hr" ? [["hris", "HRIS", ""]] : [],
       ...me.role === "lead" ? [["invoices", "Invoices", ""]] : [],
+      ...jhNav ? [["jumphigh", "Jumphigh", ""]] : [],
       ...me.role !== "client" && !isLead ? [["timeoff", "Time off", leaveStats(db, me.id).left]] : [],
       ...isLead ? [["settings", "Settings", ""]] : []
     ];
@@ -9801,6 +9806,8 @@ ${lines.join("\n")}`);
       body = c ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("h1", { className: "ps-h1" }, c.name), /* @__PURE__ */ React.createElement("div", { className: "ps-meta" }, /* @__PURE__ */ React.createElement("span", { className: `ps-chip ${clientKindOf(c).id === "personal" ? "warn" : "ok"}` }, clientKindOf(c).label)), /* @__PURE__ */ React.createElement(EditorTools, { db, me, client: c, canEdit: lead, mutate }), lead && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Invoices"), /* @__PURE__ */ React.createElement("p", { className: "ps-muted" }, billingOf(c).label, " \xB7 ", billingOf(c).note, unpaidFor(db, c).length > 0 ? ` \u2014 ${unpaidFor(db, c).length} unpaid` : billingOf(c).id === "none" ? "" : " \u2014 all settled", billingOf(c).id !== "none" ? ". Click a line to mark it paid or unpaid." : ""), /* @__PURE__ */ React.createElement(InvoiceList, { db, client: c, canEdit: lead, toggle: (k) => toggleInvoice(c.id, k), addJob: (label) => addJobInvoice(c.id, label), removeJob: (k) => removeJobInvoice(c.id, k), openVideo: setOpenId })), /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "Pipeline"), /* @__PURE__ */ React.createElement(FilmStrip, { videos: [...rows, ...clientTasks], filter, setFilter }), /* @__PURE__ */ rows.some((v) => !v.archived && v.stage !== "ready") ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, "In production"), /* @__PURE__ */ React.createElement(VideoTable, { rows: rows.filter((v) => !v.archived && v.stage !== "ready" && (!filter || v.stage === filter)), db, me, open: setOpenId, showClient: false })) : null, /* @__PURE__ */ React.createElement("h3", { className: "ps-h3" }, filter ? `Tasks \u00b7 ${stageOf(filter).name}` : "Tasks"), /* @__PURE__ */ React.createElement(ClientTasks, { db, me, client: c, openTask: setTaskId, filter }), /* @__PURE__ */ React.createElement(SentToClient, { db, me, client: c, openTask: setTaskId, openVideo: setOpenId }), /* @__PURE__ */ React.createElement(ClientBrief, { db, client: c, canEdit: lead, mutate, setToast })) : /* @__PURE__ */ React.createElement("p", { className: "ps-empty" }, "That client no longer exists.");
     } else if (page.tab === "timeoff") {
       body = /* @__PURE__ */ React.createElement(TimeOffPage, { db, me, mutate, setToast });
+    } else if (page.tab === "jumphigh" && jhNav) {
+      body = /* @__PURE__ */ React.createElement(JumphighPage, { setToast, confirm: setConfirming });
     } else if (page.tab === "invoices" && me.role === "lead") {
       body = /* @__PURE__ */ React.createElement(InvoicesPage, { me, setToast, confirm: setConfirming });
     } else if ((page.tab === "hris" || page.tab === "payroll") && (me.role === "lead" || me.role === "hr")) {
@@ -12575,6 +12582,653 @@ html.ps-theming .ps-theme-knob,html.ps-theming .ps-theme-ic{transition:transform
   .ps-fd-quote p{font-size:18px}
 }
 `;
+  /* ---- Jumphigh (Frean's other company, added 14 Nov 2026) ------------------
+     A separate company inside the app: a shift schedule and daily-rate payroll.
+     Nothing here touches app_state. Data lives in its own Supabase tables:
+       jh_data    staff names + shifts + store settings (every Jumphigh member reads, admins write)
+       jh_pay     daily rates, pay details, payroll runs (Jumphigh admins only)
+       jh_members which logins can open Jumphigh, as "admin" or "staff"
+     Jumphigh-only logins never pass is_team_member(), so they can't read any
+     Projeclab data; the login gate shows them JumphighStandalone instead. */
+  var JH_DEMO = "ps-jumphigh-demo";
+  var jhDemoRows = (t) => { try { return JSON.parse(localStorage.getItem(JH_DEMO + "-" + t) || "[]"); } catch (e) { return []; } };
+  var jhDemoWrite = (t, rows) => { try { localStorage.setItem(JH_DEMO + "-" + t, JSON.stringify(rows)); } catch (e) {} };
+  var jhDemoTable = (t) => ({
+    list: async () => jhDemoRows(t),
+    save: async (id, kind, data) => { jhDemoWrite(t, [...jhDemoRows(t).filter((r) => r.id !== id), { id, kind, data, updated_at: (/* @__PURE__ */ new Date()).toISOString() }]); },
+    remove: async (id) => { jhDemoWrite(t, jhDemoRows(t).filter((r) => r.id !== id)); }
+  });
+  var jhDemo = {
+    live: false,
+    me: async () => {
+      let q = null; try { q = new URLSearchParams(location.search); } catch (e) {}
+      if (q && q.get("jh") === "staff") {
+        const first = jhDemoRows("data").filter((r) => r.kind === "staff").map((r) => r.data).sort((a, b) => (a.order || 0) - (b.order || 0))[0];
+        return { email: "staff@demo", role: "staff", staffId: q.get("jhstaff") || (first ? first.id : null) };
+      }
+      return { email: "you@demo", role: "admin", staffId: null };
+    },
+    data: jhDemoTable("data"),
+    pay: jhDemoTable("pay"),
+    members: {
+      list: async () => jhDemoRows("members"),
+      save: async (m) => { jhDemoWrite("members", [...jhDemoRows("members").filter((r) => r.email !== m.email), m]); },
+      remove: async (email) => { jhDemoWrite("members", jhDemoRows("members").filter((r) => r.email !== email)); }
+    }
+  };
+  var jhApi = () => (typeof window !== "undefined" && window.psJumphigh) || jhDemo;
+  var JH_STATUS = [["work", "Working"], ["half", "Half day"], ["absent", "Absent"]];
+  var JH_COLORS = ["#0F766E", "#2563EB", "#DB2777", "#D97706", "#7C3AED", "#059669", "#DC2626", "#0891B2"];
+  var JH_DEFAULTS = { start: "10:00", end: "19:00", company: "Jumphigh" };
+  var jhAdd = (iso, n) => { const d = fromIso(iso); d.setDate(d.getDate() + n); return isoDay(d); };
+  var jhMonday = (iso) => { const d = fromIso(iso); d.setDate(d.getDate() - (d.getDay() + 6) % 7); return isoDay(d); };
+  var jhTime = (t) => {
+    if (!t) return "";
+    const [H, M] = String(t).split(":").map(Number);
+    return (H % 12 || 12) + (M ? ":" + String(M).padStart(2, "0") : "") + " " + (H >= 12 ? "PM" : "AM");
+  };
+  var jhShort = (iso) => fromIso(iso).toLocaleDateString("en-US", { month: "short", day: "numeric" });
+  var jhPeriodLabel = (from, to) => {
+    const a = fromIso(from), b = fromIso(to);
+    if (from.slice(0, 7) === to.slice(0, 7)) return a.toLocaleDateString("en-US", { month: "short" }) + " " + a.getDate() + "–" + b.getDate() + ", " + b.getFullYear();
+    return jhShort(from) + " – " + jhShort(to) + ", " + b.getFullYear();
+  };
+  var jhDayValue = (s) => !s ? 0 : s.status === "absent" ? 0 : s.status === "half" ? 0.5 : 1;
+  var jhNewId = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+  var jhLineMath = (l) => {
+    const gross = r2(num(l.rate) * num(l.days));
+    const adj = r2((l.adjustments || []).reduce((s, a) => s + num(a.amount), 0));
+    return { gross, adj, net: r2(gross + adj) };
+  };
+  var jhCsv = (rows) => rows.map((r) => r.map((c) => { const s = String(c == null ? "" : c); return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; }).join(",")).join("\n");
+  var jhDownload = (name, text) => {
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([text], { type: "text/csv" }));
+    a.download = name; document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+  };
+  var jhEsc = (s) => String(s == null ? "" : s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+  var jhDaysText = (n) => { const v = r2(n); return v + " day" + (v === 1 ? "" : "s"); };
+  var jhSlipHtml = (run, lines, company) => {
+    const slips = lines.map((l) => {
+      const m = jhLineMath(l);
+      const adj = (l.adjustments || []).filter((a) => num(a.amount) !== 0).map((a) =>
+        `<tr><td>${jhEsc(a.label || (num(a.amount) < 0 ? "Deduction" : "Additional pay"))}</td><td class="n">${num(a.amount) < 0 ? "−" : ""}${peso(Math.abs(num(a.amount)))}</td></tr>`).join("");
+      const pt = l.payTo || {};
+      return `<section class="slip">${l.paidAt ? '<div class="stamp">PAID</div>' : ""}
+        <h1>${jhEsc(company)}</h1><h2>Payslip</h2>
+        <p><b>${jhEsc(l.name)}</b>${l.position ? " · " + jhEsc(l.position) : ""}<br>Period: ${jhEsc(jhPeriodLabel(run.from, run.to))}${run.payDate ? "<br>Pay date: " + jhEsc(longDay(run.payDate)) : ""}</p>
+        <table><tr><td>Days worked</td><td class="n">${r2(l.days)}</td></tr>
+        <tr><td>Daily rate</td><td class="n">${peso(l.rate)}</td></tr>
+        <tr class="sub"><td>Gross pay (${r2(l.days)} × ${peso(l.rate)})</td><td class="n">${peso(m.gross)}</td></tr>
+        ${adj}
+        <tr class="net"><td>Net pay</td><td class="n">${peso(m.net)}</td></tr></table>
+        <p class="pay">Paid by ${jhEsc(methodLabel(pt.method))}${pt.accountNo ? " · " + jhEsc(pt.method === "gcash" ? gcashPretty(pt.accountNo) : pt.accountNo) : ""}${l.paidAt ? " · paid " + jhEsc(longDay(l.paidAt)) : ""}${l.paidRef ? " · ref " + jhEsc(l.paidRef) : ""}</p></section>`;
+    }).join("");
+    return `<!doctype html><html><head><meta charset="utf-8"><title>${jhEsc(lines.length === 1 ? lines[0].name + " - " : "")}${jhEsc(company)} Payslip ${jhEsc(jhPeriodLabel(run.from, run.to))}</title>
+      <style>body{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;color:#1A2230;margin:0;padding:24px}
+      .slip{position:relative;max-width:520px;margin:0 auto 28px;border:1px solid #D5DBE3;border-radius:10px;padding:22px 24px;page-break-inside:avoid}
+      h1{margin:0;font-size:22px;letter-spacing:-.02em}h2{margin:2px 0 14px;font-size:14px;color:#5B6676;font-weight:600;text-transform:uppercase;letter-spacing:.06em}
+      table{width:100%;border-collapse:collapse;margin:10px 0}td{padding:6px 0;border-bottom:1px solid #EDF0F3;font-size:14px}.n{text-align:right;font-variant-numeric:tabular-nums}
+      tr.sub td{font-weight:600}tr.net td{font-weight:800;font-size:17px;border-bottom:0;padding-top:10px}.pay{color:#5B6676;font-size:13px}
+      .stamp{position:absolute;right:22px;top:20px;border:3px solid #2FB344;color:#2FB344;font-weight:800;padding:2px 10px;border-radius:6px;transform:rotate(8deg);letter-spacing:.1em}
+      @media print{body{padding:0}.slip{border:0;page-break-after:always}}</style></head><body>${slips}<script>setTimeout(function(){window.print()},300)<\/script></body></html>`;
+  };
+
+  /* Shift editor pop-up: one shift per person per day. */
+  function JhShiftEditor({ staff, date, shift, defaults, save, remove, close }) {
+    const h = React.createElement;
+    const [f, setF] = useState(() => shift ? { start: shift.start || "", end: shift.end || "", status: shift.status || "work", note: shift.note || "" } : { start: defaults.start, end: defaults.end, status: "work", note: "" });
+    const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
+    return h("div", { className: "ps-overlay", onClick: (e) => e.target === e.currentTarget && close() },
+      h("div", { className: "ps-modal jh-edit", role: "dialog", "aria-modal": "true" },
+        h("h2", { className: "ps-h2" }, staff.name),
+        h("p", { className: "ps-muted" }, longDay(date) + " · " + fromIso(date).toLocaleDateString("en-US", { weekday: "long" })),
+        h("div", { className: "ps-fields" },
+          h("label", { className: "ps-field" }, h("span", null, "Starts"), h("input", { type: "time", value: f.start, onChange: set("start") })),
+          h("label", { className: "ps-field" }, h("span", null, "Ends"), h("input", { type: "time", value: f.end, onChange: set("end") })),
+          h("label", { className: "ps-field" }, h("span", null, "Status"), h("select", { value: f.status, onChange: set("status") }, JH_STATUS.map(([k, l]) => h("option", { key: k, value: k }, l)))),
+          h("label", { className: "ps-field" }, h("span", null, "Note (optional)"), h("input", { value: f.note, placeholder: "e.g. inventory day", onChange: set("note") }))),
+        h("p", { className: "ps-muted jh-hint" }, "Absent = no pay for the day. Half day = half the daily rate."),
+        h("div", { className: "ps-btnrow" },
+          shift ? h("button", { className: "ps-btn ghost", onClick: () => { remove(); close(); } }, "Make it a day off") : h("span"),
+          h("span", { className: "jh-btns" },
+            h("button", { className: "ps-btn ghost", onClick: close }, "Cancel"),
+            h("button", { className: "ps-btn", onClick: () => { save(f); close(); } }, shift ? "Save" : "Add shift")))));
+  }
+
+  function JhSchedule({ staff, shifts, admin, myStaffId, settings, putData, dropData, setToast }) {
+    const h = React.createElement;
+    const today = manilaDay();
+    const [week, setWeek] = useState(() => jhMonday(today));
+    const [edit, setEdit] = useState(null);
+    const days = [0, 1, 2, 3, 4, 5, 6].map((i) => jhAdd(week, i));
+    const crew = staff.filter((s) => s.active !== false || shifts.some((x) => x.staffId === s.id && x.date >= week && x.date <= days[6]));
+    const shiftOf = (sid, d) => shifts.find((x) => x.staffId === sid && x.date === d);
+    const defaults = { ...JH_DEFAULTS, ...settings };
+    const saveShift = (sid, d, f) => {
+      const id = "shift:" + d + ":" + sid;
+      putData(id, "shift", { id, staffId: sid, date: d, start: f.start, end: f.end, status: f.status, note: f.note.trim() });
+    };
+    const copyLastWeek = () => {
+      let n = 0;
+      days.forEach((d) => {
+        const prev = jhAdd(d, -7);
+        crew.forEach((s) => {
+          const p = shiftOf(s.id, prev);
+          if (p && !shiftOf(s.id, d)) { n++; saveShift(s.id, d, { start: p.start, end: p.end, status: "work", note: "" }); }
+        });
+      });
+      setToast(n ? `Copied ${n} shift${n === 1 ? "" : "s"} from last week. Days that already had a shift were left alone.` : "Nothing to copy: last week had no shifts on the empty days.");
+    };
+    const range = jhShort(days[0]) + " – " + jhShort(days[6]) + ", " + fromIso(days[6]).getFullYear();
+    const me = myStaffId ? staff.find((s) => s.id === myStaffId) : null;
+    const mine = myStaffId ? shifts.filter((x) => x.staffId === myStaffId && x.date >= today).sort((a, b) => a.date.localeCompare(b.date)).slice(0, 7) : [];
+    const cell = (s, d) => {
+      const x = shiftOf(s.id, d);
+      const open = () => admin && setEdit({ staffId: s.id, date: d });
+      if (!x) return admin ? h("button", { className: "jh-empty", onClick: open, "aria-label": `Add a shift for ${s.name} on ${jhShort(d)}` }, "+") : h("span", { className: "jh-off" }, "Off");
+      const body = [
+        h("span", { key: "t", className: "jh-t" }, jhTime(x.start) + "–" + jhTime(x.end)),
+        x.status !== "work" && h("span", { key: "s", className: "jh-st " + x.status }, x.status === "half" ? "Half day" : "Absent"),
+        x.note && h("span", { key: "n", className: "jh-note" }, x.note)
+      ];
+      return admin
+        ? h("button", { className: "jh-shift " + x.status, style: { borderLeftColor: s.color || JH_COLORS[0] }, onClick: open }, body)
+        : h("div", { className: "jh-shift " + x.status, style: { borderLeftColor: s.color || JH_COLORS[0] } }, body);
+    };
+    return h(React.Fragment, null,
+      !admin && h("div", { className: "jh-mine" },
+        h("h3", { className: "ps-h3" }, "My next shifts"),
+        !me ? h("p", { className: "ps-muted" }, "Your login isn't linked to a name on the schedule yet. Ask your manager to link it.")
+          : !mine.length ? h("p", { className: "ps-muted" }, "No shifts scheduled for you yet.")
+          : h("div", { className: "jh-minelist" }, mine.map((x) => h("div", { key: x.id, className: "jh-mineday" + (x.date === today ? " today" : "") },
+              h("b", null, x.date === today ? "Today" : fromIso(x.date).toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" })),
+              h("span", null, jhTime(x.start) + " – " + jhTime(x.end)),
+              x.status !== "work" && h("span", { className: "jh-st " + x.status }, x.status === "half" ? "Half day" : "Absent"),
+              x.note && h("span", { className: "ps-muted" }, x.note))))),
+      h("div", { className: "jh-weekbar" },
+        h("div", { className: "jh-weeknav" },
+          h("button", { className: "ps-btn ghost small", onClick: () => setWeek(jhAdd(week, -7)), "aria-label": "Previous week" }, "‹"),
+          h("b", null, range),
+          h("button", { className: "ps-btn ghost small", onClick: () => setWeek(jhAdd(week, 7)), "aria-label": "Next week" }, "›"),
+          week !== jhMonday(today) && h("button", { className: "ps-btn ghost small", onClick: () => setWeek(jhMonday(today)) }, "This week")),
+        admin && crew.length > 0 && h("button", { className: "ps-btn ghost small", onClick: copyLastWeek }, "Copy last week's shifts")),
+      !crew.length ? h("div", { className: "ps-pay-locked" }, h("b", null, "No staff yet."), h("p", null, admin ? "Add your Jumphigh staff in the Staff tab first, then come back to plan their shifts." : "Your manager hasn't added the team yet."))
+        : h("div", { className: "ps-pay-tablewrap" }, h("table", { className: "jh-grid" },
+          h("thead", null, h("tr", null,
+            h("th", null, "Staff"),
+            days.map((d) => h("th", { key: d, className: d === today ? "today" : "" }, h("span", null, fromIso(d).toLocaleDateString("en-US", { weekday: "short" })), h("small", null, jhShort(d)))),
+            h("th", { className: "n" }, "Days"))),
+          h("tbody", null, crew.map((s) => h("tr", { key: s.id, className: s.id === myStaffId ? "me" : "" },
+            h("td", null, h("div", { className: "jh-who" }, h("span", { className: "jh-dot", style: { background: s.color || JH_COLORS[0] } }), h("span", null, h("b", null, s.name), s.position && h("small", null, s.position)))),
+            days.map((d) => h("td", { key: d, className: d === today ? "today" : "" }, cell(s, d))),
+            h("td", { className: "n" }, r2(days.reduce((a, d) => a + jhDayValue(shiftOf(s.id, d)), 0)))))),
+          h("tfoot", null, h("tr", null,
+            h("td", null, "Working"),
+            days.map((d) => h("td", { key: d, className: d === today ? "today" : "" }, crew.filter((s) => { const x = shiftOf(s.id, d); return x && x.status !== "absent"; }).length)),
+            h("td"))))),
+      admin && crew.length > 0 && h("p", { className: "ps-muted jh-hint" }, "Click a day to add or change a shift. Staff see this schedule when they sign in, but they can't change it."),
+      edit && h(JhShiftEditor, {
+        staff: staff.find((s) => s.id === edit.staffId) || { name: "" }, date: edit.date, shift: shiftOf(edit.staffId, edit.date), defaults,
+        save: (f) => saveShift(edit.staffId, edit.date, f),
+        remove: () => dropData("shift:" + edit.date + ":" + edit.staffId),
+        close: () => setEdit(null)
+      }));
+  }
+
+  function JhStaffForm({ s, rate, login, settingsOk, save, close }) {
+    const h = React.createElement;
+    const pt = (rate && rate.payTo) || {};
+    const [f, setF] = useState({
+      name: s.name || "", position: s.position || "", color: s.color || JH_COLORS[0],
+      dailyRate: rate && rate.dailyRate ? String(rate.dailyRate) : "", method: pt.method || "cash", accountNo: pt.accountNo || "", accountName: pt.accountName || "",
+      mobile: (rate && rate.mobile) || "", email: login ? login.email : "", admin: !!(login && login.role === "admin")
+    });
+    const [err, setErr] = useState("");
+    const set = (k) => (e) => setF({ ...f, [k]: e.target.type === "checkbox" ? e.target.checked : e.target.value });
+    const go = () => {
+      if (!f.name.trim()) return setErr("Type their name.");
+      if (f.email.trim() && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(f.email.trim())) return setErr("That login email doesn't look right.");
+      if (f.method === "gcash" && f.accountNo && !gcashOk(f.accountNo)) return setErr("Check the GCash number: 11 digits starting with 09.");
+      setErr(""); save(f);
+    };
+    return h("div", { className: "ps-pay-form jh-form" },
+      h("div", { className: "ps-fields" },
+        h("label", { className: "ps-field" }, h("span", null, "Name"), h("input", { value: f.name, onChange: set("name"), autoFocus: !s.name })),
+        h("label", { className: "ps-field" }, h("span", null, "Position"), h("input", { value: f.position, placeholder: "e.g. Sales staff, Cashier", onChange: set("position") })),
+        h("label", { className: "ps-field" }, h("span", null, "Daily rate (₱)"), h("input", { inputMode: "decimal", value: f.dailyRate, placeholder: "e.g. 610", onChange: set("dailyRate") })),
+        h("label", { className: "ps-field" }, h("span", null, "Mobile number"), h("input", { inputMode: "tel", value: f.mobile, onChange: set("mobile") })),
+        h("label", { className: "ps-field" }, h("span", null, "Paid by"), h("select", { value: f.method, onChange: set("method") }, PAY_METHODS.map(([k, l]) => h("option", { key: k, value: k }, l)))),
+        f.method !== "cash" && h("label", { className: "ps-field" }, h("span", null, f.method === "gcash" ? "GCash number" : "Account number"), h("input", { value: f.accountNo, onChange: set("accountNo") })),
+        f.method !== "cash" && h("label", { className: "ps-field" }, h("span", null, "Account name"), h("input", { value: f.accountName, onChange: set("accountName") })),
+        h("label", { className: "ps-field" }, h("span", null, "Login email (so they can see the schedule)"), h("input", { type: "email", value: f.email, placeholder: "Leave blank if they don't need to sign in", onChange: set("email") }))),
+      h("div", { className: "jh-colors" }, h("span", { className: "ps-muted" }, "Colour on the schedule"),
+        JH_COLORS.map((c) => h("button", { key: c, type: "button", className: "jh-swatch" + (f.color === c ? " on" : ""), style: { background: c }, "aria-label": "Colour " + c, onClick: () => setF({ ...f, color: c }) }))),
+      f.email.trim() && h("label", { className: "ps-check jh-check" }, h("input", { type: "checkbox", checked: f.admin, onChange: set("admin") }), h("span", null, "Can manage Jumphigh too (edit the schedule, staff and payroll)")),
+      f.email.trim() && (!login || login.email !== f.email.trim().toLowerCase()) && h("p", { className: "ps-muted jh-hint" },
+        "After saving, make their sign-in once in Supabase: Authentication → Users → Add user → Create new user. Type this same email and a password, tick “Auto Confirm User”, then Create. Send them the app link and the password. They will only see Jumphigh."),
+      err && h("p", { className: "ps-pay-warn" }, err),
+      h("div", { className: "ps-btnrow end" },
+        h("button", { className: "ps-btn ghost", onClick: close }, "Cancel"),
+        h("button", { className: "ps-btn", onClick: go }, s.name ? "Save" : "Add to staff")));
+  }
+
+  function JhStaff({ staff, rates, members, myEmail, settings, putData, putPay, saveMember, dropMember, setToast, confirm }) {
+    const h = React.createElement;
+    const [editing, setEditing] = useState(null);
+    const [showFormer, setShowFormer] = useState(false);
+    const [hours, setHours] = useState(() => ({ ...JH_DEFAULTS, ...settings }));
+    const [newAdmin, setNewAdmin] = useState("");
+    useEffect(() => { setHours({ ...JH_DEFAULTS, ...settings }); }, [settings.start, settings.end, settings.company]);
+    const loginOf = (sid) => members.find((m) => m.staff_id === sid);
+    const save = (s, f) => {
+      const id = s.id || "st" + jhNewId();
+      const row = { ...s, id, name: f.name.trim(), position: f.position.trim(), color: f.color, active: s.active !== false, order: s.order != null ? s.order : staff.length };
+      putData("staff:" + id, "staff", row, s.id ? `${row.name} saved.` : `${row.name} added to Jumphigh.`);
+      putPay("rate:" + id, "rate", { staffId: id, dailyRate: r2(num(f.dailyRate)), mobile: f.mobile.trim(), payTo: { method: f.method, accountNo: f.method === "cash" ? "" : f.accountNo.trim(), accountName: f.method === "cash" ? "" : f.accountName.trim() } });
+      const old = loginOf(id);
+      const email = f.email.trim().toLowerCase();
+      if (old && old.email !== email && old.email !== myEmail) dropMember(old.email);
+      if (email) saveMember({ email, role: f.admin ? "admin" : "staff", staff_id: id });
+      setEditing(null);
+    };
+    const retire = (s) => confirm({
+      title: `Move ${s.name} to former staff?`,
+      lines: ["They come off the schedule and new payroll runs, and their login stops working. Past shifts and payslips stay."],
+      confirmLabel: "Move to former staff",
+      onYes: () => {
+        putData("staff:" + s.id, "staff", { ...s, active: false }, `${s.name} moved to former staff.`);
+        const m = loginOf(s.id);
+        if (m && m.email !== myEmail) dropMember(m.email);
+      }
+    });
+    const current = staff.filter((s) => s.active !== false);
+    const former = staff.filter((s) => s.active === false);
+    const otherAdmins = members.filter((m) => m.role === "admin" && !m.staff_id);
+    const row = (s) => {
+      const r = rates[s.id], pt = (r && r.payTo) || {}, m = loginOf(s.id);
+      return h("div", { key: s.id, className: "ps-pay-person" },
+        h("div", { className: "ps-pay-row" },
+          h("span", { className: "jh-dot big", style: { background: s.color || JH_COLORS[0] } }),
+          h("span", { className: "ps-pay-who" }, h("b", null, s.name, s.active === false && h("span", { className: "ps-chip jh-chip" }, "Former")),
+            h("span", { className: "ps-muted" }, [s.position, r && num(r.dailyRate) ? peso(r.dailyRate) + " / day" : "No daily rate yet", methodLabel(pt.method) + (pt.accountNo ? " " + (pt.method === "gcash" ? gcashPretty(pt.accountNo) : pt.accountNo) : "")].filter(Boolean).join(" · ")),
+            h("span", { className: "ps-muted" }, m ? `Signs in as ${m.email}${m.role === "admin" ? " · can manage Jumphigh" : ""}` : "No login")),
+          s.active === false
+            ? h("button", { className: "ps-btn ghost small", onClick: () => putData("staff:" + s.id, "staff", { ...s, active: true }, `${s.name} is back on the team. Add their login again if they need it.`) }, "Bring back")
+            : h(React.Fragment, null,
+              h("button", { className: "ps-btn ghost small", onClick: () => setEditing(editing === s.id ? null : s.id) }, editing === s.id ? "Close" : "Edit"),
+              h("button", { className: "ps-btn ghost small", onClick: () => retire(s) }, "Remove"))),
+        editing === s.id && h(JhStaffForm, { key: s.id, s, rate: r, login: m, save: (f) => save(s, f), close: () => setEditing(null) }));
+    };
+    return h(React.Fragment, null,
+      h("div", { className: "ps-btnrow jh-top" }, h("p", { className: "ps-muted" }, `${current.length} on the team. Rates and pay details are only visible to people who can manage Jumphigh.`),
+        editing !== "new" && h("button", { className: "ps-btn", onClick: () => setEditing("new") }, "+ Add staff")),
+      editing === "new" && h("div", { className: "ps-pay-person" }, h(JhStaffForm, { s: {}, rate: null, login: null, save: (f) => save({}, f), close: () => setEditing(null) })),
+      h("div", { className: "ps-pay-list" }, current.map(row)),
+      former.length > 0 && h("button", { className: "ps-btn ghost small jh-former", onClick: () => setShowFormer(!showFormer) }, showFormer ? "Hide former staff" : `Show former staff (${former.length})`),
+      showFormer && h("div", { className: "ps-pay-list" }, former.map(row)),
+      h("h3", { className: "ps-h3" }, "Store settings"),
+      h("div", { className: "ps-pay-person jh-settings" },
+        h("div", { className: "ps-fields" },
+          h("label", { className: "ps-field" }, h("span", null, "Usual shift starts"), h("input", { type: "time", value: hours.start, onChange: (e) => setHours({ ...hours, start: e.target.value }) })),
+          h("label", { className: "ps-field" }, h("span", null, "Usual shift ends"), h("input", { type: "time", value: hours.end, onChange: (e) => setHours({ ...hours, end: e.target.value }) })),
+          h("label", { className: "ps-field" }, h("span", null, "Company name on payslips"), h("input", { value: hours.company, onChange: (e) => setHours({ ...hours, company: e.target.value }) }))),
+        h("div", { className: "ps-btnrow end" }, h("button", { className: "ps-btn", onClick: () => putData("settings", "settings", { start: hours.start, end: hours.end, company: hours.company.trim() || JH_DEFAULTS.company }, "Store settings saved.") }, "Save settings"))),
+      h("h3", { className: "ps-h3" }, "Other managers"),
+      h("div", { className: "ps-pay-person" },
+        h("p", { className: "ps-muted" }, "Logins that can manage Jumphigh but aren't on the staff list (like you)."),
+        h("div", { className: "jh-admins" }, otherAdmins.map((m) => h("span", { key: m.email, className: "jh-admin" }, m.email, m.email === myEmail ? h("span", { className: "ps-muted" }, " (you)")
+          : h("button", { className: "ps-x-small", "aria-label": "Remove " + m.email, onClick: () => confirm({ title: "Remove this manager?", lines: [m.email + " won't be able to open Jumphigh any more."], confirmLabel: "Remove", onYes: () => dropMember(m.email) }) }, "×")))),
+        h("div", { className: "ps-form jh-addadmin" },
+          h("input", { type: "email", placeholder: "manager@email.com", value: newAdmin, onChange: (e) => setNewAdmin(e.target.value) }),
+          h("button", { className: "ps-btn ghost", onClick: () => {
+            const e = newAdmin.trim().toLowerCase();
+            if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(e)) return setToast("Type a full email address.");
+            saveMember({ email: e, role: "admin", staff_id: null }); setNewAdmin("");
+            setToast(`${e} can now manage Jumphigh. Make their sign-in in Supabase if they don't have one yet.`);
+          } }, "Add manager"))));
+  }
+
+  function JhPayroll({ staff, shifts, rates, runs, settings, me, putPay, dropPay, setToast, confirm }) {
+    const h = React.createElement;
+    const today = manilaDay();
+    const [openId, setOpenId] = useState(null);
+    const [newRun, setNewRun] = useState(null);
+    const suggest = () => {
+      const d = fromIso(today);
+      if (d.getDate() <= 15) { const p = new Date(d.getFullYear(), d.getMonth() - 1, 1); return { month: isoDay(p).slice(0, 7), half: "second", from: "", to: "", payDate: "" }; }
+      return { month: today.slice(0, 7), half: "first", from: "", to: "", payDate: "" };
+    };
+    const perOf = (n) => {
+      if (n.half === "custom") return { from: n.from, to: n.to };
+      const [y, mo] = n.month.split("-").map(Number);
+      const last = new Date(y, mo, 0).getDate();
+      const pad = (x) => String(x).padStart(2, "0");
+      const base = n.month + "-";
+      return n.half === "first" ? { from: base + "01", to: base + "15" } : n.half === "second" ? { from: base + "16", to: base + pad(last) } : { from: base + "01", to: base + pad(last) };
+    };
+    const countDays = (sid, from, to) => r2(shifts.filter((x) => x.staffId === sid && x.date >= from && x.date <= to).reduce((a, x) => a + jhDayValue(x), 0));
+    const lineFor = (s, from, to, prev) => {
+      const r = rates[s.id] || {};
+      return { ...prev || {}, staffId: s.id, name: s.name, position: s.position || "", rate: r2(num(r.dailyRate)), days: countDays(s.id, from, to),
+        payTo: { ...r.payTo || {} }, adjustments: prev ? prev.adjustments || [] : [], paidAt: prev ? prev.paidAt || null : null, paidRef: prev ? prev.paidRef || "" : "" };
+    };
+    const note = (run, text) => ({ ...run, history: [...run.history || [], { at: (/* @__PURE__ */ new Date()).toISOString(), by: me.email, text }] });
+    const create = () => {
+      const per = perOf(newRun);
+      if (!per.from || !per.to || per.to < per.from) return setToast("Pick a start and end date for this payroll.");
+      const id = "run:" + per.from + "_" + per.to;
+      if (runs.some((r) => r.id === id)) { setNewRun(null); setOpenId(id); return setToast("There's already a payroll for those dates, so it's open now."); }
+      const people = staff.filter((s) => (s.active !== false && (num((rates[s.id] || {}).dailyRate) > 0 || countDays(s.id, per.from, per.to) > 0)) || (s.active === false && countDays(s.id, per.from, per.to) > 0));
+      const run = note({ id, from: per.from, to: per.to, payDate: newRun.payDate || "", status: "draft", createdAt: (/* @__PURE__ */ new Date()).toISOString(), lines: people.map((s) => lineFor(s, per.from, per.to)) }, "Payroll made");
+      putPay(id, "run", run, "Payroll made from the schedule. Check the days, then approve.");
+      setNewRun(null); setOpenId(id);
+    };
+    const run = runs.find((r) => r.id === openId);
+    if (run) {
+      const draft = run.status !== "approved";
+      const upd = (patch, msg, hist) => { const nr = { ...run, ...patch }; putPay(run.id, "run", hist ? note(nr, hist) : nr, msg); };
+      const updLine = (sid, patch, msg) => upd({ lines: run.lines.map((l) => l.staffId === sid ? { ...l, ...patch } : l) }, msg);
+      const totals = run.lines.reduce((a, l) => { const m = jhLineMath(l); return { gross: a.gross + m.gross, adj: a.adj + m.adj, net: a.net + m.net, paid: a.paid + (l.paidAt ? m.net : 0) }; }, { gross: 0, adj: 0, net: 0, paid: 0 });
+      const missing = staff.filter((s) => s.active !== false && !run.lines.some((l) => l.staffId === s.id));
+      const recount = () => upd({ lines: run.lines.map((l) => { const s = staff.find((x) => x.id === l.staffId) || { id: l.staffId, name: l.name, position: l.position }; return lineFor(s, run.from, run.to, l); }) },
+        "Days and daily rates updated from the schedule and staff list.", "Recounted from the schedule");
+      const slip = (lines) => { const w = window.open("", "_blank"); if (!w) return setToast("Your browser blocked the payslip window. Allow pop-ups for this site and try again."); w.document.open(); w.document.write(jhSlipHtml(run, lines, settings.company || JH_DEFAULTS.company)); w.document.close(); };
+      const csv = () => jhDownload(`Jumphigh payroll ${run.from} to ${run.to}.csv`, jhCsv([
+        ["Name", "Position", "Days worked", "Daily rate", "Gross", "Additions / deductions", "Net pay", "Paid by", "Account", "Paid on", "Reference"],
+        ...run.lines.map((l) => { const m = jhLineMath(l); const pt = l.payTo || {}; return [l.name, l.position, r2(l.days), r2(l.rate), m.gross, m.adj, m.net, methodLabel(pt.method), pt.accountNo || "", l.paidAt || "", l.paidRef || ""]; }),
+        ["Total", "", "", "", r2(totals.gross), r2(totals.adj), r2(totals.net), "", "", "", ""]]));
+      return h(React.Fragment, null,
+        h("button", { className: "ps-btn ghost small", onClick: () => setOpenId(null) }, "← All payrolls"),
+        h("div", { className: "jh-runhead" },
+          h("div", null, h("h3", { className: "ps-h3 jh-runtitle" }, "Payroll · " + jhPeriodLabel(run.from, run.to), h("span", { className: "ps-chip " + (draft ? "warn" : "ok") }, draft ? "Draft" : "Approved")),
+            h("label", { className: "jh-paydate" }, h("span", { className: "ps-muted" }, "Pay date "), h("input", { type: "date", value: run.payDate || "", onChange: (e) => upd({ payDate: e.target.value }, "Pay date saved.") }))),
+          h("div", { className: "jh-totbox" }, h("span", { className: "ps-muted" }, "Total to pay out"), h("b", null, peso(totals.net)), h("span", { className: "ps-muted" }, `Paid ${peso(totals.paid)} · still to pay ${peso(r2(totals.net - totals.paid))}`))),
+        draft && h("p", { className: "ps-muted jh-hint" }, "Days worked come from the schedule: each shift counts 1 day, a half day counts ½, absent counts 0. You can type a different number. Use “Add line” for overtime, bonuses, cash advances or deductions (type a minus for deductions)."),
+        draft && missing.length > 0 && h("p", { className: "ps-muted jh-hint" }, "Not in this payroll: " + missing.map((s) => s.name).join(", ") + " (no daily rate and no shifts in these dates). ",
+          h("button", { className: "ps-linkbtn", onClick: () => upd({ lines: [...run.lines, ...missing.map((s) => lineFor(s, run.from, run.to))] }, "Added.") }, "Add them anyway")),
+        h("div", { className: "jh-lines" }, run.lines.map((l) => {
+          const m = jhLineMath(l), pt = l.payTo || {};
+          return h("div", { key: l.staffId, className: "ps-pay-card jh-line " + (l.paidAt ? "paid" : "") },
+            h("div", { className: "jh-linehead" },
+              h("span", null, h("b", null, l.name), h("span", { className: "ps-muted" }, " " + (l.position || ""))),
+              h("span", { className: "jh-net" }, peso(m.net))),
+            h("div", { className: "jh-calc" },
+              draft ? h("label", null, h("input", { className: "ps-pay-num small", inputMode: "decimal", value: l.days, onChange: (e) => updLine(l.staffId, { days: e.target.value }), onBlur: (e) => updLine(l.staffId, { days: r2(num(e.target.value)) }, "Saved.") }), " days") : h("span", null, jhDaysText(l.days)),
+              h("span", null, " × "),
+              draft ? h("label", null, "₱", h("input", { className: "ps-pay-num", inputMode: "decimal", value: l.rate, onChange: (e) => updLine(l.staffId, { rate: e.target.value }), onBlur: (e) => updLine(l.staffId, { rate: r2(num(e.target.value)) }, "Saved.") }), " / day") : h("span", null, peso(l.rate) + " / day"),
+              h("span", null, " = "), h("b", null, peso(m.gross)),
+              !num(l.rate) && h("span", { className: "ps-pay-warn" }, " No daily rate yet: set it in Staff, then “Recount”.")),
+            (l.adjustments || []).map((a) => h("div", { key: a.id, className: "jh-adj" },
+              draft ? h(React.Fragment, null,
+                h("input", { className: "ps-pay-adjl", placeholder: "e.g. Overtime, Cash advance", value: a.label, onChange: (e) => updLine(l.staffId, { adjustments: l.adjustments.map((x) => x.id === a.id ? { ...x, label: e.target.value } : x) }) }),
+                h("input", { className: "ps-pay-num", inputMode: "decimal", placeholder: "-500", value: a.amount, onChange: (e) => updLine(l.staffId, { adjustments: l.adjustments.map((x) => x.id === a.id ? { ...x, amount: e.target.value } : x) }), onBlur: () => updLine(l.staffId, {}, "Saved.") }),
+                h("button", { className: "ps-x-small", "aria-label": "Remove line", onClick: () => updLine(l.staffId, { adjustments: l.adjustments.filter((x) => x.id !== a.id) }, "Line removed.") }, "×"))
+                : h(React.Fragment, null, h("span", null, a.label || (num(a.amount) < 0 ? "Deduction" : "Additional pay")), h("span", { className: num(a.amount) < 0 ? "jh-minus" : "" }, (num(a.amount) < 0 ? "−" : "+") + peso(Math.abs(num(a.amount))))))),
+            draft && h("button", { className: "ps-linkbtn jh-addline", onClick: () => updLine(l.staffId, { adjustments: [...l.adjustments || [], { id: jhNewId(), label: "", amount: "" }] }) }, "+ Add line"),
+            h("div", { className: "jh-payrow" },
+              h("span", { className: "ps-muted" }, "Pay to: " + methodLabel(pt.method) + (pt.accountNo ? " " + (pt.method === "gcash" ? gcashPretty(pt.accountNo) : pt.accountNo) : "") + (pt.accountName ? " (" + pt.accountName + ")" : "")),
+              h("span", { className: "jh-paybtns" },
+                h("button", { className: "ps-btn ghost small", onClick: () => slip([l]) }, "Payslip"),
+                l.paidAt
+                  ? h(React.Fragment, null, h("span", { className: "ps-chip ok" }, "Paid " + jhShort(l.paidAt) + (l.paidRef ? " · " + l.paidRef : "")), h("button", { className: "ps-linkbtn", onClick: () => updLine(l.staffId, { paidAt: null, paidRef: "" }, "Marked not paid.") }, "Undo"))
+                  : !draft && h(JhPaidButton, { onPaid: (ref) => updLine(l.staffId, { paidAt: today, paidRef: ref }, `${l.name} marked paid.`) }))));
+        })),
+        h("div", { className: "ps-pay-tablewrap jh-sum" }, h("table", { className: "ps-pay-table jh-sumtable" },
+          h("tbody", null,
+            h("tr", null, h("td", null, "Gross pay"), h("td", { className: "n" }, peso(totals.gross))),
+            h("tr", null, h("td", null, "Additions and deductions"), h("td", { className: "n" }, (totals.adj < 0 ? "−" : "") + peso(Math.abs(totals.adj)))),
+            h("tr", null, h("td", null, h("b", null, "Total net pay")), h("td", { className: "n" }, h("b", null, peso(totals.net))))))),
+        h("div", { className: "ps-btnrow ps-pay-actions" },
+          draft && h("button", { className: "ps-btn ghost", onClick: recount }, "Recount from schedule"),
+          draft && h("button", { className: "ps-btn", onClick: () => confirm({ title: "Approve this payroll?", lines: [`${run.lines.length} people · ${peso(totals.net)} total.`, "The numbers lock. Then you can mark each person paid."], confirmLabel: "Approve", onYes: () => upd({ status: "approved", approvedAt: (/* @__PURE__ */ new Date()).toISOString() }, "Approved. Mark people paid as you send their pay.", "Approved") }) }, "Approve"),
+          !draft && !run.lines.some((l) => l.paidAt) && h("button", { className: "ps-btn ghost", onClick: () => upd({ status: "draft" }, "Back to draft. You can change the numbers again.", "Reopened") }, "Reopen to edit"),
+          h("button", { className: "ps-btn ghost", onClick: () => slip(run.lines) }, "Print all payslips"),
+          h("button", { className: "ps-btn ghost", onClick: csv }, "Download CSV"),
+          draft && h("button", { className: "ps-btn ghost jh-del", onClick: () => confirm({ title: "Delete this payroll draft?", lines: ["The schedule isn't touched. You can make the payroll again."], confirmLabel: "Delete", onYes: () => { dropPay(run.id); setOpenId(null); setToast("Payroll draft deleted."); } }) }, "Delete draft")),
+        (run.history || []).length > 0 && h("p", { className: "ps-muted jh-hist" }, run.history.map((x) => `${x.text} · ${new Date(x.at).toLocaleString("en-PH", { timeZone: "Asia/Manila", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}`).join("  ·  ")));
+    }
+    const per = newRun ? perOf(newRun) : null;
+    return h(React.Fragment, null,
+      h("div", { className: "ps-btnrow jh-top" }, h("p", { className: "ps-muted" }, "Pay = daily rate × days worked on the schedule, plus or minus any extra lines."),
+        !newRun && h("button", { className: "ps-btn", onClick: () => setNewRun(suggest()) }, "+ New payroll")),
+      newRun && h("div", { className: "ps-pay-person jh-newrun" },
+        h("div", { className: "ps-fields" },
+          newRun.half !== "custom" && h("label", { className: "ps-field" }, h("span", null, "Month worked"), h("input", { type: "month", value: newRun.month, onChange: (e) => setNewRun({ ...newRun, month: e.target.value }) })),
+          h("label", { className: "ps-field" }, h("span", null, "Period"), h("select", { value: newRun.half, onChange: (e) => setNewRun({ ...newRun, half: e.target.value }) },
+            h("option", { value: "first" }, "1st – 15th"), h("option", { value: "second" }, "16th – end of month"), h("option", { value: "whole" }, "Whole month"), h("option", { value: "custom" }, "Pick dates (e.g. weekly)"))),
+          newRun.half === "custom" && h("label", { className: "ps-field" }, h("span", null, "From"), h("input", { type: "date", value: newRun.from, onChange: (e) => setNewRun({ ...newRun, from: e.target.value }) })),
+          newRun.half === "custom" && h("label", { className: "ps-field" }, h("span", null, "To"), h("input", { type: "date", value: newRun.to, onChange: (e) => setNewRun({ ...newRun, to: e.target.value }) })),
+          h("label", { className: "ps-field" }, h("span", null, "Pay date (optional)"), h("input", { type: "date", value: newRun.payDate, onChange: (e) => setNewRun({ ...newRun, payDate: e.target.value }) }))),
+        per && per.from && per.to && per.to >= per.from && h("p", { className: "ps-muted jh-hint" }, "Covers " + jhPeriodLabel(per.from, per.to) + "."),
+        h("div", { className: "ps-btnrow end" }, h("button", { className: "ps-btn ghost", onClick: () => setNewRun(null) }, "Cancel"), h("button", { className: "ps-btn", onClick: create }, "Make payroll"))),
+      !runs.length && !newRun ? h("div", { className: "ps-pay-locked" }, h("b", null, "No payrolls yet."), h("p", null, "Add staff with their daily rate, plan shifts on the schedule, then make your first payroll here."))
+        : h("div", { className: "ps-pay-list" }, runs.map((r) => {
+          const net = r2(r.lines.reduce((a, l) => a + jhLineMath(l).net, 0));
+          const paid = r.lines.filter((l) => l.paidAt).length;
+          return h("button", { key: r.id, className: "ps-pay-person jh-runrow", onClick: () => setOpenId(r.id) },
+            h("span", { className: "ps-pay-who" }, h("b", null, jhPeriodLabel(r.from, r.to)), h("span", { className: "ps-muted" }, `${r.lines.length} people${r.payDate ? " · pay date " + jhShort(r.payDate) : ""}${r.status === "approved" ? ` · ${paid} of ${r.lines.length} paid` : ""}`)),
+            h("span", { className: "ps-chip " + (r.status === "approved" ? paid === r.lines.length && paid ? "ok" : "" : "warn") }, r.status === "approved" ? paid === r.lines.length && paid ? "All paid" : "Approved" : "Draft"),
+            h("b", { className: "jh-runnet" }, peso(net)));
+        })));
+  }
+
+  function JhPaidButton({ onPaid }) {
+    const h = React.createElement;
+    const [open, setOpen] = useState(false);
+    const [ref, setRef] = useState("");
+    if (!open) return h("button", { className: "ps-btn small", onClick: () => setOpen(true) }, "Mark paid");
+    return h("span", { className: "jh-paidform" },
+      h("input", { className: "ps-pay-ref", placeholder: "GCash / bank ref (optional)", value: ref, autoFocus: true, onChange: (e) => setRef(e.target.value), onKeyDown: (e) => { if (e.key === "Enter") onPaid(ref.trim()); if (e.key === "Escape") setOpen(false); } }),
+      h("button", { className: "ps-btn small", onClick: () => onPaid(ref.trim()) }, "Paid"),
+      h("button", { className: "ps-linkbtn", onClick: () => setOpen(false) }, "Cancel"));
+  }
+
+  function JumphighPage({ setToast, confirm, standalone }) {
+    const h = React.createElement;
+    const api = jhApi();
+    const [st, setSt] = useState({ loading: true, ok: false });
+    const [data, setData] = useState([]);
+    const [pay, setPay] = useState([]);
+    const [members, setMembers] = useState([]);
+    const [tab, setTab] = useState(() => { try { return sessionStorage.getItem("ps-jh-tab") || "schedule"; } catch (e) { return "schedule"; } });
+    useEffect(() => { try { sessionStorage.setItem("ps-jh-tab", tab); } catch (e) {} }, [tab]);
+    const load = async () => {
+      try {
+        const me = await api.me();
+        if (!me || !me.role) { setSt({ loading: false, ok: false, setup: me && me.setup || "" }); return; }
+        const admin = me.role === "admin";
+        const [d, p, m] = await Promise.all([api.data.list(), admin ? api.pay.list() : [], admin ? api.members.list() : []]);
+        setData(d || []); setPay(p || []); setMembers(m || []);
+        setSt({ loading: false, ok: true, me });
+      } catch (e) {
+        console.error(e);
+        setSt({ loading: false, ok: false, setup: "error" });
+      }
+    };
+    useEffect(() => { load(); }, []);
+    /* Coming back to the tab picks up schedule changes made elsewhere. */
+    useEffect(() => {
+      const f = () => { if (document.visibilityState === "visible") api.data.list().then((d) => setData(d || [])).catch(() => {}); };
+      document.addEventListener("visibilitychange", f);
+      return () => document.removeEventListener("visibilitychange", f);
+    }, []);
+    const fail = (e) => setToast("That didn't save: " + (e && e.message ? e.message : "check your connection") + ". Nothing was lost on the server; try again.");
+    const putData = async (id, kind, d, msg) => {
+      setData((cur) => [...cur.filter((r) => r.id !== id), { id, kind, data: d }]);
+      try { await api.data.save(id, kind, d); if (msg) setToast(msg); } catch (e) { fail(e); load(); }
+    };
+    const dropData = async (id, msg) => {
+      setData((cur) => cur.filter((r) => r.id !== id));
+      try { await api.data.remove(id); if (msg) setToast(msg); } catch (e) { fail(e); load(); }
+    };
+    const putPay = async (id, kind, d, msg) => {
+      setPay((cur) => [...cur.filter((r) => r.id !== id), { id, kind, data: d }]);
+      try { await api.pay.save(id, kind, d); if (msg) setToast(msg); } catch (e) { fail(e); load(); }
+    };
+    const dropPay = async (id) => {
+      setPay((cur) => cur.filter((r) => r.id !== id));
+      try { await api.pay.remove(id); } catch (e) { fail(e); load(); }
+    };
+    const saveMember = async (m) => {
+      setMembers((cur) => [...cur.filter((x) => x.email !== m.email), m]);
+      try { await api.members.save(m); } catch (e) { fail(e); load(); }
+    };
+    const dropMember = async (email) => {
+      setMembers((cur) => cur.filter((x) => x.email !== email));
+      try { await api.members.remove(email); } catch (e) { fail(e); load(); }
+    };
+
+    const lede = st.ok && st.me.role !== "admin" ? "Your store schedule." : standalone ? "Store schedule and staff payroll." : "Store schedule and staff payroll. Kept separate from Projeclab.";
+    const head = h("div", { className: "jh-head" }, h("span", { className: "jh-badge", "aria-hidden": "true" }, "JH"), h("div", null, h("h1", { className: "ps-h1" }, "Jumphigh"), h("p", { className: "ps-lede" }, lede)));
+    if (st.loading) return h("div", { className: "jh" }, h("style", null, JH_CSS), h("p", { className: "ps-loading" }, "Opening Jumphigh…"));
+    if (!st.ok) return h("div", { className: "jh" }, h("style", null, JH_CSS), head,
+      h("div", { className: "ps-pay-locked" },
+        h("b", null, st.setup === "missing" ? "Jumphigh isn't set up in Supabase yet." : st.setup === "error" ? "Supabase didn't answer." : "Your login can't open Jumphigh."),
+        h("p", null, st.setup === "missing" ? "Run jumphigh_setup.sql once in Supabase (SQL Editor → New query → paste → Run)."
+          : st.setup === "error" ? "Check your connection and open this page again." : "Ask the Jumphigh manager to add your login email to the staff list.")));
+
+    const admin = st.me.role === "admin";
+    const staff = data.filter((r) => r.kind === "staff").map((r) => r.data).sort((a, b) => (a.order || 0) - (b.order || 0) || String(a.name).localeCompare(String(b.name)));
+    const shifts = data.filter((r) => r.kind === "shift").map((r) => r.data);
+    const settings = (data.find((r) => r.id === "settings") || {}).data || {};
+    const rates = {};
+    pay.filter((r) => r.kind === "rate").forEach((r) => { rates[r.data.staffId] = r.data; });
+    const runs = pay.filter((r) => r.kind === "run").map((r) => r.data).sort((a, b) => b.from.localeCompare(a.from) || b.to.localeCompare(a.to));
+    const tabs = admin ? [["schedule", "Schedule"], ["payroll", "Payroll"], ["staff", "Staff"]] : [["schedule", "Schedule"]];
+    const cur = tabs.some((t) => t[0] === tab) ? tab : "schedule";
+    const shared = { staff, shifts, rates, settings, putData, dropData, putPay, dropPay, setToast, confirm };
+    return h("div", { className: "jh" }, h("style", null, JH_CSS), head,
+      tabs.length > 1 && h("div", { className: "ps-tabs ps-subtabs" }, tabs.map(([k, l]) => h("button", { key: k, className: `ps-tab ${cur === k ? "on" : ""}`, onClick: () => setTab(k) }, l))),
+      cur === "schedule" ? h(JhSchedule, { ...shared, admin, myStaffId: st.me.staffId })
+        : cur === "payroll" ? h(JhPayroll, { ...shared, runs, me: st.me })
+        : h(JhStaff, { ...shared, members, myEmail: st.me.email, saveMember, dropMember }));
+  }
+
+  /* What a Jumphigh-only login sees: just Jumphigh, no Projeclab anything. */
+  function JumphighStandalone({ email, signOut }) {
+    const h = React.createElement;
+    const [toast, setToast] = useState("");
+    const [ask, setAsk] = useState(null);
+    const [dark, setDark] = useState(() => { try { const s = localStorage.getItem("ps-theme"); if (s) return s === "dark"; return !!(window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches); } catch (e) { return false; } });
+    useEffect(() => {
+      try { localStorage.setItem("ps-theme", dark ? "dark" : "light"); document.documentElement.setAttribute("data-theme", dark ? "dark" : "light"); } catch (e) {}
+    }, [dark]);
+    useEffect(() => { if (!toast) return; const t = setTimeout(() => setToast(""), 4500); return () => clearTimeout(t); }, [toast]);
+    useEffect(() => { try { document.title = "Jumphigh"; } catch (e) {} }, []);
+    return h("div", { className: `ps-root ${dark ? "dark" : ""}` }, h("style", null, CSS),
+      h("header", { className: "ps-top jh-sa-top" },
+        h("span", { className: "jh-sa-name" }, "Jumphigh"),
+        h("span", { className: "jh-sa-right" },
+          email && h("span", { className: "ps-muted" }, email),
+          h("button", { className: "ps-btn ghost small", onClick: () => setDark(!dark) }, dark ? "Light" : "Dark"),
+          signOut && h("button", { className: "ps-btn ghost small", onClick: signOut }, "Sign out"))),
+      h("main", { className: "ps-main jh-sa-main" }, h(JumphighPage, { setToast, confirm: setAsk, standalone: true })),
+      ask && h("div", { className: "ps-overlay", onClick: (e) => e.target === e.currentTarget && setAsk(null) },
+        h("div", { className: "ps-modal ps-confirm", role: "dialog", "aria-modal": "true" },
+          h("h2", { className: "ps-h2" }, ask.title),
+          (ask.lines || []).map((l, i) => h("p", { key: i, className: "ps-muted ps-confirm-line" }, l)),
+          h("div", { className: "ps-confirm-btns" },
+            h("button", { className: "ps-btn ghost", onClick: () => setAsk(null) }, "Cancel"),
+            h("button", { className: "ps-btn danger", onClick: () => { const f = ask.onYes; setAsk(null); f && f(); } }, ask.confirmLabel || "Confirm")))),
+      toast && h("div", { className: "ps-toast", role: "status" }, h("span", null, String(toast))));
+  }
+
+  var JH_CSS = `
+.jh-head{display:flex;align-items:center;gap:14px;margin-bottom:14px}
+.jh-head .ps-h1{margin:0}
+.jh-head .ps-lede{margin:2px 0 0}
+.jh-badge{width:44px;height:44px;border-radius:12px;background:#111827;color:#FACC15;display:grid;place-items:center;font-weight:800;letter-spacing:-.04em;font-size:18px;flex:0 0 auto}
+.ps-root.dark .jh-badge{background:#FACC15;color:#111827}
+.jh-hint{margin:8px 0}
+.jh-top{align-items:center;margin:0 0 12px}
+.jh-weekbar{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin:6px 0 10px}
+.jh-weeknav{display:flex;align-items:center;gap:8px}
+.jh-weeknav b{min-width:170px;text-align:center}
+.jh-grid{width:100%;border-collapse:collapse;font-size:13px;min-width:860px;table-layout:fixed}
+.jh-grid th{font-size:12px;color:var(--muted);font-weight:600;padding:8px 6px;border-bottom:1px solid var(--line);text-align:left}
+.jh-grid th:first-child{width:150px}
+.jh-grid th.n,.jh-grid td.n{width:56px;text-align:right}
+.jh-grid th span{display:block;color:var(--ink)}
+.jh-grid th small{font-weight:400}
+.jh-grid td{padding:5px;border-bottom:1px solid var(--line);vertical-align:top}
+.jh-grid tfoot td{color:var(--muted);font-size:12px;border-bottom:0}
+.jh-grid .today{background:color-mix(in srgb,var(--accent) 7%,transparent)}
+.jh-grid tr.me td{background:color-mix(in srgb,#FACC15 14%,transparent)}
+.jh-who{display:flex;gap:8px;align-items:flex-start}
+.jh-who b{display:block;font-weight:600;line-height:1.25}
+.jh-who small{display:block;color:var(--muted);font-size:11.5px;line-height:1.2}
+.jh-dot{width:10px;height:10px;border-radius:50%;flex:0 0 auto;margin-top:4px}
+.jh-dot.big{width:14px;height:14px;margin:0}
+.jh-shift{display:flex;flex-direction:column;align-items:flex-start;gap:2px;width:100%;text-align:left;border:1px solid var(--line);border-left:4px solid;border-radius:8px;padding:5px 6px;background:var(--card);cursor:default;min-height:38px}
+button.jh-shift{cursor:pointer}
+button.jh-shift:hover{border-color:var(--accent)}
+.jh-shift.absent{opacity:.6;background:color-mix(in srgb,var(--late) 7%,var(--card))}
+.jh-shift.absent .jh-t{text-decoration:line-through}
+.jh-t{font-weight:600;font-size:12px;white-space:nowrap}
+.jh-note{font-size:11px;color:var(--muted);line-height:1.2}
+.jh-st{font-size:10.5px;font-weight:700;border-radius:999px;padding:0 6px;background:var(--warnbg);color:var(--warn)}
+.jh-st.absent{background:color-mix(in srgb,var(--late) 14%,var(--card));color:var(--late)}
+.jh-empty{width:100%;min-height:38px;border:1px dashed var(--line);border-radius:8px;background:none;color:var(--muted);cursor:pointer;font-size:16px}
+.jh-empty:hover{border-color:var(--accent);color:var(--accent)}
+.jh-off{display:block;color:var(--muted);font-size:12px;padding:10px 2px}
+.jh-mine{margin-bottom:6px}
+.jh-mine .ps-h3{margin-top:4px}
+.jh-minelist{display:flex;flex-direction:column;gap:6px;max-width:560px}
+.jh-mineday{display:flex;gap:12px;align-items:center;flex-wrap:wrap;border:1px solid var(--line);background:var(--card);border-radius:10px;padding:8px 12px}
+.jh-mineday b{min-width:110px}
+.jh-mineday.today{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent)}
+.jh-edit{max-width:520px}
+.jh-btns{display:flex;gap:8px}
+.jh-colors{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin:12px 0 4px}
+.jh-swatch{width:22px;height:22px;border-radius:50%;border:2px solid transparent;cursor:pointer;padding:0}
+.jh-swatch.on{border-color:var(--ink);box-shadow:0 0 0 2px var(--card) inset}
+.jh-check{display:flex;gap:8px;align-items:center;margin:8px 0;font-size:14px}
+.jh-form{margin-top:10px;border-top:1px solid var(--line);padding-top:12px}
+.jh-chip{margin-left:8px}
+.jh-former{margin:10px 0}
+.jh-admins{display:flex;gap:8px;flex-wrap:wrap;margin:8px 0}
+.jh-admin{display:inline-flex;gap:6px;align-items:center;border:1px solid var(--line);border-radius:999px;padding:3px 6px 3px 12px;font-size:13px}
+.jh-addadmin input{min-width:240px}
+.jh-addadmin input,.jh-settings input,.jh-newrun input,.jh-newrun select,.jh-form input,.jh-form select,.jh-edit input,.jh-edit select,.jh-paydate input{border:1px solid var(--line);border-radius:8px;padding:8px 10px;background:var(--card);color:var(--ink)}
+.jh-runrow{display:flex;align-items:center;gap:12px;width:100%;text-align:left;cursor:pointer;color:inherit;font:inherit}
+.jh-runrow:hover{border-color:var(--accent)}
+.jh-runnet{min-width:120px;text-align:right;font-variant-numeric:tabular-nums}
+.jh-runhead{display:flex;justify-content:space-between;gap:14px;flex-wrap:wrap;align-items:flex-end;margin:6px 0 4px}
+.jh-runtitle{margin:10px 0 6px}
+.jh-paydate{display:flex;align-items:center;gap:6px}
+.jh-paydate input{padding:4px 8px}
+.jh-totbox{display:flex;flex-direction:column;align-items:flex-end;border:1px solid var(--line);background:var(--card);border-radius:12px;padding:10px 14px}
+.jh-totbox b{font-size:24px;letter-spacing:-.02em;font-variant-numeric:tabular-nums}
+.jh-lines{margin-top:10px}
+.jh-linehead{display:flex;justify-content:space-between;align-items:baseline;gap:10px}
+.jh-net{font-weight:800;font-size:17px;font-variant-numeric:tabular-nums}
+.jh-calc{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin:8px 0 4px;font-variant-numeric:tabular-nums}
+.jh-calc label{display:inline-flex;align-items:center;gap:4px}
+.jh-adj{display:flex;gap:8px;align-items:center;margin:4px 0;font-size:14px}
+.jh-adj > span:last-child{font-variant-numeric:tabular-nums}
+.jh-minus{color:var(--late)}
+.jh-addline{margin:2px 0 4px}
+.jh-payrow{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-top:8px;padding-top:8px;border-top:1px solid var(--line)}
+.jh-paybtns,.jh-paidform{display:inline-flex;gap:8px;align-items:center;flex-wrap:wrap}
+.jh-sum{max-width:420px;margin-top:12px}
+.jh-sumtable{min-width:0}
+.jh-sumtable td.n{text-align:right}
+.jh-del{color:var(--late)!important}
+.jh-hist{margin-top:14px;font-size:12px}
+.jh-sa-top{justify-content:space-between}
+.jh-sa-name{font-weight:800;font-size:22px;letter-spacing:-.03em}
+.jh-sa-right{display:flex;align-items:center;gap:10px}
+.jh-sa-main{margin:0 auto}
+.jh .ps-linkbtn{background:none;border:0;color:var(--accent);cursor:pointer;padding:0;font-weight:600}
+@media (max-width:640px){
+  .jh-head .ps-h1{font-size:30px}
+  .jh-totbox{align-items:flex-start;width:100%}
+  .jh-sa-right .ps-muted{display:none}
+}
+`;
+  window.JumphighStandalone = JumphighStandalone;
   window.ProjeclabStudios = ProjeclabStudios;
 })();
 
@@ -12892,6 +13546,63 @@ if (sb) {
   };
 }
 
+/* Jumphigh (separate company): its own tables jh_data (staff + schedule), jh_pay
+   (rates + payroll runs, Jumphigh admins only) and jh_members (who can open it).
+   Row-level security decides who sees what. Nothing here touches app_state. */
+if (sb) {
+  const jhErr = (error) => /does not exist|schema cache|function/i.test((error && error.message) || "");
+  const jhTable = (t) => ({
+    list: async () => {
+      const { data, error } = await sb.from(t).select("id, kind, data, updated_at");
+      if (error) throw error;
+      return data || [];
+    },
+    save: async (id, kind, data) => {
+      const { data: u } = await sb.auth.getUser();
+      const { error } = await sb.from(t).upsert({ id, kind, data, updated_at: new Date().toISOString(), updated_by: (u && u.user && u.user.email) || null });
+      if (error) throw error;
+    },
+    remove: async (id) => {
+      const { error } = await sb.from(t).delete().eq("id", id);
+      if (error) throw error;
+    }
+  });
+  window.psJumphigh = {
+    live: true,
+    role: async () => {
+      const { data, error } = await sb.rpc("jh_role");
+      if (error) return null;
+      return data || null;
+    },
+    me: async () => {
+      const { data: u } = await sb.auth.getUser();
+      const email = ((u && u.user && u.user.email) || "").toLowerCase();
+      const { data: role, error } = await sb.rpc("jh_role");
+      if (error) return { setup: jhErr(error) ? "missing" : "error" };
+      if (!role) return { email, role: null };
+      const { data: row } = await sb.from("jh_members").select("staff_id").eq("email", email).maybeSingle();
+      return { email, role, staffId: (row && row.staff_id) || null };
+    },
+    data: jhTable("jh_data"),
+    pay: jhTable("jh_pay"),
+    members: {
+      list: async () => {
+        const { data, error } = await sb.from("jh_members").select("email, role, staff_id");
+        if (error) throw error;
+        return data || [];
+      },
+      save: async (m) => {
+        const { error } = await sb.from("jh_members").upsert({ email: String(m.email).toLowerCase(), role: m.role, staff_id: m.staff_id || null });
+        if (error) throw error;
+      },
+      remove: async (email) => {
+        const { error } = await sb.from("jh_members").delete().eq("email", String(email).toLowerCase());
+        if (error) throw error;
+      }
+    }
+  };
+}
+
 const GATE_CSS = `
 .gt{font-family:'Bricolage Grotesque',ui-sans-serif,system-ui,sans-serif;min-height:100vh;display:grid;place-items:center;background:#EDF0F3;color:#1A2230;padding:20px}
 .gt-box{background:#fff;border:1px solid #D5DBE3;border-radius:12px;padding:32px;max-width:420px;width:100%}
@@ -12929,9 +13640,15 @@ function Gate() {
      quietly renews the login (it does that when you come back to the tab).
      Re-checking then flashed "Loading..." and threw away anything half-typed. */
   const userId = session && session.user ? session.user.id : null;
+  /* Jumphigh role ("admin" / "staff" / null), checked alongside the team list.
+     A Jumphigh-only login isn't on the team list, so it gets just the Jumphigh screen. */
+  const [jhRole, setJhRole] = useState(null);
   useEffect(() => {
-    if (!sb || !userId) { setAllowed(null); return; }
-    sb.rpc("is_team_member").then(({ data, error }) => {
+    if (!sb || !userId) { setAllowed(null); setJhRole(null); return; }
+    const jh = window.psJumphigh ? window.psJumphigh.role().catch(() => null) : Promise.resolve(null);
+    Promise.all([sb.rpc("is_team_member"), jh]).then(([{ data, error }, role]) => {
+      window.psJhRole = role || null;
+      setJhRole(role || null);
       if (error) setAllowed((was) => was === true ? true : false);
       else setAllowed(data === true);
     });
@@ -12974,6 +13691,10 @@ function Gate() {
       {err && <p className="err" style={{ marginTop: 10 }}>{err}</p>}
       <p style={{ marginTop: 14, fontSize: 13 }}>Forgotten it? Ask your team lead to set a new one for you in Supabase.</p></>
   );
+  if (!allowed && jhRole && window.JumphighStandalone) {
+    window.cutlineAuth = { email: session.user.email, signOut };
+    return <window.JumphighStandalone email={session.user.email} signOut={signOut} />;
+  }
   if (!allowed) return box(<><h1>Not on the team list</h1><p><b>{session.user.email}</b> isn't allowed in yet. Ask your team lead to add this email in Supabase.</p>
     <button onClick={signOut}>Sign out</button></>);
 

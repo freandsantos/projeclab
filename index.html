@@ -10085,9 +10085,10 @@ ${lines.join("\n")}`);
     const selRef = useRef(sel);
     selRef.current = sel;
     const HW = halloOn();
+    const XM = !HW && xmasOn();
     const board = boardToday(db);
     const [boardOpen, setBoardOpen] = useState(false);
-    const layoutKey = rows.map((r) => r.p.id).join(",") + (dark ? ":d" : ":l") + (HW ? ":hw" : "") + (board ? ":bb" + board.id + board.url : "");
+    const layoutKey = rows.map((r) => r.p.id).join(",") + (dark ? ":d" : ":l") + (HW ? ":hw" : "") + (XM ? ":xm" : "") + (board ? ":bb" + board.id + board.url : "");
     const bubble = useRef(null);
 
     /* Build the office. Only rebuilt when people join/leave or the theme flips. */
@@ -10114,6 +10115,8 @@ ${lines.join("\n")}`);
           : { ground: "#7FAE57", floor: "#DDD5C4", wall: "#F6F2EA", desk: "#C79A6B", trim: "#B7AFA1", chair: "#3A3F48", leaf: "#4E9A3E", trunk: "#7A5233" };
         /* Halloween (Oct 20-31): dusk grass and autumn trees */
         if (HW) Object.assign(C, dark ? { ground: "#1F2A1C", leaf: "#9A4A16", trunk: "#3E2A1C" } : { ground: "#5F7040", leaf: "#D9731F", trunk: "#5A3A22" });
+        /* Christmas (Nov 22 - Jan 6): snow on the ground and snowy pine trees */
+        if (XM) Object.assign(C, dark ? { ground: "#4A5666", leaf: "#1F5A3C", trunk: "#4A3424" } : { ground: "#E9EFF5", leaf: "#2E6B45", trunk: "#6B4A30" });
         const mats = {};
         const mat = (c, extra) => {
           const k = c + JSON.stringify(extra || {});
@@ -10131,6 +10134,33 @@ ${lines.join("\n")}`);
           (parent || scene).add(m);
           if (collect) collect.push(m);
           return m;
+        };
+        /* a cone (Christmas trees, Santa hats). Indexed, so it can be merged too. */
+        const cone = (r, hh, c, x, y, z, parent, seg) => {
+          const g = new THREE.ConeGeometry(r, hh, seg || 8);
+          geos.push(g);
+          const m = new THREE.Mesh(g, typeof c === "string" ? mat(c, { flatShading: true }) : c);
+          m.position.set(x, y, z);
+          m.castShadow = true;
+          m.receiveShadow = true;
+          (parent || scene).add(m);
+          if (collect) collect.push(m);
+          return m;
+        };
+        /* a Santa hat sitting on a head (parent), its brim at height y */
+        const santaHat = (parent, y, s) => {
+          const keep = collect;
+          collect = null; /* hats move with heads, so they're never merged */
+          const g = new THREE.Group();
+          g.position.set(0, y, 0);
+          g.scale.setScalar(s || 1);
+          g.rotation.z = -0.22;
+          parent.add(g);
+          box(0.5, 0.1, 0.5, "#F4F4F4", 0, 0.05, 0, g).castShadow = false;
+          cone(0.23, 0.46, "#D62828", 0, 0.33, 0, g, 8).castShadow = false;
+          box(0.12, 0.12, 0.12, "#F4F4F4", 0, 0.58, 0, g).castShadow = false;
+          collect = keep;
+          return g;
         };
         /* Static decorations are merged into one mesh per material, so a few
            hundred little boxes cost the graphics card a handful of draws. */
@@ -10201,6 +10231,14 @@ ${lines.join("\n")}`);
         /* a few trees and plants outside, placed the same way every time */
         const tree = (x, z, s) => {
           box(0.3 * s, 1 * s, 0.3 * s, C.trunk, x, 0.4 * s, z);
+          if (XM) {
+            /* snowy pine: three green tiers, each with a white cap */
+            [[1.0, 0.95, 1.05], [0.78, 0.85, 1.6], [0.52, 0.75, 2.12]].forEach(([r, hh, y]) => {
+              cone(r * s, hh * s, C.leaf, x, y * s, z, null, 7);
+              cone(r * 0.5 * s, hh * 0.32 * s, dark ? "#C9D4E0" : "#FFFFFF", x, (y + hh * 0.36) * s, z, null, 7).castShadow = false;
+            });
+            return;
+          }
           const g = new THREE.IcosahedronGeometry(0.9 * s, 0);
           geos.push(g);
           const m = new THREE.Mesh(g, mat(C.leaf, { flatShading: true }));
@@ -10234,6 +10272,8 @@ ${lines.join("\n")}`);
            Shows today's poster (Settings -> Studio billboard). The board takes
            the poster's shape, up to BBW x BBH; click it to see it full size. */
         const bPicks = [], fitExtra = [];
+        /* the Christmas LED countdown rides on top of the board (see below) */
+        let bbTopNow = null, ledHook = null;
         if (board) {
           const BBW = 8.5, BBH = 6.2, BZ = -D / 2 - 4.2, BY = 1.4;
           const bb = new THREE.Group();
@@ -10262,6 +10302,8 @@ ${lines.join("\n")}`);
             postL.position.x = -px; postR.position.x = px;
             ledge.scale.set(w + 0.24, 1, 1);
             lampL.position.set(-w / 4, cy + hh / 2 + 0.17, 0.3); lampR.position.set(w / 4, cy + hh / 2 + 0.17, 0.3);
+            bbTopNow = cy + hh / 2 + 0.12;
+            if (ledHook) ledHook(bbTopNow);
           };
           shape(16 / 9);
           const tl = new THREE.TextureLoader();
@@ -10279,12 +10321,171 @@ ${lines.join("\n")}`);
           fitExtra.push([0.6 - BBW / 2, top, BZ], [0.6 + BBW / 2, top, BZ]);
         }
 
+        /* ---------- Christmas countdown sign (Christmas only) ----------
+           A greeting-card style sign on top of the billboard (or on its own
+           posts when no poster is up): green board, snowflakes, snowy pines,
+           "Christmas Countdown" in script, and a calendar page with the date
+           and a big "days left" number (Manila calendar days). On the 25th it
+           greets, then it counts down to New Year, then wishes Happy New Year.
+           Redrawn every 30 seconds; chasing bulbs around the frame. */
+        let led = null;
+        if (XM) {
+          const CW = 1024, CH = 940;
+          const LW = 4.4, LH = LW * CH / CW, BZ = -D / 2 - 4.2;
+          const lg = new THREE.Group();
+          lg.position.set(0.6, 0, BZ);
+          scene.add(lg);
+          const inner = new THREE.Group();
+          lg.add(inner);
+          const fc = dark ? "#1E3A24" : "#24452B";
+          box(LW + 0.3, LH + 0.3, 0.22, fc, 0, 0, 0, inner);
+          const cvs = document.createElement("canvas");
+          cvs.width = CW; cvs.height = CH;
+          const lc = cvs.getContext("2d");
+          const tex = new THREE.CanvasTexture(cvs);
+          tex.anisotropy = 4;
+          texs.push(tex);
+          const fm = new THREE.MeshBasicMaterial({ map: tex });
+          extraMats.push(fm);
+          const pg = new THREE.PlaneGeometry(LW, LH);
+          geos.push(pg);
+          const face = new THREE.Mesh(pg, fm);
+          face.position.z = 0.115;
+          inner.add(face);
+          /* chasing bulbs around the frame */
+          const bR = mat("#000", { emissive: "#FF3B30", emissiveIntensity: 1 }), bG = mat("#000", { emissive: "#FFC83D", emissiveIntensity: 1 });
+          let bi = 0;
+          const bulb = (x, y) => { const m = box(0.1, 0.1, 0.06, bi++ % 2 ? bG : bR, x, y, 0.13, inner); m.castShadow = false; };
+          for (let x = -LW / 2 - 0.1; x <= LW / 2 + 0.11; x += 0.32) { bulb(x, LH / 2 + 0.1); bulb(x, -LH / 2 - 0.1); }
+          for (let y = -LH / 2 + 0.12; y < LH / 2 - 0.05; y += 0.32) { bulb(-LW / 2 - 0.1, y); bulb(LW / 2 + 0.1, y); }
+          const SCRIPT = "'Lobster', 'Georgia', serif", BOLD = "'Bricolage Grotesque', 'Arial Black', sans-serif";
+          const MONTHS = ["Jan.", "Feb.", "Mar.", "Apr.", "May", "Jun.", "Jul.", "Aug.", "Sept.", "Oct.", "Nov.", "Dec."];
+          const flake = (x, y, r) => {
+            lc.save(); lc.translate(x, y); lc.strokeStyle = "rgba(255,255,255,.9)"; lc.lineWidth = Math.max(2, r / 7); lc.lineCap = "round";
+            for (let i = 0; i < 6; i++) {
+              lc.rotate(Math.PI / 3);
+              lc.beginPath(); lc.moveTo(0, 0); lc.lineTo(0, -r);
+              lc.moveTo(0, -r * 0.55); lc.lineTo(-r * 0.25, -r * 0.8); lc.moveTo(0, -r * 0.55); lc.lineTo(r * 0.25, -r * 0.8);
+              lc.stroke();
+            }
+            lc.restore();
+          };
+          const pine = (x, base, w, hh) => {
+            lc.fillStyle = "#6B4A30"; lc.fillRect(x - w * 0.07, base - hh * 0.12, w * 0.14, hh * 0.14);
+            for (let i = 0; i < 4; i++) {
+              const tw = w * (1 - i * 0.2), ty = base - hh * 0.1 - i * hh * 0.22, th = hh * 0.36;
+              lc.fillStyle = i % 2 ? "#2F7D3E" : "#276B35";
+              lc.beginPath(); lc.moveTo(x - tw / 2, ty); lc.lineTo(x + tw / 2, ty); lc.lineTo(x, ty - th); lc.closePath(); lc.fill();
+              /* snow on each tier */
+              lc.fillStyle = "#FFFFFF";
+              lc.beginPath(); lc.moveTo(x - tw * 0.19, ty - th * 0.62); lc.quadraticCurveTo(x - tw * 0.1, ty - th * 0.5, x, ty - th * 0.6); lc.quadraticCurveTo(x + tw * 0.1, ty - th * 0.5, x + tw * 0.19, ty - th * 0.62); lc.lineTo(x, ty - th); lc.closePath(); lc.fill();
+              /* a snowy lip along the tier's edge */
+              lc.beginPath(); lc.moveTo(x - tw / 2, ty); lc.quadraticCurveTo(x - tw * 0.25, ty - th * 0.12, x, ty - th * 0.04); lc.quadraticCurveTo(x + tw * 0.25, ty - th * 0.12, x + tw / 2, ty); lc.quadraticCurveTo(x, ty + th * 0.04, x - tw / 2, ty); lc.fill();
+            }
+          };
+          const sleigh = (x, y) => {
+            lc.save(); lc.fillStyle = "rgba(20,60,30,.75)"; lc.strokeStyle = "rgba(20,60,30,.75)"; lc.lineWidth = 4; lc.lineCap = "round";
+            for (let i = 0; i < 3; i++) {
+              const dx = x + i * 62;
+              lc.beginPath(); lc.ellipse(dx, y, 22, 9, -0.1, 0, Math.PI * 2); lc.fill();
+              lc.beginPath(); lc.moveTo(dx + 18, y - 4); lc.lineTo(dx + 28, y - 18); lc.stroke();
+              lc.beginPath(); lc.ellipse(dx + 31, y - 21, 8, 5, 0, 0, Math.PI * 2); lc.fill();
+              lc.beginPath(); lc.moveTo(dx + 28, y - 25); lc.lineTo(dx + 24, y - 36); lc.moveTo(dx + 26, y - 30); lc.lineTo(dx + 33, y - 37); lc.stroke();
+              [[-14, 12], [-6, 16], [10, 14], [16, 10]].forEach(([lx, ly]) => { lc.beginPath(); lc.moveTo(dx + lx, y + 4); lc.lineTo(dx + lx + (lx < 0 ? -6 : 6), y + ly); lc.stroke(); });
+            }
+            lc.beginPath(); lc.moveTo(x - 30, y); lc.lineTo(x - 70, y + 8); lc.stroke();
+            lc.beginPath(); lc.moveTo(x - 120, y - 6); lc.lineTo(x - 72, y - 6); lc.quadraticCurveTo(x - 62, y + 18, x - 86, y + 22); lc.lineTo(x - 118, y + 22); lc.closePath(); lc.fill();
+            lc.beginPath(); lc.moveTo(x - 128, y + 30); lc.lineTo(x - 70, y + 30); lc.quadraticCurveTo(x - 58, y + 30, x - 60, y + 20); lc.stroke();
+            lc.beginPath(); lc.arc(x - 102, y - 14, 10, 0, Math.PI * 2); lc.fill();
+            lc.restore();
+          };
+          let drawnKey = "";
+          const draw = (force) => {
+            const now = Date.now();
+            let day = "";
+            try { day = new Date(now).toLocaleDateString("en-CA", { timeZone: "Asia/Manila" }); } catch (e) { day = new Date(now).toISOString().slice(0, 10); }
+            if (!force && day === drawnKey) return;
+            drawnKey = day;
+            const Y = +day.slice(0, 4), M = +day.slice(5, 7), Dd = +day.slice(8, 10);
+            const base = M <= 6 ? Y - 1 : Y; /* the season's December year */
+            const today = Date.UTC(Y, M - 1, Dd);
+            const xmas = Date.UTC(base, 11, 25), ny = Date.UTC(base + 1, 0, 1);
+            const daysTo = (d2) => Math.round((d2 - today) / 86400000);
+            let title, band, big, under;
+            if (today < xmas) {
+              const n = daysTo(xmas);
+              title = ["Christmas", "Countdown"]; band = `${MONTHS[11]} 25, ${base}`; big = String(n);
+              under = n === 1 ? "Noche Buena tonight!" : "days left";
+            } else if (today === xmas) {
+              title = ["Merry", "Christmas!"]; band = `${MONTHS[11]} 25, ${base}`; big = "25"; under = "Maligayang Pasko!";
+            } else if (today < ny) {
+              const n = daysTo(ny);
+              title = ["New Year", "Countdown"]; band = `${MONTHS[0]} 1, ${base + 1}`; big = String(n); under = n === 1 ? "day left" : "days left";
+            } else {
+              title = ["Happy", "New Year!"]; band = `${base + 1}`; big = String(base + 1); under = "Manigong Bagong Taon!";
+            }
+            /* background */
+            lc.fillStyle = "#2F6B33"; lc.fillRect(0, 0, CW, CH);
+            [[70, 60, 22], [300, 40, 16], [520, 28, 12], [960, 210, 14], [60, 300, 16], [930, 420, 20], [40, 560, 12], [150, 210, 12], [800, 250, 10]].forEach(([x, y, r]) => flake(x, y, r));
+            sleigh(858, 44);
+            pine(105, CH - 40, 210, 520);
+            pine(925, CH - 30, 230, 600);
+            /* snow drift */
+            lc.fillStyle = "#FFFFFF";
+            lc.beginPath(); lc.moveTo(0, CH); lc.lineTo(0, CH - 70); lc.quadraticCurveTo(260, CH - 130, 520, CH - 80); lc.quadraticCurveTo(800, CH - 30, CW, CH - 100); lc.lineTo(CW, CH); lc.closePath(); lc.fill();
+            /* title */
+            lc.textAlign = "center"; lc.textBaseline = "alphabetic"; lc.fillStyle = "#FFFFFF";
+            lc.shadowColor = "rgba(0,0,0,.18)"; lc.shadowOffsetY = 4; lc.shadowBlur = 6;
+            lc.font = `116px ${SCRIPT}`;
+            lc.fillText(title[0], 512, 150);
+            lc.fillText(title[1], 512, 270);
+            lc.shadowColor = "transparent"; lc.shadowBlur = 0; lc.shadowOffsetY = 0;
+            /* calendar page */
+            const cx0 = 225, cy0 = 315, cw = 574, ch = 560;
+            lc.fillStyle = "#8C8F96"; lc.fillRect(cx0 + 12, cy0 + 14, cw, ch);
+            lc.fillStyle = "#F3F0EC"; lc.fillRect(cx0, cy0, cw, ch);
+            lc.fillStyle = "#D9D4CD"; lc.fillRect(cx0, cy0 + ch - 34, cw, 34);
+            lc.fillStyle = "#D63F4E"; lc.fillRect(cx0, cy0, cw, 104);
+            lc.fillStyle = "#FFFFFF"; lc.font = `64px ${SCRIPT}`;
+            lc.fillText(band, 512, cy0 + 74);
+            const bw = lc.measureText(band).width / 2 + 30;
+            [-bw, bw].forEach((ox) => { lc.beginPath(); lc.arc(512 + ox, cy0 + 54, 8, 0, Math.PI * 2); lc.fill(); });
+            let fs = 300;
+            lc.font = `800 ${fs}px ${BOLD}`;
+            while (lc.measureText(big).width > cw - 60 && fs > 120) { fs -= 10; lc.font = `800 ${fs}px ${BOLD}`; }
+            lc.fillStyle = "#B8323F"; lc.fillText(big, 512, cy0 + 120 + fs * 0.86);
+            let us = 84;
+            lc.font = `${us}px ${SCRIPT}`;
+            while (lc.measureText(under).width > cw - 40 && us > 40) { us -= 4; lc.font = `${us}px ${SCRIPT}`; }
+            lc.fillStyle = "#B8323F"; lc.fillText(under, 512, cy0 + ch - 66);
+            tex.needsUpdate = true;
+          };
+          draw(true);
+          if (document.fonts && document.fonts.load) Promise.all([document.fonts.load("80px Lobster"), document.fonts.load("800 80px 'Bricolage Grotesque'")]).then(() => { if (!dead) draw(true); }).catch(() => {});
+          if (board) {
+            /* two short struts from the top of the poster frame */
+            const sL = box(0.16, 0.5, 0.16, fc, -LW / 4, -LH / 2 - 0.4, -0.05, inner);
+            const sR = box(0.16, 0.5, 0.16, fc, LW / 4, -LH / 2 - 0.4, -0.05, inner);
+            sL.castShadow = sR.castShadow = false;
+            ledHook = (top) => { inner.position.y = top + 0.65 + LH / 2 + 0.15; };
+            if (bbTopNow != null) ledHook(bbTopNow);
+          } else {
+            const PH = 2.4;
+            box(0.3, PH, 0.3, fc, -LW / 2 + 0.7, PH / 2, -0.05, lg);
+            box(0.3, PH, 0.3, fc, LW / 2 - 0.7, PH / 2, -0.05, lg);
+            inner.position.y = PH + LH / 2 + 0.15;
+          }
+          led = { draw, bR, bG, sec: -1, cvs };
+        }
+
         /* ---------- Pickleball courts around the office ----------
            Four fenced courts, one off each corner, with lamps, benches and
            hedges. Two have a game on: 2 v 2 at the front left, 1 v 1 at the
-           back right. The players are just fun - they aren't team members. */
+           back right. The players are just fun - they aren't team members.
+           Only during the pickleball event (pickleOn: Oct 31 - Nov 21, or
+           ?preview=pickleball); Frean asked for them gone once it finished. */
         const courts = [], cPicks = [], courtStatic = [];
-        {
+        if (pickleOn()) {
           const CL = 11.4, CWd = 5.2, KIT = 1.9;            // court length (x), width (z), kitchen line
           const FX = CL / 2 + 1.5, FZ = CWd / 2 + 1.2, FH = 1.25; // fence half sizes and height
           const CXo = W / 2 + 3.6, CZo = D / 2 + 7;
@@ -10409,6 +10610,7 @@ ${lines.join("\n")}`);
             box(0.44, 0.12, 0.44, HAIR[(k * 5 + 2) % HAIR.length], 0, 0.22, -0.01, head);
             box(0.44, 0.24, 0.08, HAIR[(k * 5 + 2) % HAIR.length], 0, 0.06, -0.2, head);
             if (k % 2 === 0) box(0.46, 0.06, 0.46, shirt, 0, 0.16, 0.02, head);
+            if (XM) santaHat(head, 0.27, 0.92);
             box(0.06, 0.06, 0.02, "#1A1A1A", -0.09, 0.03, 0.205, head);
             box(0.06, 0.06, 0.02, "#1A1A1A", 0.09, 0.03, 0.205, head);
             root.rotation.y = side > 0 ? -Math.PI / 2 : Math.PI / 2; // face the net
@@ -10495,6 +10697,133 @@ ${lines.join("\n")}`);
         }
         collect = null;
 
+        /* ---------- Christmas props (Nov 22 - Jan 6) ----------
+           Static pieces (light strings, trees, gifts) are merged like the
+           Halloween ones. Ornaments and bulbs twinkle through their shared
+           materials, so merging doesn't stop them. Clickable things use an
+           invisible pick box, because merged meshes can't be picked. */
+        const xmStatic = [], xPicks = [], xLights = [], xTrees = [];
+        const xPick = (w, hh, d, x, y, z, key, parent) => {
+          const g = new THREE.BoxGeometry(w, hh, d);
+          geos.push(g);
+          const m = new THREE.Mesh(g, mat("#000"));
+          m.visible = false;
+          m.position.set(x, y, z);
+          m.userData.xk = key;
+          (parent || scene).add(m);
+          xPicks.push(m);
+          return m;
+        };
+        /* a five-point star (parol and tree tops); not merged */
+        const starGeo = (() => {
+          const sh = new THREE.Shape();
+          for (let i = 0; i < 10; i++) {
+            const a = Math.PI / 2 + i * Math.PI / 5, r = i % 2 ? 0.42 : 1;
+            if (i) sh.lineTo(Math.cos(a) * r, Math.sin(a) * r); else sh.moveTo(Math.cos(a) * r, Math.sin(a) * r);
+          }
+          const g = new THREE.ExtrudeGeometry(sh, { depth: 0.22, bevelEnabled: false });
+          g.translate(0, 0, -0.11);
+          geos.push(g);
+          return g;
+        })();
+        const starM = mat("#7A5200", { emissive: "#FFC83D", emissiveIntensity: 1.1 });
+        const xStar = (x, y, z, s, parent) => {
+          const m = new THREE.Mesh(starGeo, starM);
+          m.position.set(x, y, z);
+          m.scale.setScalar(s);
+          m.rotation.y = 0.3;
+          (parent || scene).add(m);
+          return m;
+        };
+        /* a decorated Christmas tree; key makes it clickable (it sparkles) */
+        const xTree = (x, z, s, key) => {
+          const orn = ["#E5383B", "#FFC83D", "#4CC9F0", "#F72585"].map((c) => mat("#111", { emissive: c, emissiveIntensity: 0.7 }));
+          box(0.34 * s, 0.6 * s, 0.34 * s, C.trunk, x, 0.2 * s, z);
+          box(1.1 * s, 0.4 * s, 1.1 * s, "#B23A2E", x, 0.1 * s, z).castShadow = false; /* tree skirt pot */
+          const tiers = [[1.25, 1.1, 0.95], [1.0, 1.0, 1.65], [0.74, 0.9, 2.3], [0.46, 0.75, 2.9]];
+          tiers.forEach(([r, hh, y], ti) => {
+            cone(r * s, hh * s, "#1F6B3F", x, y * s, z, null, 9);
+            /* ornaments around the bottom edge of each tier */
+            const n = 6 + (3 - ti) * 2;
+            for (let i = 0; i < n; i++) {
+              const a = i / n * Math.PI * 2 + ti * 0.5, rr = r * 0.78 * s;
+              const m = box(0.13 * s, 0.13 * s, 0.13 * s, orn[(i + ti) % 4], x + Math.cos(a) * rr, (y - hh * 0.3) * s, z + Math.sin(a) * rr);
+              m.castShadow = false;
+            }
+          });
+          /* presents underneath */
+          [["#C62828", -0.85, 0.55], ["#1E6FD9", 0.75, 0.7], ["#2E9E5B", 0.2, -0.95], ["#7B2CBF", -0.6, -0.7]].forEach(([c, ox, oz], i) => {
+            const w = (0.42 + (i % 2) * 0.12) * s;
+            box(w, w * 0.8, w, c, x + ox * s, w * 0.4, z + oz * s);
+            box(w + 0.02, w * 0.8 + 0.02, 0.07 * s, "#FFD166", x + ox * s, w * 0.4, z + oz * s).castShadow = false;
+            box(0.07 * s, w * 0.8 + 0.02, w + 0.02, "#FFD166", x + ox * s, w * 0.4, z + oz * s).castShadow = false;
+          });
+          const top = 3.3 * s;
+          const star = xStar(x, top + 0.2 * s, z, 0.32 * s);
+          const anchor = new THREE.Object3D();
+          anchor.position.set(x, top - 1.5, z);
+          scene.add(anchor);
+          xPick(2.4 * s, top, 2.4 * s, x, top / 2, z, key);
+          xTrees.push({ key, orn, star, anchor, burst: -10 });
+        };
+        /* a parol (star lantern) on a pole */
+        const parol = (x, z) => {
+          box(0.12, 3.0, 0.12, dark ? "#1E2229" : "#2B3038", x, 1.4, z);
+          box(0.6, 0.08, 0.08, dark ? "#1E2229" : "#2B3038", x, 2.86, z);
+          const keep = collect;
+          collect = null; /* the lantern sways, so it isn't merged */
+          const g = new THREE.Group();
+          g.position.set(x, 3.45, z + 0.05);
+          scene.add(g);
+          xStar(0, 0, 0, 0.55, g);
+          const ring = mat("#600000", { emissive: "#FF3B30", emissiveIntensity: 1 });
+          const c2 = new THREE.Mesh(new THREE.CylinderGeometry(0.17, 0.17, 0.26, 12), ring);
+          geos.push(c2.geometry);
+          c2.rotation.x = Math.PI / 2;
+          c2.rotation.z = 0.3;
+          g.add(c2);
+          /* the two tails */
+          [-0.14, 0.14].forEach((tx, i) => {
+            for (let k = 0; k < 4; k++) {
+              const m = box(0.06, 0.16, 0.03, k % 2 ? ring : starM, tx, -0.62 - k * 0.17, 0, g);
+              m.castShadow = false;
+            }
+          });
+          collect = keep;
+          xTrees.push({ key: "", sway: g });
+        };
+        if (XM) {
+          collect = xmStatic;
+          /* string lights along the top of the walls: red, green, gold, blue */
+          const bulbs = ["#FF3B30", "#34D058", "#FFC83D", "#4CC9F0"].map((c) => mat("#000", { emissive: c, emissiveIntensity: 1 }));
+          xLights.push(...bulbs);
+          const run = (x0, y0, x1, y1, side) => {
+            const [a, b] = u(x0, y0), [cc, d] = u(x1, y1);
+            const len = Math.hypot(cc - a, d - b), n = Math.floor(len / 0.42);
+            for (let i = 0; i <= n; i++) {
+              const f = i / n;
+              const m = box(0.09, 0.11, 0.09, bulbs[i % 4], a + (cc - a) * f + side[0], 1.0, b + (d - b) * f + side[1]);
+              m.castShadow = false;
+            }
+          };
+          run(290, 231, 1310, 231, [0, 0.14]);
+          run(290, 640, 420, 640, [0, -0.14]);
+          run(565, 640, 1310, 640, [0, -0.14]);
+          run(276, 245, 276, 625, [0.14, 0]);
+          run(1325, 245, 1325, 625, [-0.14, 0]);
+          /* the tree inside (open floor, left room) and the big one outside */
+          xTree(...u(525, 450), 0.62, "tree-in");
+          xTree(...u(95, 582), 1.55, "tree-out");
+          /* parols by the front door and the far corner */
+          parol(...u(380, 690));
+          parol(...u(1370, 690));
+          /* extra snowy pines on the open lawns around the lot */
+          [[-14, 9.5, 1.1], [-17.5, 6.5, 0.9], [-9.5, 11.5, 1.2], [-6, 13.5, 0.9], [13, 9.8, 1.15], [17.2, 7, 0.95], [9.5, 12, 1.05], [5.5, 14, 0.85],
+           [-14.5, -9.2, 1.2], [-18, -2.5, 1], [-9.8, -11.5, 0.95], [-1.5, -12.5, 1.1], [13.5, -9.5, 1.1], [17.5, -5.5, 0.9], [9, -12, 1.2], [3.5, -13.5, 0.9],
+           [-22, 9, 1.3], [22, -9, 1.3], [20, 12, 1], [-20, -12, 1]].forEach(([x, z, sc]) => tree(x, z, sc));
+          collect = null;
+        }
+
         /* seats from the plan; named seats go to whoever has that first name,
            anyone not on the plan takes a spare desk, then a hot desk mid-room */
         const SEATS = [
@@ -10569,6 +10898,17 @@ ${lines.join("\n")}`);
           screen.castShadow = false;
           box(0.6, 0.03, 0.22, "#E7E3DA", 0, 0.82, -0.62, g);
           if (HW) { collect = hwStatic; pumpkin(dw / 2 - 0.28, 0.8, -1.0, 0.45, g); collect = null; }
+          if (XM) {
+            /* a little wrapped gift on every desk */
+            collect = xmStatic;
+            const gc = ["#C62828", "#1E6FD9", "#2E9E5B", "#7B2CBF", "#E76F51"][studioHash(seat.r.join(",")) % 5];
+            const gx = dw / 2 - 0.3;
+            box(0.3, 0.24, 0.3, gc, gx, 0.92, -1.0, g).castShadow = false;
+            box(0.32, 0.26, 0.06, "#FFD166", gx, 0.92, -1.0, g).castShadow = false;
+            box(0.06, 0.26, 0.32, "#FFD166", gx, 0.92, -1.0, g).castShadow = false;
+            box(0.14, 0.07, 0.14, "#FFD166", gx, 1.08, -1.0, g).castShadow = false;
+            collect = null;
+          }
           /* chair */
           box(0.6, 0.1, 0.6, C.chair, 0, 0.5, 0.05, g);
           box(0.6, 0.6, 0.1, C.chair, 0, 0.85, 0.35, g);
@@ -10598,6 +10938,7 @@ ${lines.join("\n")}`);
           } else {
             box(0.46, 0.3, 0.1, HAIR[(hs >> 3) % HAIR.length], 0, 1.5, 0.2, fig);
           }
+          if (XM) santaHat(fig, r.p.avatar ? 1.74 : 1.72, r.p.avatar ? 1.12 : 1);
           const armL = box(0.14, 0.14, 0.5, role.color, -0.33, 0.95, -0.25, fig);
           const armR = box(0.14, 0.14, 0.5, role.color, 0.33, 0.95, -0.25, fig);
           g.traverse((o) => { if (o.isMesh) { o.userData.pid = r.p.id; pickables.push(o); } });
@@ -10672,9 +11013,213 @@ ${lines.join("\n")}`);
           zNb.push(...nb);
         }
 
+        /* ---------- Christmas: Santa, the snowman and the snow ---------- */
+        let santa = null, snowman = null, snow = null;
+        if (XM) {
+          const gone = new Set(xmStatic);
+          mergeStatic(xmStatic);
+          for (let i = pickables.length - 1; i >= 0; i--) if (gone.has(pickables[i])) pickables.splice(i, 1);
+
+          /* Santa's sleigh and four reindeer. The sleigh points along +x. */
+          const root = new THREE.Group();
+          scene.add(root);
+          const sl = new THREE.Group();
+          root.add(sl);
+          const RED = "#C62828", GOLD = "#E8B33A", FUR = "#F4F4F4";
+          box(1.4, 0.42, 0.86, RED, 0, 0.5, 0, sl);
+          box(0.26, 0.62, 0.86, RED, 0.72, 0.66, 0, sl);
+          box(0.2, 0.18, 0.9, GOLD, 0.84, 1.0, 0, sl);
+          box(0.24, 0.8, 0.86, RED, -0.7, 0.8, 0, sl);
+          box(0.28, 0.1, 0.9, GOLD, -0.7, 1.22, 0, sl);
+          box(1.44, 0.08, 0.9, GOLD, 0, 0.7, 0, sl);
+          [-0.38, 0.38].forEach((z) => {
+            box(1.9, 0.06, 0.07, GOLD, 0.05, 0.06, z, sl);
+            box(0.07, 0.24, 0.07, GOLD, 0.95, 0.15, z, sl).rotation.z = 0.5;
+            box(0.06, 0.28, 0.06, GOLD, -0.45, 0.2, z, sl);
+            box(0.06, 0.28, 0.06, GOLD, 0.45, 0.2, z, sl);
+          });
+          /* the sack of gifts */
+          box(0.5, 0.55, 0.6, "#7A5230", -0.42, 0.98, 0, sl);
+          box(0.18, 0.18, 0.18, "#2E9E5B", -0.36, 1.32, 0.1, sl);
+          box(0.16, 0.16, 0.16, "#1E6FD9", -0.5, 1.3, -0.12, sl);
+          /* Santa */
+          const sb = new THREE.Group();
+          sb.position.set(0.05, 0.7, 0);
+          sl.add(sb);
+          box(0.5, 0.56, 0.5, RED, 0, 0.3, 0, sb);
+          box(0.52, 0.1, 0.52, "#1A1A1A", 0, 0.12, 0, sb);
+          box(0.12, 0.1, 0.06, GOLD, 0.26, 0.12, 0, sb);
+          box(0.12, 0.5, 0.06, FUR, 0.255, 0.33, 0, sb);
+          const sh = new THREE.Group();
+          sh.position.set(0, 0.78, 0);
+          sb.add(sh);
+          box(0.36, 0.34, 0.36, "#F2C9A0", 0, 0, 0, sh);
+          box(0.1, 0.3, 0.38, FUR, 0.17, -0.12, 0, sh);
+          box(0.08, 0.06, 0.2, FUR, 0.19, 0.04, 0, sh);
+          box(0.03, 0.05, 0.05, "#1A1A1A", 0.185, 0.09, -0.08, sh);
+          box(0.03, 0.05, 0.05, "#1A1A1A", 0.185, 0.09, 0.08, sh);
+          box(0.05, 0.06, 0.06, "#E07A6A", 0.2, 0.02, 0, sh);
+          santaHat(sh, 0.15, 0.85).rotation.z = 0.35;
+          const arm = (z) => {
+            const g = new THREE.Group();
+            g.position.set(0.05, 0.5, z);
+            sb.add(g);
+            box(0.42, 0.14, 0.14, RED, 0.2, 0, 0, g);
+            box(0.1, 0.12, 0.12, "#1A1A1A", 0.44, 0, 0, g);
+            g.rotation.z = -0.35;
+            return g;
+          };
+          const sArmL = arm(-0.3), sArmR = arm(0.3);
+          /* reindeer, two pairs */
+          const deer = [];
+          const mkDeer = (x, z, k, parent) => {
+            const g = new THREE.Group();
+            g.position.set(x, 0.32, z);
+            (parent || root).add(g);
+            const fur = k % 2 ? "#8B5A2B" : "#7A4E26";
+            box(0.86, 0.36, 0.32, fur, 0, 0.62, 0, g);
+            box(0.2, 0.08, 0.34, "#C0392B", 0.05, 0.82, 0, g);
+            box(0.06, 0.08, 0.06, GOLD, 0.05, 0.76, 0.18, g);
+            box(0.14, 0.12, 0.1, "#EFE6D6", -0.46, 0.72, 0, g);
+            const neck = new THREE.Group();
+            neck.position.set(0.4, 0.74, 0);
+            g.add(neck);
+            box(0.18, 0.42, 0.2, fur, 0.06, 0.18, 0, neck).rotation.z = -0.35;
+            box(0.32, 0.22, 0.22, fur, 0.2, 0.42, 0, neck);
+            box(0.14, 0.14, 0.16, "#5C3A1E", 0.38, 0.38, 0, neck);
+            box(0.03, 0.05, 0.05, "#1A1A1A", 0.26, 0.48, -0.115, neck);
+            box(0.03, 0.05, 0.05, "#1A1A1A", 0.26, 0.48, 0.115, neck);
+            [-1, 1].forEach((sd) => {
+              box(0.05, 0.28, 0.05, "#D8C8A0", 0.12, 0.66, sd * 0.09, neck).rotation.x = sd * -0.4;
+              box(0.14, 0.04, 0.04, "#D8C8A0", 0.16, 0.74, sd * 0.14, neck);
+              box(0.04, 0.12, 0.04, "#D8C8A0", 0.04, 0.72, sd * 0.16, neck);
+            });
+            const legs = [[0.32, -0.1], [0.32, 0.1], [-0.32, -0.1], [-0.32, 0.1]].map(([lx, lz]) => {
+              const lg2 = new THREE.Group();
+              lg2.position.set(lx, 0.48, lz);
+              g.add(lg2);
+              box(0.09, 0.44, 0.09, fur, 0, -0.22, 0, lg2);
+              box(0.1, 0.07, 0.1, "#2A1A10", 0, -0.44, 0, lg2);
+              return lg2;
+            });
+            deer.push({ g, legs, neck, ph: k * 0.9 });
+          };
+          mkDeer(2.1, -0.34, 0); mkDeer(2.1, 0.34, 1); mkDeer(3.3, -0.34, 2); mkDeer(3.3, 0.34, 3);
+          /* reins from the sleigh to the front pair */
+          [-0.34, 0.34].forEach((z) => {
+            const r2 = box(2.7, 0.04, 0.04, GOLD, 2.25, 1.05, z, root);
+            r2.castShadow = false;
+            r2.rotation.z = -0.05;
+          });
+          xPick(4.6, 2.0, 1.4, 1.5, 0.9, 0, "santa", root);
+          root.rotation.order = "YZX"; /* heading, then climb, then lean into turns */
+          santa = { root, sl, deer, sArmL, sArmR, sh, u: Math.random() * 40 };
+
+          /* a herd of reindeer running laps on the snow around the office,
+             on a fixed loop that clears the walls, trees, parols and snowman */
+          {
+            const pts = [[230, 760], [1420, 760], [1420, 175], [230, 175]].map(([px, py]) => u(px, py));
+            const CUT = 1.1, loop = [];
+            pts.forEach((pnt, i) => {
+              const a = pts[(i + pts.length - 1) % pts.length], b = pts[(i + 1) % pts.length];
+              const to = (q) => { const d2 = Math.hypot(q[0] - pnt[0], q[1] - pnt[1]); return [pnt[0] + (q[0] - pnt[0]) / d2 * CUT, pnt[1] + (q[1] - pnt[1]) / d2 * CUT]; };
+              loop.push(to(a), to(b)); /* round each corner off */
+            });
+            const segs = [];
+            let L = 0;
+            loop.forEach((a, i) => { const b = loop[(i + 1) % loop.length], len = Math.hypot(b[0] - a[0], b[1] - a[1]); segs.push({ a, b, len, at: L }); L += len; });
+            const at = (d2) => {
+              d2 = ((d2 % L) + L) % L;
+              const sg = segs.find((q) => d2 <= q.at + q.len) || segs[segs.length - 1];
+              const f = (d2 - sg.at) / sg.len;
+              return [sg.a[0] + (sg.b[0] - sg.a[0]) * f, sg.a[1] + (sg.b[1] - sg.a[1]) * f];
+            };
+            const runners = [];
+            [0, 1, 2].forEach((k) => {
+              const hg = new THREE.Group();
+              scene.add(hg);
+              mkDeer(0, 0, k + 4, hg);
+              const d = deer.pop();
+              xPick(1.6, 1.8, 0.8, 0, 0.9, 0, "deer", hg);
+              runners.push({ g: hg, d, off: k * 1.9 + (k === 2 ? 0.6 : 0) });
+            });
+            santa.herd = { runners, at, L, s: Math.random() * L };
+          }
+
+          /* the snowman: an original one, with a teal scarf and a salakot */
+          const sm = new THREE.Group();
+          sm.position.set(...(([x, z]) => [x, -0.1, z])(u(1180, 100)));
+          sm.rotation.y = -1.25; /* faces the usual camera angle */
+          scene.add(sm);
+          const SNOW = dark ? "#DCE4EE" : "#FFFFFF";
+          box(1.0, 0.8, 1.0, SNOW, 0, 0.45, 0, sm);
+          box(0.84, 0.18, 0.84, SNOW, 0, 0.9, 0, sm);
+          box(0.72, 0.6, 0.72, SNOW, 0, 1.2, 0, sm);
+          box(0.5, 0.5, 0.5, SNOW, 0, 1.75, 0, sm);
+          box(0.04, 0.07, 0.07, "#1A1A1A", 0.26, 1.82, -0.1, sm);
+          box(0.04, 0.07, 0.07, "#1A1A1A", 0.26, 1.82, 0.1, sm);
+          const nose = cone(0.05, 0.28, "#F28C28", 0.38, 1.74, 0, sm, 6);
+          nose.rotation.z = -Math.PI / 2;
+          [-0.1, 0, 0.1].forEach((z, i) => box(0.04, 0.04, 0.04, "#1A1A1A", 0.26, 1.64 - Math.abs(z) * 0.3 + (i === 1 ? -0.03 : 0), z, sm));
+          [1.35, 1.15, 0.95].forEach((y) => box(0.06, 0.08, 0.08, "#1A1A1A", 0.37, y, 0, sm));
+          box(0.6, 0.14, 0.6, "#0F766E", 0, 1.5, 0, sm);
+          box(0.14, 0.4, 0.06, "#0F766E", 0.22, 1.3, 0.2, sm).rotation.z = 0.12;
+          /* salakot: a wide, flat woven hat */
+          cone(0.56, 0.3, "#C8A15A", 0, 2.14, 0, sm, 12);
+          box(0.08, 0.06, 0.08, "#8A6A32", 0, 2.3, 0, sm);
+          /* a little parol badge on the chest */
+          xStar(0.37, 1.32, 0.18, 0.08, sm).rotation.y = Math.PI / 2;
+          const stick = (sd) => {
+            const g = new THREE.Group();
+            g.position.set(0, 1.3, sd * 0.36);
+            sm.add(g);
+            box(0.06, 0.06, 0.6, "#5A3A22", 0, 0, sd * 0.3, g);
+            box(0.05, 0.05, 0.18, "#5A3A22", 0, 0.07, sd * 0.52, g).rotation.x = sd * 0.8;
+            g.rotation.x = sd * -0.5;
+            return g;
+          };
+          stick(-1);
+          const wave = stick(1);
+          const anchor = new THREE.Object3D();
+          anchor.position.set(0, 0.45, 0);
+          sm.add(anchor);
+          xPick(1.2, 2.5, 1.2, 0, 1.15, 0, "snowman", sm);
+          snowman = { g: sm, wave, anchor, poke: -10 };
+
+          /* snowfall - outside the building only, so it never covers a desk */
+          const N = 650, AX = 24, AZ = 18, TOPY = 11;
+          const pos = new Float32Array(N * 3), spd = new Float32Array(N);
+          const inside = (x, z) => Math.abs(x) < W / 2 + 0.5 && Math.abs(z) < D / 2 + 0.5;
+          const spot = (i, y) => {
+            let x, z;
+            do { x = (Math.random() * 2 - 1) * AX; z = (Math.random() * 2 - 1) * AZ; } while (inside(x, z));
+            pos[i * 3] = x; pos[i * 3 + 1] = y; pos[i * 3 + 2] = z;
+            spd[i] = 0.5 + Math.random() * 0.6;
+          };
+          for (let i = 0; i < N; i++) spot(i, Math.random() * TOPY);
+          const sg = new THREE.BufferGeometry();
+          sg.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+          geos.push(sg);
+          const fc2 = document.createElement("canvas");
+          fc2.width = fc2.height = 32;
+          const f2 = fc2.getContext("2d");
+          const grd = f2.createRadialGradient(16, 16, 0, 16, 16, 15);
+          grd.addColorStop(0, "rgba(255,255,255,1)"); grd.addColorStop(0.6, "rgba(255,255,255,.85)"); grd.addColorStop(1, "rgba(255,255,255,0)");
+          f2.fillStyle = grd; f2.fillRect(0, 0, 32, 32);
+          const ftex = new THREE.CanvasTexture(fc2);
+          texs.push(ftex);
+          const pm2 = new THREE.PointsMaterial({ size: 5 * Math.min(window.devicePixelRatio || 1, 2), sizeAttenuation: false, map: ftex, transparent: true, depthWrite: false, color: dark ? "#FFFFFF" : "#F4F8FF" });
+          extraMats.push(pm2);
+          const pts = new THREE.Points(sg, pm2);
+          pts.frustumCulled = false;
+          scene.add(pts);
+          snow = { pos, spd, sg, spot, N };
+        }
+
         scene.add(HW ? new THREE.HemisphereLight(dark ? "#A898C8" : "#ECE6F7", dark ? "#1E1528" : "#6A5E50", dark ? 0.55 : 0.55)
+          : XM ? new THREE.HemisphereLight(dark ? "#A8BCE8" : "#EAF1FF", dark ? "#1A2233" : "#9AA8BC", dark ? 0.55 : 0.55)
           : new THREE.HemisphereLight(dark ? "#9FB4D0" : "#FFFFFF", dark ? "#1B2A1E" : "#8EA66A", dark ? 0.55 : 0.5));
-        const sun = new THREE.DirectionalLight(HW ? "#FFDDB8" : "#FFF4E0", dark ? 0.6 : 0.8);
+        const sun = new THREE.DirectionalLight(HW ? "#FFDDB8" : XM ? "#F2F6FF" : "#FFF4E0", dark ? 0.6 : 0.8);
         sun.position.set(12, 20, 8);
         sun.castShadow = true;
         sun.shadow.mapSize.set(2048, 2048);
@@ -10707,10 +11252,10 @@ ${lines.join("\n")}`);
           const inv = cam.matrixWorldInverse;
           let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
           const v = new THREE.Vector3();
-          const mg = HW ? 1.4 : 0.6;
+          const mg = HW || XM ? 1.4 : 0.6;
           const pts = [];
           for (const x of [-W / 2 - mg, W / 2 + mg]) for (const z of [-D / 2 - mg, D / 2 + mg]) for (const y of [0, 2.6]) pts.push([x, y, z]);
-          /* Opens fitted to the office only; zoom out to see the billboard and courts. */
+          /* Opens fitted to the office only; zoom out to see the billboard (and courts, when they're up). */
           for (const [x, y, z] of pts) {
             v.set(x, y, z).applyMatrix4(inv);
             x0 = Math.min(x0, v.x); x1 = Math.max(x1, v.x); y0 = Math.min(y0, v.y); y1 = Math.max(y1, v.y);
@@ -10766,6 +11311,8 @@ ${lines.join("\n")}`);
           if (ch) { pokePlayer(ch.object.userData.pl); return; }
           const bh = bPicks.length && ray.intersectObjects(bPicks, false)[0];
           const ph = ray.intersectObjects(pickables, false)[0];
+          const xh = xPicks.length && ray.intersectObjects(xPicks, false)[0];
+          if (xh && (!ph || xh.distance < ph.distance) && (!bh || xh.distance < bh.distance)) { pokeXmas(xh.object.userData.xk); return; }
           if (bh && (!ph || bh.distance < ph.distance)) { setBoardOpen(true); return; }
           setSel(ph ? ph.object.userData.pid : null);
         };
@@ -10848,6 +11395,137 @@ ${lines.join("\n")}`);
             lights[2].emissiveIntensity = 0.6 + 0.5 * (Math.sin(t * 2.1 + 4) > 0 ? 1 : 0.2);
           }
           if (HW && !calm) glow.emissiveIntensity = 1.05 + Math.sin(t * 7) * 0.12 + Math.sin(t * 17) * 0.08;
+        };
+        /* ---------- Christmas: clicks and animation ---------- */
+        const XLINES = {
+          deer: ["Practising for the 24th!", "Faster, Prancer\u2014I mean, Kevin!", "Snow day, zoom zoom!", "Can't stop, deliveries!"],
+          santa: ["Ho ho ho!", "Merry Christmas, Projeclab!", "Who's been rendering nicely?", "Next stop: your desk!", "Maligayang Pasko!", "Deliveries before deadlines!"],
+          snowman: ["Maligayang Pasko!", "Brrr… who turned on the aircon?", "Bibingka after work?", "Simbang Gabi tonight?", "Noche Buena na!", "Lights, camera, Pasko!"],
+          tree: ["Merry Christmas!", "Sparkle mode on!", "Maligayang Pasko!", "Happy holidays, team!"]
+        };
+        let lastX = "";
+        const sayX = (list, root) => {
+          let s;
+          do { s = list[Math.floor(Math.random() * list.length)]; } while (s === lastX && list.length > 1);
+          lastX = s;
+          talk = { z: { root }, until: performance.now() / 1000 + 2.6 };
+          if (bubble.current) { bubble.current.textContent = s; bubble.current.dataset.on = "1"; }
+        };
+        const pokeXmas = (key) => {
+          const now = performance.now() / 1000;
+          if (key === "santa" && santa) sayX(XLINES.santa, santa.root);
+          else if (key === "deer" && santa && santa.herd) sayX(XLINES.deer, santa.herd.runners[0].g);
+          else if (key === "snowman" && snowman) { snowman.poke = now; sayX(XLINES.snowman, snowman.anchor); }
+          else {
+            const tr = xTrees.find((x) => x.key === key);
+            if (tr) { tr.burst = now; sayX(XLINES.tree, tr.anchor); }
+          }
+        };
+        /* Santa's route: a long, never-quite-repeating loop over the whole lot
+           (office and lawns). He climbs over anything tall on the way. */
+        const TALL = [
+          { x0: -4.4, x1: 5.6, z0: -D / 2 - 5.4, z1: -D / 2 - 3, top: 13.6 }, /* billboard + countdown sign */
+          (() => { const [x, z] = u(95, 582); return { x0: x - 2.2, x1: x + 2.2, z0: z - 2.2, z1: z + 2.2, top: 7.2 }; })() /* big tree */
+        ];
+        const santaAt = (q, out) => {
+          const x = 17.5 * Math.sin(q * 0.9), z = 11.5 * Math.sin(q * 1.31 + 0.6);
+          let y = 5.0 + 1.3 * Math.sin(q * 0.7) + 0.4 * Math.sin(q * 2.3);
+          TALL.forEach((b) => {
+            const dx = Math.max(b.x0 - x, 0, x - b.x1), dz = Math.max(b.z0 - z, 0, z - b.z1);
+            const f = Math.max(0, 1 - Math.hypot(dx, dz) / 4);
+            const sm2 = f * f * (3 - 2 * f);
+            if (b.top > y) y += (b.top - y) * sm2;
+          });
+          return out.set(x, y, z);
+        };
+        const SA = new THREE.Vector3(), SB = new THREE.Vector3();
+        const stepXmas = (t, dt) => {
+          const now = performance.now() / 1000;
+          /* Santa flies all over */
+          if (santa) {
+            if (!calm) santa.u += dt * 0.19;
+            santaAt(santa.u, SA);
+            santaAt(santa.u + 0.02, SB);
+            santa.root.position.copy(SA);
+            const dx = SB.x - SA.x, dz = SB.z - SA.z, dy = SB.y - SA.y;
+            const want = Math.atan2(-dz, dx);
+            let dr = want - santa.root.rotation.y;
+            dr = Math.atan2(Math.sin(dr), Math.cos(dr));
+            santa.root.rotation.y += calm ? dr : dr * Math.min(1, dt * 6);
+            santa.root.rotation.z = Math.max(-0.35, Math.min(0.35, Math.atan2(dy, Math.hypot(dx, dz)))) * 0.8;
+            santa.root.rotation.x = Math.max(-0.25, Math.min(0.25, -dr * 2));
+            if (!calm) {
+              santa.deer.forEach((d) => {
+                const ph = t * 9 + d.ph;
+                d.legs[0].rotation.z = Math.sin(ph) * 0.7; d.legs[1].rotation.z = Math.sin(ph + 0.4) * 0.7;
+                d.legs[2].rotation.z = -Math.sin(ph) * 0.6; d.legs[3].rotation.z = -Math.sin(ph + 0.4) * 0.6;
+                d.g.position.y = 0.32 + Math.abs(Math.sin(ph)) * 0.08;
+                d.neck.rotation.z = Math.sin(ph) * 0.08;
+              });
+              santa.sl.position.y = Math.sin(t * 2.2) * 0.05;
+              santa.sArmR.rotation.z = -0.35 + Math.sin(t * 1.3) * 0.15;
+              santa.sArmL.rotation.z = -0.35 + Math.sin(t * 1.3 + 1) * 0.15;
+              santa.sh.rotation.y = Math.sin(t * 0.8) * 0.3;
+            }
+          }
+          /* the reindeer herd runs laps around the office */
+          if (santa && santa.herd) {
+            const hd = santa.herd;
+            if (!calm) hd.s += dt * 3.2;
+            hd.runners.forEach((r) => {
+              const [x, z] = hd.at(hd.s - r.off), [x2, z2] = hd.at(hd.s - r.off + 0.3);
+              r.g.position.set(x, -0.42, z);
+              const want = Math.atan2(-(z2 - z), x2 - x);
+              let dr = want - r.g.rotation.y;
+              dr = Math.atan2(Math.sin(dr), Math.cos(dr));
+              r.g.rotation.y += calm ? dr : dr * Math.min(1, dt * 8);
+              if (!calm) {
+                const ph = t * 13 + r.off * 2, d = r.d;
+                d.legs[0].rotation.z = Math.sin(ph) * 0.8; d.legs[1].rotation.z = Math.sin(ph + 0.5) * 0.8;
+                d.legs[2].rotation.z = -Math.sin(ph) * 0.7; d.legs[3].rotation.z = -Math.sin(ph + 0.5) * 0.7;
+                d.g.position.y = 0.32 + Math.abs(Math.sin(ph)) * 0.12;
+                d.neck.rotation.z = Math.sin(ph) * 0.1;
+              }
+            });
+          }
+          /* the snowman waves every few seconds (and at once when clicked) */
+          if (snowman && !calm) {
+            const sinceP = now - snowman.poke;
+            const w = sinceP < 1.8 ? 1 : Math.max(0, Math.sin(t * 0.9)) > 0.85 ? 1 : 0;
+            snowman.wave.rotation.x = -0.5 - w * (1.0 + Math.sin(t * 12) * 0.35);
+            snowman.g.rotation.z = sinceP < 0.6 ? Math.sin(sinceP * 30) * 0.05 * (1 - sinceP / 0.6) : 0;
+          }
+          /* twinkling tree ornaments; a click makes a tree sparkle */
+          xTrees.forEach((tr, k) => {
+            if (tr.sway) { if (!calm) tr.sway.rotation.z = Math.sin(t * 1.2 + k) * 0.05; return; }
+            const b = Math.max(0, 1 - (now - tr.burst) / 2.2);
+            tr.orn.forEach((m, i) => { m.emissiveIntensity = calm ? 0.8 : 0.55 + 0.4 * Math.max(0, Math.sin(t * 3 + i * 1.7)) + b * 1.8 * (Math.sin(t * 22 + i * 2) > 0 ? 1 : 0.3); });
+            if (!calm) tr.star.rotation.y = 0.3 + Math.sin(t * 0.7) * 0.25 + b * 12 * b;
+            tr.star.scale.setScalar(tr.star.userData.s || (tr.star.userData.s = tr.star.scale.x));
+            if (b > 0) tr.star.scale.setScalar(tr.star.userData.s * (1 + 0.5 * b));
+          });
+          if (!calm) starM.emissiveIntensity = 1 + Math.sin(t * 2.5) * 0.25;
+          /* string lights chase in four colours */
+          if (xLights.length && !calm) {
+            const step = Math.floor(t * 2.5) % 4;
+            xLights.forEach((m, i) => { m.emissiveIntensity = i === step ? 0.35 : 1.15; });
+          }
+          /* the LED countdown: redraw once a second, bulbs chase */
+          if (led) {
+            const sec = Math.floor(Date.now() / 1000);
+            if (sec !== led.sec && sec % 30 === 0) { led.sec = sec; led.draw(); }
+            if (!calm) { const on = Math.floor(t * 3) % 2; led.bR.emissiveIntensity = on ? 1.3 : 0.3; led.bG.emissiveIntensity = on ? 0.3 : 1.3; }
+          }
+          /* snowfall */
+          if (snow && !calm) {
+            const p = snow.pos;
+            for (let i = 0; i < snow.N; i++) {
+              p[i * 3 + 1] -= snow.spd[i] * dt;
+              p[i * 3] += Math.sin(t * 0.8 + i) * 0.06 * dt;
+              if (p[i * 3 + 1] < -0.05) snow.spot(i, 10 + Math.random());
+            }
+            snow.sg.attributes.position.needsUpdate = true;
+          }
         };
         const stepBubble = (t) => {
           const bb = bubble.current;
@@ -10987,13 +11665,14 @@ ${lines.join("\n")}`);
           });
           spots.length = 0;
           if (HW) stepZombies(t, dt);
+          if (XM) stepXmas(t, dt);
           stepCourts(t, dt);
           stepBubble(t);
           frameNo++;
           renderer.render(scene, cam);
         };
         world.current = { rows, desks, THREE };
-        if (window.__psTest) window.__psZ = { zombies, courts, cam, el, THREE, renderer, scene };
+        if (window.__psTest) window.__psZ = { zombies, courts, cam, el, THREE, renderer, scene, santa, snowman, xTrees, led, pokeXmas, view, size };
         raf = requestAnimationFrame(frame);
         setReady(true);
         world.current.cleanup = () => {
@@ -11043,10 +11722,10 @@ ${lines.join("\n")}`);
 
     return h(React.Fragment, null,
       h("div", { className: "ps-ovhead" }, h("span", { className: "ps-ovicon", "aria-hidden": "true" }, "\u{1F3E2}"), h("h1", { className: "ps-h1" }, "Studio")),
-      h("p", { className: "ps-lede" }, "Everyone at their desk, live from the task list. Drag to look around, scroll to zoom, click someone to see their work.", board ? " Click the billboard to see today's poster." : "", HW ? " \u{1F383} Zombies are prowling outside this week \u2014 click one." : ""),
+      h("p", { className: "ps-lede" }, "Everyone at their desk, live from the task list. Drag to look around, scroll to zoom, click someone to see their work.", board ? " Click the billboard to see today's poster." : "", HW ? " \u{1F383} Zombies are prowling outside this week \u2014 click one." : "", XM ? " \u{1F384} It's Christmas at the studio \u2014 click the trees, the snowman, the reindeer or Santa." : ""),
       h("div", { className: "ps-st", ref: wrap },
         boardOpen && board && h(AnnouncePopup, { a: board, close: () => setBoardOpen(false), title: "Today on the billboard" }),
-        h("div", { className: `ps-st-stage ${HW ? "hw" : ""}` },
+        h("div", { className: `ps-st-stage ${HW ? "hw" : ""} ${XM ? "xm" : ""}` },
           h("div", { className: "ps-st-canvas", ref: mount }),
           h("div", { className: "ps-st-bubble", ref: bubble, "aria-live": "polite" }),
           h("div", { className: "ps-st-tags", "aria-hidden": !ready }, ready && rows.filter((r) => !unseated.includes(r.p.id)).map((r) => h("button", {
@@ -11155,13 +11834,85 @@ ${lines.join("\n")}`);
         React.createElement("span", { className: "pk-ball", "aria-hidden": "true", dangerouslySetInnerHTML: { __html: PICKLE_BALL } })),
       "jeclab");
   }
+  /* Christmas, Nov 22 - Jan 6 every year (Manila). Same rule as the others:
+     the logo itself is untouched; the snowflakes, parol and tree are separate
+     pixel art around it, plus a "Merry Christmas" line. In the Studio: snow,
+     trees, parols, lights, desk gifts, Santa hats, a snowman, Santa flying all
+     over, and an LED countdown on the billboard. Preview with ?preview=christmas. */
+  const XMAS_FROM = "11-22", XMAS_TO = "01-06";
+  const xmasOn = () => {
+    try {
+      if (/[?&]preview=christmas\b/.test(location.search)) return true;
+      const md = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Manila" }).slice(5);
+      return md >= XMAS_FROM || md <= XMAS_TO;
+    } catch (e) {
+      return false;
+    }
+  };
+  /* tiny pixel art, one character per pixel */
+  const xPix = (rows, pal, px, cls) => {
+    const w = rows[0].length, hh = rows.length;
+    let r = "";
+    rows.forEach((row, y) => { for (let x = 0; x < w; x++) { const c = pal[row[x]]; if (c) r += `<rect x="${x}" y="${y}" width="1" height="1" fill="${c}"/>`; } });
+    return `<svg class="${cls}" viewBox="0 0 ${w} ${hh}" width="${w * px}" height="${hh * px}" shape-rendering="crispEdges" aria-hidden="true">${r}</svg>`;
+  };
+  const XMAS_ART = {
+    flake: xPix([
+      "....w....",
+      ".w..w..w.",
+      "..w.w.w..",
+      "...bwb...",
+      "wwwwbwwww",
+      "...bwb...",
+      "..w.w.w..",
+      ".w..w..w.",
+      "....w...."], { w: "#9CC9F5", b: "#4A90D9" }, 2, "x-flake"),
+    parol: xPix([
+      "......Y......",
+      ".....YRY.....",
+      ".....YRY.....",
+      "YYYYYRRRYYYYY",
+      ".YRRRRWRRRRY.",
+      "..YRRWWWRRY..",
+      "...YRRWRRY...",
+      "...YRRYRRY...",
+      "..YRRY.YRRY..",
+      "..YRY...YRY..",
+      ".YY.......YY.",
+      ".....R.G.....",
+      ".....G.R.....",
+      ".....R.G....."], { Y: "#F2B705", R: "#D62828", W: "#FFF1B8", G: "#2E9E5B" }, 2, "x-parol"),
+    tree: xPix([
+      "....s....",
+      "...sss...",
+      "....g....",
+      "...gRg...",
+      "..ggggg..",
+      "...gyg...",
+      "..gggBg..",
+      ".gRggggg.",
+      "..ggggg..",
+      ".gggggyg.",
+      "gBgggRggg",
+      "....t...."], { s: "#F2B705", g: "#2E7D4F", R: "#E5383B", y: "#FFC83D", B: "#4CC9F0", t: "#7A4E26" }, 2, "x-tree")
+  };
+  const xArt = (k, cls) => React.createElement("span", { className: "x-art " + (cls || ""), dangerouslySetInnerHTML: { __html: XMAS_ART[k] } });
+  function xmasWrap(logo) {
+    return React.createElement("div", { className: "x-wrap" },
+      React.createElement("span", { className: "x-left", "aria-hidden": "true" }, xArt("flake", "x-f1"), xArt("flake", "x-f2"), xArt("flake", "x-f3")),
+      React.createElement("span", { className: "x-logo" },
+        React.createElement("span", { className: "x-col" }, logo,
+          React.createElement("span", { className: "x-sub" }, React.createElement("i", { className: "x-dot r" }), React.createElement("span", null, "Merry Christmas"), React.createElement("i", { className: "x-dot g" }))),
+        React.createElement("span", { className: "x-right", "aria-hidden": "true" }, xArt("parol", "x-parol-at"), xArt("tree", "x-tree-at"))));
+  }
   function seasonWrap(logo) {
     if (tourOn()) return tourWrap(logo);
     if (halloOn()) return halloWrap(logo);
+    if (xmasOn()) return xmasWrap(logo);
     return logo;
   }
   var CSS = `
-@import url('https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,600;12..96,800&family=Silkscreen&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,600;12..96,800&family=Lobster&family=Silkscreen&display=swap');
 .ps-root{--paper:#EDF0F3;--card:#FFFFFF;--ink:#1A2230;--muted:#5B6676;--line:#D5DBE3;--accent:#0F766E;--late:#B42318;--film:#1A2230;--okbg:#DDF3EF;--warnbg:#FCEBD7;--warn:#9A4B06;
   font-family:'Bricolage Grotesque',ui-sans-serif,system-ui,sans-serif;background:var(--paper);color:var(--ink);min-height:100vh;font-size:15px;line-height:1.5}
 .ps-root.dark{--paper:#10151D;--card:#18202B;--ink:#E6EBF2;--muted:#94A0B2;--line:#2A3444;--accent:#2DD4BF;--late:#F97066;--film:#05080C;--okbg:#113A36;--warnbg:#3D2A12;--warn:#F5B971}
@@ -11186,6 +11937,34 @@ ${lines.join("\n")}`);
 .pk-sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
 @media (prefers-reduced-motion:no-preference){.ps-top .ps-logo:hover .pk-ball{transition:transform .6s ease;transform:rotate(200deg)}.pk-ball{transition:transform .6s ease}}
 .ps-st-stage.hw{background:linear-gradient(180deg,#3B2F5C,#6E4466 55%,#B8683E)}
+.ps-st-stage.xm{background:linear-gradient(180deg,#2B3F6B,#5C7BB0 60%,#A9C1E0)}
+.ps-root.dark .ps-st-stage.xm{background:linear-gradient(180deg,#0B1226,#16244A 60%,#2A3D66)}
+/* ---- Christmas dressing (Nov 22 - Jan 6): around the logo, never inside it ---- */
+.x-wrap{position:relative;display:inline-grid;padding-left:30px;padding-top:4px}
+.x-logo{position:relative;display:inline-flex;align-items:flex-start}
+.x-col{display:inline-flex;flex-direction:column;align-items:center}
+.x-art{position:absolute;display:block;line-height:0;pointer-events:none}
+.x-art svg{display:block}
+.x-left{position:absolute;left:0;top:0;width:26px;height:40px;pointer-events:none;overflow:hidden}
+.x-f1{left:5px;top:0;animation:x-fall 4.2s linear infinite}
+.x-f2{left:0;top:0;transform:scale(.6);animation:x-fall 5.6s linear 1.4s infinite}
+.x-f3{left:12px;top:0;transform:scale(.5);animation:x-fall 4.8s linear 2.8s infinite}
+.x-right{position:relative;display:inline-block;width:52px;height:30px;margin-left:8px;pointer-events:none}
+.x-parol-at{left:0;top:-2px;transform-origin:50% 0;animation:x-sway 3.2s ease-in-out infinite}
+.x-parol rect[fill="#FFF1B8"]{animation:x-glow 1.6s steps(1) infinite}
+.x-tree-at{left:30px;top:4px}
+.x-tree rect[fill="#E5383B"],.x-tree rect[fill="#4CC9F0"]{animation:x-glow 1.2s steps(1) infinite}
+.x-tree rect[fill="#FFC83D"]{animation:x-glow 1.2s steps(1) .6s infinite}
+.x-sub{display:flex;align-items:center;gap:7px;margin:4px 0 0;font-family:'Silkscreen',ui-monospace,monospace;font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:#B91C1C;line-height:1;white-space:nowrap}
+.ps-root.dark .x-sub{color:#FF6B6B}
+.x-dot{display:inline-block;width:5px;height:5px;background:#2E9E5B}
+.x-dot.r{background:#D62828}
+.ps-root.dark .x-parol,.ps-root.dark .x-tree{filter:drop-shadow(0 0 2px rgba(255,200,80,.55))}
+@keyframes x-fall{0%{transform:translateY(-14px) rotate(0);opacity:0}15%{opacity:1}85%{opacity:1}100%{transform:translateY(40px) rotate(180deg);opacity:0}}
+@keyframes x-sway{0%,100%{transform:rotate(-4deg)}50%{transform:rotate(4deg)}}
+@keyframes x-glow{0%{opacity:1}50%{opacity:.35}}
+@media (prefers-reduced-motion:reduce){.x-f1,.x-f2,.x-f3,.x-parol-at,.x-parol rect,.x-tree rect{animation:none}.x-f2,.x-f3{display:none}.x-f1{top:12px}}
+@media (max-width:520px){.x-left{display:none}.x-wrap{padding-left:0}.x-right{width:28px}.x-tree-at{display:none}}
 .ps-root.dark .ps-st-stage.hw{background:linear-gradient(180deg,#120E1F,#2A1830 60%,#4A2618)}
 .ps-st-bubble{position:absolute;left:0;top:0;z-index:150;pointer-events:none;padding:6px 11px;border-radius:12px;background:#FFF8E8;color:#3A1A1A;border:2px solid #2A1A3D;font-family:'Silkscreen',ui-monospace,monospace;font-size:12px;white-space:nowrap;box-shadow:0 4px 12px rgba(0,0,0,.25);opacity:0;transition:opacity .15s}
 .ps-st-bubble[data-on="1"]{opacity:1}
@@ -12262,7 +13041,7 @@ ${lines.join("\n")}`);
   .ps-side .ps-clientpanel{left:auto;right:0}
   .ps-root .ps-top{flex-wrap:nowrap}
   .ps-root .ps-top.m-search{flex-wrap:wrap}
-  .ps-top > .ps-logo,.ps-top > .h-wrap{min-width:0;flex:0 1 auto}
+  .ps-top > .ps-logo,.ps-top > .h-wrap,.ps-top > .x-wrap{min-width:0;flex:0 1 auto}
 }
 @media (max-width:400px){
   .ps-root .ps-top,.ps-root .ps-top.wide{padding:8px 18px 8px 10px;gap:6px}

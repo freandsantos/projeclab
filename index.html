@@ -11187,7 +11187,7 @@ ${lines.join("\n")}`);
           snowman = { g: sm, wave, anchor, poke: -10 };
 
           /* snowfall - outside the building only, so it never covers a desk */
-          const N = 650, AX = 24, AZ = 18, TOPY = 11;
+          const N = (el.clientWidth || 800) < 700 ? 320 : 480, AX = 24, AZ = 18, TOPY = 11; /* fewer on phones */
           const pos = new Float32Array(N * 3), spd = new Float32Array(N);
           const inside = (x, z) => Math.abs(x) < W / 2 + 0.5 && Math.abs(z) < D / 2 + 0.5;
           const spot = (i, y) => {
@@ -11208,7 +11208,8 @@ ${lines.join("\n")}`);
           f2.fillStyle = grd; f2.fillRect(0, 0, 32, 32);
           const ftex = new THREE.CanvasTexture(fc2);
           texs.push(ftex);
-          const pm2 = new THREE.PointsMaterial({ size: 5 * Math.min(window.devicePixelRatio || 1, 2), sizeAttenuation: false, map: ftex, transparent: true, depthWrite: false, color: dark ? "#FFFFFF" : "#F4F8FF" });
+          /* small and soft, so the snow never hides the details (Frean found 5px too big on his phone) */
+          const pm2 = new THREE.PointsMaterial({ size: 2.4 * Math.min(window.devicePixelRatio || 1, 2), sizeAttenuation: false, map: ftex, transparent: true, opacity: 0.75, depthWrite: false, color: dark ? "#FFFFFF" : "#F4F8FF" });
           extraMats.push(pm2);
           const pts = new THREE.Points(sg, pm2);
           pts.frustumCulled = false;
